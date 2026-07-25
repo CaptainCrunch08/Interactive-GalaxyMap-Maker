@@ -1,0 +1,187 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Orbitron", "Cinzel", sans-serif;
+  --font-body: "Exo 2", "IBM Plex Sans", system-ui, sans-serif;
+  --color-void: #060b12;
+  --color-panel: #0c1620;
+  --color-panel-border: #1e3a4c;
+  --color-brass: #d4a84b;
+  --color-brass-dim: #8a6b28;
+  --color-crimson: #8b1538;
+  --color-star: #e8f0f8;
+  --color-text: #c8d4de;
+  --color-muted: #6a8296;
+  --color-cyan: #4fd2ff;
+  --color-cyan-dim: #2a8fb0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-body);
+  background: var(--color-void);
+  color: var(--color-text);
+  overflow: hidden;
+}
+
+.galaxy-bg {
+  background-color: var(--color-void);
+  background-image:
+    radial-gradient(ellipse 90% 60% at 50% 45%, rgba(20, 50, 90, 0.45), transparent 70%),
+    radial-gradient(circle at 18% 72%, rgba(80, 30, 100, 0.18), transparent 42%),
+    radial-gradient(circle at 78% 28%, rgba(20, 90, 120, 0.2), transparent 38%),
+    radial-gradient(1.5px 1.5px at 12% 24%, rgba(255, 255, 255, 0.55), transparent),
+    radial-gradient(1px 1px at 42% 68%, rgba(255, 255, 255, 0.4), transparent),
+    radial-gradient(1.5px 1.5px at 68% 18%, rgba(200, 230, 255, 0.5), transparent),
+    radial-gradient(1px 1px at 88% 54%, rgba(255, 255, 255, 0.35), transparent),
+    radial-gradient(1px 1px at 28% 88%, rgba(255, 255, 255, 0.3), transparent);
+  background-size:
+    100% 100%,
+    100% 100%,
+    100% 100%,
+    100% 100%,
+    100% 100%,
+    100% 100%,
+    100% 100%,
+    100% 100%;
+}
+
+.galaxy-nebula {
+  background:
+    radial-gradient(ellipse 40% 30% at 35% 40%, rgba(60, 100, 180, 0.12), transparent),
+    radial-gradient(ellipse 35% 28% at 65% 55%, rgba(120, 50, 140, 0.1), transparent);
+}
+
+/* Stellaris-like HUD chrome */
+.hud-panel {
+  background: linear-gradient(
+    180deg,
+    rgba(14, 28, 40, 0.92) 0%,
+    rgba(8, 16, 24, 0.94) 100%
+  );
+  border: 1px solid rgba(79, 210, 255, 0.28);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.5),
+    0 8px 28px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(79, 210, 255, 0.08);
+  clip-path: polygon(
+    8px 0,
+    calc(100% - 8px) 0,
+    100% 8px,
+    100% calc(100% - 8px),
+    calc(100% - 8px) 100%,
+    8px 100%,
+    0 calc(100% - 8px),
+    0 8px
+  );
+}
+
+.hud-topbar {
+  background: linear-gradient(
+    180deg,
+    rgba(12, 24, 36, 0.96) 0%,
+    rgba(8, 16, 26, 0.92) 100%
+  );
+  border-bottom: 1px solid rgba(79, 210, 255, 0.22);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+}
+
+.hud-side {
+  background: linear-gradient(
+    90deg,
+    rgba(10, 20, 30, 0.96) 0%,
+    rgba(12, 22, 34, 0.94) 100%
+  );
+  border-color: rgba(79, 210, 255, 0.2);
+}
+
+.hud-btn {
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.4rem 0.75rem;
+  color: var(--color-text);
+  background: rgba(20, 40, 55, 0.7);
+  border: 1px solid rgba(79, 210, 255, 0.25);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+
+.hud-btn:hover {
+  color: var(--color-cyan);
+  border-color: rgba(79, 210, 255, 0.55);
+  background: rgba(30, 55, 75, 0.85);
+}
+
+.hud-btn-active {
+  color: var(--color-void);
+  background: linear-gradient(180deg, #6adfff, #2aa8c9);
+  border-color: #4fd2ff;
+  box-shadow: 0 0 12px rgba(79, 210, 255, 0.35);
+}
+
+.hud-divider {
+  width: 1px;
+  align-self: stretch;
+  background: rgba(79, 210, 255, 0.2);
+  margin: 0 0.15rem;
+}
+
+.hud-kbd {
+  display: inline-block;
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  padding: 0.1rem 0.35rem;
+  margin-right: 0.2rem;
+  border: 1px solid rgba(79, 210, 255, 0.3);
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--color-cyan);
+}
+
+.hud-input {
+  width: 100%;
+  border-radius: 2px;
+  border: 1px solid rgba(79, 210, 255, 0.22);
+  background: rgba(4, 10, 16, 0.65);
+  padding: 0.4rem 0.55rem;
+  font-size: 0.875rem;
+  color: var(--color-text);
+}
+
+.hud-input:focus {
+  outline: none;
+  border-color: rgba(79, 210, 255, 0.55);
+  box-shadow: 0 0 0 1px rgba(79, 210, 255, 0.15);
+}
+
+.outliner-item {
+  width: 100%;
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8125rem;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.outliner-item:hover {
+  color: var(--color-text);
+  background: rgba(79, 210, 255, 0.06);
+}
+
+.outliner-item-active {
+  color: var(--color-cyan);
+  background: rgba(79, 210, 255, 0.1);
+  border-color: rgba(79, 210, 255, 0.3);
+  box-shadow: inset 2px 0 0 var(--color-cyan);
+}

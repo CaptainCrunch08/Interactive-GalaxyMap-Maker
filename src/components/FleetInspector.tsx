@@ -1,0 +1,334 @@
+import type { Fleet, ShipChassis } from "../types/campaign";
+import {
+  SHIP_CHASSIS_LABELS,
+  SHIP_CHASSIS_ORDER,
+} from "../types/campaign";
+import {
+  chassisSummary,
+  locationLabel,
+  shipCount,
+} from "../lib/fleets";
+import { getFactionById } from "../lib/territory";
+import { useCampaignStore } from "../store/useCampaignStore";
+
+const inputClass = "hud-input";
+
+function FactionSwatch({ color }: { color?: string }) {
+  return (
+    <span
+      className="inline-block w-2.5 h-2.5 rounded-full shrink-0 border border-white/20"
+      style={{ background: color ?? "#6a8296" }}
+      aria-hidden
+    />
+  );
+}
+
+type FleetInspectorProps = {
+  fleet: Fleet;
+  onClose: () => void;
+};
+
+export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
+  const campaign = useCampaignStore((s) => s.campaign);
+  const fleetMoveModeId = useCampaignStore((s) => s.fleetMoveModeId);
+  const viewLevel = useCampaignStore((s) => s.viewLevel);
+  const updateFleet = useCampaignStore((s) => s.updateFleet);
+  const deleteFleet = useCampaignStore((s) => s.deleteFleet);
+  const addShip = useCampaignStore((s) => s.addShip);
+  const updateShip = useCampaignStore((s) => s.updateShip);
+  const deleteShip = useCampaignStore((s) => s.deleteShip);
+  const setFleetMoveMode = useCampaignStore((s) => s.setFleetMoveMode);
+  const enterSystem = useCampaignStore((s) => s.enterSystem);
+  const goBack = useCampaignStore((s) => s.goBack);
+  const toggleInspector = useCampaignStore((s) => s.toggleInspector);
+
+  const fac = getFactionById(campaign, fleet.factionId);
+  const moving = fleetMoveModeId === fleet.id;
+
+  return (
+    <>
+      <div className="p-4 border-b border-panel-border space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="font-display text-[10px] text-cyan uppercase tracking-[0.18em]">
+            Fleet
+          </h2>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="text-[10px] text-muted hover:text-cyan"
+              onClick={onClose}
+            >
+              ← Back
+            </button>
+            <button
+              type="button"
+              className="text-muted hover:text-cyan text-lg leading-none px-1"
+              onClick={toggleInspector}
+              title="Hide panel"
+              aria-label="Hide details panel"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+        <p className="font-display text-sm text-star truncate flex items-center gap-2">
+          <FactionSwatch color={fac?.color} />
+          {fleet.name}
+        </p>
+        <p className="text-[10px] text-muted">
+          {locationLabel(campaign, fleet.location)} · {shipCount(fleet)} ships
+        </p>
+        {viewLevel === "galaxy" && (
+          <button
+            type="button"
+            className="hud-btn w-full"
+            onClick={() => enterSystem(fleet.location.systemId)}
+          >
+            Enter system
+          </button>
+        )}
+        {viewLevel !== "galaxy" && viewLevel !== "system" && (
+          <button
+            type="button"
+            className="text-[10px] text-muted hover:text-cyan"
+            onClick={goBack}
+          >
+            ← Up
+          </button>
+        )}
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-4 space-y-6">
+        <section>
+          <label className="block text-xs text-muted mb-1">Name</label>
+          <input
+            className={inputClass + " mb-2"}
+            value={fleet.name}
+            onChange={(e) => updateFleet(fleet.id, { name: e.target.value })}
+          />
+          <label className="block text-xs text-muted mb-1">Faction</label>
+          <div className="flex items-center gap-2 mb-2">
+            <FactionSwatch color={fac?.color} />
+            <select
+              className={inputClass + " flex-1"}
+              value={fleet.factionId}
+              onChange={(e) =>
+                updateFleet(fleet.id, { factionId: e.target.value })
+              }
+            >
+              {campaign.factions.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className="text-[10px] text-muted mb-2">
+            {chassisSummary(fleet) || "No ships"}
+          </p>
+          <button
+            type="button"
+            className={`hud-btn w-full ${moving ? "hud-btn-active" : ""}`}
+            onClick={() => setFleetMoveMode(moving ? null : fleet.id)}
+          >
+            {moving
+              ? viewLevel === "galaxy"
+                ? "Click adjacent star…"
+                : "Click star or planet…"
+              : "Move fleet"}
+          </button>
+          {moving && (
+            <p className="text-[10px] text-cyan mt-1.5 leading-snug">
+              {viewLevel === "galaxy"
+                ? "On the galaxy map, click a hyperlane-linked system."
+                : "In this system, click the star or a planet orbit. Leave the system to jump via hyperlanes from the galaxy map."}
+            </p>
+          )}
+        </section>
+
+        <section>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-xs uppercase text-muted tracking-wide">
+              Ships
+            </h3>
+            <select
+              className={inputClass}
+              style={{ fontSize: "0.7rem", width: "auto" }}
+              value=""
+              onChange={(e) => {
+                const chassis = e.target.value as ShipChassis;
+                if (!chassis) return;
+                addShip(fleet.id, chassis);
+                e.target.value = "";
+              }}
+            >
+              <option value="">+ Add chassis…</option>
+              {SHIP_CHASSIS_ORDER.map((c) => (
+                <option key={c} value={c}>
+                  {SHIP_CHASSIS_LABELS[c]}
+                </option>
+              ))}
+            </select>
+          </div>
+          {fleet.ships.length === 0 ? (
+            <p className="text-xs text-muted">No ships in this fleet.</p>
+          ) : (
+            <ul className="space-y-2">
+              {fleet.ships.map((ship) => (
+                <li
+                  key={ship.id}
+                  className="rounded border border-panel-border/80 p-2 space-y-1.5"
+                >
+                  <div className="flex items-center gap-2">
+                    <input
+                      className={inputClass + " flex-1"}
+                      style={{ fontSize: "0.75rem" }}
+                      value={ship.name}
+                      onChange={(e) =>
+                        updateShip(fleet.id, ship.id, {
+                          name: e.target.value,
+                        })
+                      }
+                    />
+                    <button
+                      type="button"
+                      className="text-xs text-crimson shrink-0"
+                      onClick={() => deleteShip(fleet.id, ship.id)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <select
+                    className={inputClass}
+                    style={{ fontSize: "0.7rem" }}
+                    value={ship.chassis}
+                    onChange={(e) =>
+                      updateShip(fleet.id, ship.id, {
+                        chassis: e.target.value as ShipChassis,
+                      })
+                    }
+                  >
+                    {SHIP_CHASSIS_ORDER.map((c) => (
+                      <option key={c} value={c}>
+                        {SHIP_CHASSIS_LABELS[c]}
+                      </option>
+                    ))}
+                  </select>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <section>
+          <label className="block text-xs text-muted mb-1">Notes</label>
+          <textarea
+            className={inputClass + " min-h-20 resize-y"}
+            value={fleet.notes}
+            onChange={(e) => updateFleet(fleet.id, { notes: e.target.value })}
+            placeholder="Orders, composition notes…"
+          />
+        </section>
+
+        <section>
+          <button
+            type="button"
+            className="text-xs px-2 py-1 rounded border border-crimson/50 text-crimson"
+            onClick={() => {
+              if (confirm(`Delete fleet ${fleet.name}?`)) {
+                deleteFleet(fleet.id);
+                onClose();
+              }
+            }}
+          >
+            Delete fleet
+          </button>
+        </section>
+      </div>
+    </>
+  );
+}
+
+type FleetListProps = {
+  systemId?: string;
+  title?: string;
+};
+
+/** Compact fleet list for galaxy overview or system panel. */
+export function FleetListSection({
+  systemId,
+  title = "Fleets",
+}: FleetListProps) {
+  const campaign = useCampaignStore((s) => s.campaign);
+  const selectedFleetId = useCampaignStore((s) => s.selectedFleetId);
+  const selectFleet = useCampaignStore((s) => s.selectFleet);
+  const addFleet = useCampaignStore((s) => s.addFleet);
+
+  const fleets = (campaign.fleets ?? []).filter((f) =>
+    systemId ? f.location.systemId === systemId : true,
+  );
+
+  return (
+    <section>
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-xs uppercase text-muted tracking-wide">{title}</h3>
+        {systemId && campaign.factions.length > 0 && (
+          <select
+            className={inputClass}
+            style={{ fontSize: "0.7rem", width: "auto" }}
+            value=""
+            onChange={(e) => {
+              const fid = e.target.value;
+              if (!fid) return;
+              addFleet(systemId, fid);
+              e.target.value = "";
+            }}
+          >
+            <option value="">+ Deploy…</option>
+            {campaign.factions.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.name}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+      {fleets.length === 0 ? (
+        <p className="text-xs text-muted">
+          {systemId
+            ? "No fleets in this system."
+            : "No fleets yet. Open a system to deploy one."}
+        </p>
+      ) : (
+        <ul className="space-y-1.5">
+          {fleets.map((fleet) => {
+            const fac = getFactionById(campaign, fleet.factionId);
+            const active = selectedFleetId === fleet.id;
+            return (
+              <li key={fleet.id}>
+                <button
+                  type="button"
+                  className={`w-full text-left px-2 py-1.5 rounded border text-xs flex items-center gap-2 ${
+                    active
+                      ? "border-cyan/40 bg-cyan/5 text-text"
+                      : "border-transparent hover:bg-panel-border/30 text-muted hover:text-text"
+                  }`}
+                  onClick={() => selectFleet(fleet.id)}
+                >
+                  <FactionSwatch color={fac?.color} />
+                  <span className="truncate flex-1">{fleet.name}</span>
+                  <span className="text-[10px] text-muted shrink-0">
+                    {shipCount(fleet)}
+                  </span>
+                </button>
+                <p className="text-[10px] text-muted pl-6 truncate">
+                  {locationLabel(campaign, fleet.location)}
+                </p>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
