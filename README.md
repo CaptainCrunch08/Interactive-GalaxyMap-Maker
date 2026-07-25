@@ -1,12 +1,17 @@
-# Galaxy Campaign Map
+# Interactive-GalaxyMap-Maker
 
-Interactive sector map for narrative wargame campaigns (Warhammer 40,000–style). Pan and zoom a galaxy view, drill into star systems and planets, and track factions, notes, and battle logs. Data auto-saves in the browser and can be exported as JSON.
+Allows for custom or procedural generation of interactive galaxies for long term campaigns. Includes a turn based system for each faction/player, fleet movements, regiment movements, area control, a timelapse of events, and more.
+
+Interactive sector map for narrative wargame campaigns. Pan and zoom a galaxy view, drill into star systems and planets, and track factions, notes, and battle logs. Data auto-saves in the browser and can be exported as JSON.
 
 ## Features
 
 - **Galaxy view** — pan/zoom (mouse wheel, drag), click a star to open its system
 - **System view** — planets on orbital rings; click a planet for details
-- **Planet view** — notes and battle log entries
+- **Planet / strategic view** — settlements, armies, and battle logs
+- **Fleets** — compose and move fleets between systems along hyperlanes
+- **Territory** — faction ownership and influence blobs across the map
+- **Galactic chronicle** — in-game recorded timelapse of ownership and fleet history with event markers
 - **Editor** — toggle **Edit mode** on the galaxy map to drag stars; inspector for systems, planets, and factions
 - **Persistence** — `localStorage` auto-save; **Export** / **Import** JSON for backup and sharing
 
@@ -15,7 +20,7 @@ Interactive sector map for narrative wargame campaigns (Warhammer 40,000–style
 | Key | Action |
 |-----|--------|
 | `E` | Toggle edit / navigate (galaxy view only) |
-| `Escape` | Go up one level (planet → system → galaxy) |
+| `Escape` | Go up one level (timeline/planet → system → galaxy) |
 
 ## Development
 
@@ -56,4 +61,4 @@ Planet `type` is one of: `hive`, `forge`, `agri`, `death`, `shrine`, `custom`.
 
 ## Stack
 
-Vite, React, TypeScript, Tailwind CSS, Zustand, Zod, react-zoom-pan-pinch.
+Vite, React, TypeScript, Tailwind CSS, Zustand, Zod, react-zoom-pan-pinch, Three.js.
