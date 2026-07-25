@@ -1,5 +1,12 @@
-import type { StarSystem } from "../../types/campaign";
-import type { Faction } from "../../types/campaign";
+import type { Faction, StarSystem } from "../../types/campaign";
+import { STAR_CLASS_LABELS } from "../../types/campaign";
+import {
+  normalizeStarClass,
+  starAppearance,
+  starBodyGradient,
+  starGlowShadow,
+} from "../../lib/stars";
+import { PulsarJets, pulsarJetAngle } from "./PulsarJets";
 
 interface StarNodeProps {
   system: StarSystem;
@@ -26,7 +33,9 @@ export function StarNode({
   mapScale,
   onDrag,
 }: StarNodeProps) {
-  const glow = faction?.color ?? "#e8d5a3";
+  const starClass = normalizeStarClass(system.starClass);
+  const look = starAppearance(starClass);
+  const isPulsar = starClass === "pulsar";
   /** Labels only when zoomed in enough (map starts ~0.45). */
   const showLabel = mapScale >= 0.55 || selected;
 
@@ -61,6 +70,12 @@ export function StarNode({
     }
   };
 
+  const ownerBit = contested
+    ? " · Battlezone"
+    : faction
+      ? ` · ${faction.name}`
+      : "";
+
   return (
     <button
       type="button"
@@ -68,33 +83,48 @@ export function StarNode({
       style={{ left: system.x, top: system.y }}
       onPointerDown={handlePointerDown}
       onClick={handleClick}
+      title={`${system.name} · ${STAR_CLASS_LABELS[starClass]}`}
     >
       <span
-        className="relative block w-5 h-5 rounded-full transition-transform group-hover:scale-110"
+        className="relative block transition-transform group-hover:scale-110"
         style={{
-          background: `radial-gradient(circle at 35% 35%, #fff8e7, ${glow})`,
-          boxShadow: `0 0 ${selected ? 24 : 14}px ${glow}88, 0 0 4px ${glow}`,
-          outline: selected ? `2px solid ${glow}` : undefined,
+          width: look.galaxySize,
+          height: look.galaxySize,
         }}
-      />
+      >
+        {isPulsar && (
+          <PulsarJets
+            length={look.galaxySize * 2.4}
+            baseWidth={Math.max(4, look.galaxySize * 0.45)}
+            color={look.color}
+            highlight={look.highlight}
+            angleDeg={pulsarJetAngle(system.id)}
+          />
+        )}
+        <span
+          className="absolute inset-0 rounded-full"
+          style={{
+            background: starBodyGradient(starClass),
+            boxShadow: starGlowShadow(starClass, selected),
+            outline: selected ? `2px solid ${look.corona}` : undefined,
+          }}
+        />
+      </span>
       {showLabel && (
         <span
-          className="text-[11px] font-medium whitespace-nowrap px-1.5 py-0.5 text-star max-w-[140px] truncate"
+          className="text-[11px] font-medium whitespace-nowrap px-1.5 py-0.5 text-star max-w-[150px] truncate"
           style={{
             fontFamily: "var(--font-display)",
             letterSpacing: "0.04em",
             background: "rgba(6, 12, 20, 0.75)",
             border: contested
-              ? `1px solid ${contestedFactions?.[0]?.color ?? glow}`
+              ? `1px solid ${contestedFactions?.[0]?.color ?? look.corona}`
               : "1px solid rgba(79, 210, 255, 0.2)",
           }}
         >
           {system.name}
-          {contested
-            ? " · Battlezone"
-            : faction
-              ? ` · ${faction.name}`
-              : ""}
+          <span className="text-muted"> · {look.shortLabel}</span>
+          {ownerBit}
         </span>
       )}
     </button>

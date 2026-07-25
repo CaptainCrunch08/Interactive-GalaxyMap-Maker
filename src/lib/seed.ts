@@ -3,21 +3,23 @@ import type {
   Fleet,
   GalaxyHistoryFrame,
   Planet,
+  PlanetClassification,
+  StarClass,
 } from "../types/campaign";
 import { GALAXY_HEIGHT, GALAXY_SIZE, GALAXY_WIDTH } from "../types/campaign";
 import { createShip } from "./fleets";
-import { generatePlanetCities, planetOwnerFromCities } from "./settlements";
+import { generatePlanetSurface, planetOwnerFromCities } from "./settlements";
 import { snapshotGalaxyFrame } from "./galaxyHistory";
 
 function withCities(
-  planet: Omit<Planet, "cities" | "armies">,
+  planet: Omit<Planet, "cities" | "armies" | "structures">,
   opts?: {
     defaultFactionId?: string;
     rivalFactionId?: string;
     contestedRate?: number;
   },
 ): Planet {
-  const cities = generatePlanetCities(planet.id, planet.type, {
+  const { cities, structures } = generatePlanetSurface(planet.id, planet.type, {
     defaultFactionId: opts?.defaultFactionId ?? planet.controllingFactionId,
     rivalFactionId: opts?.rivalFactionId,
     contestedRate: opts?.contestedRate,
@@ -25,8 +27,10 @@ function withCities(
   return {
     ...planet,
     cities,
+    structures,
     controllingFactionId:
-      planetOwnerFromCities(cities) ?? planet.controllingFactionId,
+      planetOwnerFromCities(cities, undefined, structures) ??
+      planet.controllingFactionId,
     armies: [],
   };
 }
@@ -98,6 +102,7 @@ export function createDemoCampaign(): Campaign {
         x: cx - 80,
         y: cy - 40,
         notes: "Gateway to the Eye of Terror — contested front.",
+        starClass: "G" as StarClass,
       },
       {
         id: armageddonSystemId,
@@ -105,6 +110,7 @@ export function createDemoCampaign(): Campaign {
         x: cx + 280,
         y: cy + 40,
         notes: "Industrial war zone.",
+        starClass: "K" as StarClass,
         controllingFactionId: imperiumId,
       },
       {
@@ -113,6 +119,7 @@ export function createDemoCampaign(): Campaign {
         x: cx + 80,
         y: cy + 300,
         notes: "Homeworld of the Vlka Fenryka.",
+        starClass: "M" as StarClass,
         controllingFactionId: imperiumId,
       },
       {
@@ -121,6 +128,7 @@ export function createDemoCampaign(): Campaign {
         x: cx - 340,
         y: cy - 60,
         notes: "Chaos stronghold on the rim of the Eye.",
+        starClass: "B" as StarClass,
         controllingFactionId: chaosId,
       },
     ],
@@ -132,6 +140,7 @@ export function createDemoCampaign(): Campaign {
           name: "Cadia",
           orbitIndex: 0,
           type: "hive",
+          classification: "arid" as PlanetClassification,
           controllingFactionId: imperiumId,
           notes: "The Cadian Gate — strategic bulwark against the warp.",
           battles: [
@@ -155,6 +164,7 @@ export function createDemoCampaign(): Campaign {
         name: "Kasr Holn",
         orbitIndex: 1,
         type: "death",
+        classification: "barren" as PlanetClassification,
         controllingFactionId: chaosId,
         notes: "Fallen fortress-world under Chaos occupation.",
         battles: [],
@@ -166,6 +176,7 @@ export function createDemoCampaign(): Campaign {
           name: "Armageddon Prime",
           orbitIndex: 0,
           type: "forge",
+          classification: "volcanic" as PlanetClassification,
           controllingFactionId: imperiumId,
           notes: "Hive manufactorums under constant siege.",
           battles: [],
@@ -182,6 +193,7 @@ export function createDemoCampaign(): Campaign {
         name: "Fenris",
         orbitIndex: 0,
         type: "death",
+        classification: "ice" as PlanetClassification,
         controllingFactionId: imperiumId,
         notes: "Ice world of feral tribes and Astartes fortress-monastery.",
         battles: [],
@@ -192,6 +204,7 @@ export function createDemoCampaign(): Campaign {
         name: "Medrengard",
         orbitIndex: 0,
         type: "forge",
+        classification: "magma" as PlanetClassification,
         controllingFactionId: chaosId,
         notes: "Iron Warriors fortress world.",
         battles: [],

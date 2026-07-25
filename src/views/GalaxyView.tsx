@@ -182,12 +182,13 @@ export function GalaxyView() {
                     key={fleet.id}
                     fleet={fleet}
                     color={fac?.color ?? "#4fd2ff"}
-                    x={system.x + 18}
-                    y={system.y - 14}
+                    x={system.x + 22}
+                    y={system.y - 28}
                     selected={selectedFleetId === fleet.id}
                     moving={fleetMoveModeId === fleet.id}
                     mapScale={mapScale}
                     offsetIndex={i}
+                    stackCount={systemFleets.length}
                     onSelect={() => selectFleet(fleet.id)}
                   />
                 );

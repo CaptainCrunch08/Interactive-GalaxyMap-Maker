@@ -6,7 +6,9 @@ import type {
 } from "../types/campaign";
 import { GALAXY_EDGE_PADDING } from "../types/campaign";
 import { HYPERLANE_MAX_DIST } from "./hyperlanes";
-import { generatePlanetCities, planetOwnerFromCities } from "./settlements";
+import { generatePlanetSurface, planetOwnerFromCities } from "./settlements";
+import { pickRandomStarClass } from "./stars";
+import { pickRandomClassification } from "./planetClass";
 
 export type GalaxySize = "small" | "medium" | "large";
 
@@ -48,6 +50,7 @@ const PLANET_TYPES: PlanetType[] = [
   "agri",
   "death",
   "shrine",
+  "asteroid_belt",
   "custom",
 ];
 
@@ -401,23 +404,31 @@ export function generateGalaxyCampaign(
       x: pt.x,
       y: pt.y,
       notes: "",
+      starClass: pickRandomStarClass(rng),
     });
 
     const planetCount = 1 + Math.floor(rng() * 5);
     for (let o = 0; o < planetCount; o++) {
       const type = pick(rng, PLANET_TYPES);
       const planetId = crypto.randomUUID();
-      const cities = generatePlanetCities(planetId, type, {});
+      const { cities, structures } = generatePlanetSurface(planetId, type, {});
       planets.push({
         id: planetId,
         systemId,
         name: `${pick(rng, WORLD_NAMES)}${planetCount > 1 ? ` ${o + 1}` : ""}`,
         orbitIndex: o,
         type,
-        controllingFactionId: planetOwnerFromCities(cities),
+        classification:
+          type === "asteroid_belt" ? "barren" : pickRandomClassification(rng),
+        controllingFactionId: planetOwnerFromCities(
+          cities,
+          undefined,
+          structures,
+        ),
         notes: "",
         battles: [],
         cities,
+        structures,
         tileClaims: {},
         armies: [],
       });

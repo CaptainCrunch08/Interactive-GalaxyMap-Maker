@@ -6,13 +6,16 @@ import type {
   ArmySymbol,
   City,
   Faction,
+  PlanetClassification,
+  PlanetStructure,
   PlanetType,
   SphereDir,
+  StructureKind,
 } from "../../types/campaign";
 import { buildHexSphere, nearestTileIndex } from "../../lib/hexSphere";
 import { buildFactionBorders } from "../../lib/planetBorders";
 import {
-  coreColorForType,
+  coreColorForPlanet,
   sampleTerrainAtDirection,
 } from "../../lib/planetTerrain";
 import {
@@ -38,19 +41,23 @@ function planetSphere() {
 type HexPlanetProps = {
   planetId: string;
   planetType: PlanetType;
+  classification: PlanetClassification;
   accentColor: string;
   cities: City[];
+  structures: PlanetStructure[];
   tileClaims: Record<string, string>;
   armies: Army[];
   symbols: ArmySymbol[];
   factions: Faction[];
   selectedCityId: string | null;
   selectedDistrictId: string | null;
+  selectedStructureId: string | null;
   selectedArmyId: string | null;
   placingArmyId: string | null;
   /** Faction id to paint, TERRAIN_PAINT_ERASE to clear, or null when off. */
   terrainPaintFactionId: string | null;
   onSelectSettlement: (cityId: string, districtId: string | null) => void;
+  onSelectStructure: (structureId: string) => void;
   onSelectArmy: (armyId: string) => void;
   onPlaceArmy: (dir: SphereDir) => void;
   onMoveArmy: (armyId: string, dir: SphereDir) => void;
@@ -103,14 +110,18 @@ function factionColor(
 function buildTileHighlight(
   tileIndex: number,
   colorHex: string,
-): THREE.Mesh {
+): THREE.Group {
+  const group = new THREE.Group();
+  group.userData = { kind: "tile-highlight", tileIndex };
+
   const tile = planetSphere().tiles[tileIndex]!;
-  const radius = PLANET_RADIUS * 1.01;
+  const fillRadius = PLANET_RADIUS * 1.01;
+  const outlineRadius = PLANET_RADIUS * 1.018;
   const center = new THREE.Vector3(
     tile.center.x,
     tile.center.y,
     tile.center.z,
-  ).multiplyScalar(radius);
+  ).multiplyScalar(fillRadius);
   const ring = tile.ring.map((p) => {
     const mixed = new THREE.Vector3(
       p.x * TILE_INSET + tile.center.x * (1 - TILE_INSET),
@@ -118,7 +129,7 @@ function buildTileHighlight(
       p.z * TILE_INSET + tile.center.z * (1 - TILE_INSET),
     )
       .normalize()
-      .multiplyScalar(radius);
+      .multiplyScalar(fillRadius);
     return mixed;
   });
 
@@ -143,18 +154,51 @@ function buildTileHighlight(
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
   geo.computeVertexNormals();
-  const mesh = new THREE.Mesh(
+  const fill = new THREE.Mesh(
     geo,
     new THREE.MeshBasicMaterial({
       color: new THREE.Color(colorHex),
       transparent: true,
-      opacity: 0.45,
+      opacity: 0.4,
       depthWrite: false,
       side: THREE.DoubleSide,
     }),
   );
-  mesh.userData = { kind: "tile-highlight", tileIndex };
-  return mesh;
+  fill.userData = { kind: "tile-highlight-fill" };
+  group.add(fill);
+
+  // Bright outline that replaces the black seam for the hovered hex
+  const outlinePositions: number[] = [];
+  for (let i = 0; i < tile.ring.length; i++) {
+    const p0 = tile.ring[i]!;
+    const p1 = tile.ring[(i + 1) % tile.ring.length]!;
+    const a = new THREE.Vector3(p0.x, p0.y, p0.z)
+      .normalize()
+      .multiplyScalar(outlineRadius);
+    const b = new THREE.Vector3(p1.x, p1.y, p1.z)
+      .normalize()
+      .multiplyScalar(outlineRadius);
+    outlinePositions.push(a.x, a.y, a.z, b.x, b.y, b.z);
+  }
+  const outlineGeo = new THREE.BufferGeometry();
+  outlineGeo.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(outlinePositions, 3),
+  );
+  const outline = new THREE.LineSegments(
+    outlineGeo,
+    new THREE.LineBasicMaterial({
+      color: new THREE.Color(colorHex),
+      transparent: true,
+      opacity: 1,
+      depthTest: true,
+      linewidth: 2,
+    }),
+  );
+  outline.userData = { kind: "tile-highlight-outline" };
+  group.add(outline);
+
+  return group;
 }
 
 function dirFromTileIndex(tileIndex: number): SphereDir {
@@ -162,15 +206,49 @@ function dirFromTileIndex(tileIndex: number): SphereDir {
   return { x: c.x, y: c.y, z: c.z };
 }
 
+/** Resolve city / district / structure occupying a hex tile. */
+function featureAtTile(
+  tileIndex: number,
+  cities: City[],
+  structures: PlanetStructure[],
+):
+  | { kind: "city"; cityId: string }
+  | { kind: "district"; cityId: string; districtId: string }
+  | { kind: "structure"; structureId: string }
+  | null {
+  for (const city of cities) {
+    if (city.tileIndex === tileIndex) {
+      return { kind: "city", cityId: city.id };
+    }
+    for (const d of city.districts) {
+      if (d.tileIndex === tileIndex) {
+        return {
+          kind: "district",
+          cityId: city.id,
+          districtId: d.id,
+        };
+      }
+    }
+  }
+  for (const s of structures) {
+    if (s.tileIndex === tileIndex) {
+      return { kind: "structure", structureId: s.id };
+    }
+  }
+  return null;
+}
+
 function buildPlanetMeshes(
   planetId: string,
   planetType: PlanetType,
+  classification: PlanetClassification,
   cities: City[],
   factions: Faction[],
   tileClaims?: Record<string, string>,
+  structures: PlanetStructure[] = [],
 ): { surface: THREE.Mesh; seams: THREE.LineSegments } {
   const { tiles } = planetSphere();
-  const owners = tileOwnerMap(cities, tileClaims);
+  const owners = tileOwnerMap(cities, tileClaims, structures);
   const positions: number[] = [];
   const normals: number[] = [];
   const colors: number[] = [];
@@ -188,6 +266,7 @@ function buildPlanetMeshes(
       tile.center.y,
       tile.center.z,
       planetId,
+      classification,
       planetType,
     );
     const [cr0, cg0, cb0] = hexToRgb(fill);
@@ -289,6 +368,7 @@ function buildBorderLines(
   cities: City[],
   factions: Faction[],
   tileClaims?: Record<string, string>,
+  structures: PlanetStructure[] = [],
 ): THREE.LineSegments {
   const sphere = planetSphere();
   const { positions, colors } = buildFactionBorders(
@@ -297,6 +377,7 @@ function buildBorderLines(
     factions,
     PLANET_RADIUS,
     tileClaims,
+    structures,
   );
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
@@ -398,7 +479,88 @@ function buildSettlementMarkers(
   return group;
 }
 
-/** Canvas sprite: symbol on top, army name text box underneath. */
+function structureGeometry(kind: StructureKind): THREE.BufferGeometry {
+  switch (kind) {
+    case "void_dock":
+    case "relay":
+      return new THREE.BoxGeometry(0.05, 0.05, 0.05);
+    case "ore_mine":
+    case "mining_claim":
+    case "slag_works":
+      return new THREE.ConeGeometry(0.038, 0.08, 5);
+    case "fortress_bastion":
+    case "trench_line":
+    case "kill_zone":
+      return new THREE.BoxGeometry(0.055, 0.035, 0.055);
+    case "agri_dome":
+    case "silo_complex":
+    case "reservoir_works":
+      return new THREE.SphereGeometry(0.032, 10, 8);
+    case "cathedral_complex":
+    case "reliquary_vault":
+    case "pilgrim_station":
+      return new THREE.OctahedronGeometry(0.038);
+    case "reactor":
+    case "manufactorum_complex":
+      return new THREE.CylinderGeometry(0.028, 0.04, 0.09, 6);
+    case "spire_cluster":
+    case "underhive_gate":
+      return new THREE.CylinderGeometry(0.022, 0.035, 0.1, 5);
+    default:
+      return new THREE.TetrahedronGeometry(0.04);
+  }
+}
+
+function buildStructureMarkers(
+  structures: PlanetStructure[],
+  factions: Faction[],
+  selectedStructureId: string | null,
+  accentColor: string,
+): THREE.Group {
+  const group = new THREE.Group();
+  for (const structure of structures) {
+    const col = factionColor(
+      factions,
+      structure.controllingFactionId,
+      accentColor,
+    );
+    const selected = selectedStructureId === structure.id;
+    const mesh = new THREE.Mesh(
+      structureGeometry(structure.kind),
+      new THREE.MeshStandardMaterial({
+        color: new THREE.Color(col),
+        emissive: new THREE.Color(col),
+        emissiveIntensity: selected ? 0.7 : 0.22,
+        roughness: 0.4,
+        metalness: 0.35,
+      }),
+    );
+    mesh.position.copy(placeOnSphere(structure.dir, PLANET_RADIUS * 1.05));
+    mesh.lookAt(0, 0, 0);
+    mesh.rotateX(Math.PI / 2);
+    mesh.userData = { kind: "structure", structureId: structure.id };
+    group.add(mesh);
+
+    if (selected) {
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(0.055, 0.07, 20),
+        new THREE.MeshBasicMaterial({
+          color: col,
+          side: THREE.DoubleSide,
+          transparent: true,
+          opacity: 0.85,
+        }),
+      );
+      ring.position.copy(placeOnSphere(structure.dir, PLANET_RADIUS * 1.025));
+      ring.lookAt(0, 0, 0);
+      ring.userData = { kind: "decor" };
+      group.add(ring);
+    }
+  }
+  return group;
+}
+
+/** Compact canvas sprite: small symbol plate + optional name when selected. */
 function createArmyMarkerSprite(
   army: Army,
   symbol: ArmySymbol | undefined,
@@ -406,23 +568,21 @@ function createArmyMarkerSprite(
   selected: boolean,
 ): THREE.Sprite {
   const canvas = document.createElement("canvas");
-  canvas.width = 256;
-  canvas.height = 256;
+  canvas.width = 128;
+  canvas.height = selected ? 160 : 128;
   const ctx = canvas.getContext("2d")!;
-  const plateY = 24;
-  const plateSize = 120;
-  const plateX = (256 - plateSize) / 2;
-  const boxY = plateY + plateSize + 12;
-  const boxH = 44;
+  const plateSize = selected ? 72 : 64;
+  const plateX = (128 - plateSize) / 2;
+  const plateY = selected ? 8 : 32;
   const label =
-    army.name.length > 18 ? `${army.name.slice(0, 17)}…` : army.name;
+    army.name.length > 14 ? `${army.name.slice(0, 13)}…` : army.name;
 
   const paintFrame = (img?: HTMLImageElement) => {
-    ctx.clearRect(0, 0, 256, 256);
-    ctx.fillStyle = "rgba(8, 16, 24, 0.92)";
-    ctx.strokeStyle = selected ? color : "rgba(79, 210, 255, 0.45)";
-    ctx.lineWidth = selected ? 4 : 2;
-    roundRect(ctx, plateX, plateY, plateSize, plateSize, 10);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "rgba(8, 16, 24, 0.9)";
+    ctx.strokeStyle = selected ? color : "rgba(79, 210, 255, 0.5)";
+    ctx.lineWidth = selected ? 3 : 2;
+    roundRect(ctx, plateX, plateY, plateSize, plateSize, 6);
     ctx.fill();
     ctx.stroke();
 
@@ -430,38 +590,42 @@ function createArmyMarkerSprite(
       drawContainedImage(
         ctx,
         img,
-        plateX + 10,
-        plateY + 10,
-        plateSize - 20,
-        plateSize - 20,
+        plateX + 6,
+        plateY + 6,
+        plateSize - 12,
+        plateSize - 12,
       );
     } else {
       ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.arc(128, plateY + plateSize / 2, 28, 0, Math.PI * 2);
+      ctx.arc(64, plateY + plateSize / 2, plateSize * 0.28, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = "#0a1018";
-      ctx.font = "bold 28px sans-serif";
+      ctx.font = "bold 22px sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText(
         (army.name[0] ?? "?").toUpperCase(),
-        128,
+        64,
         plateY + plateSize / 2,
       );
     }
 
-    ctx.fillStyle = "rgba(6, 12, 20, 0.92)";
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
-    roundRect(ctx, 28, boxY, 200, boxH, 6);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = "#e8f0f8";
-    ctx.font = "600 20px 'Exo 2', sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(label, 128, boxY + boxH / 2);
+    if (selected) {
+      const boxY = plateY + plateSize + 6;
+      const boxH = 28;
+      ctx.fillStyle = "rgba(6, 12, 20, 0.92)";
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      roundRect(ctx, 8, boxY, 112, boxH, 4);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#e8f0f8";
+      ctx.font = "600 13px 'Exo 2', sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(label, 64, boxY + boxH / 2);
+    }
   };
 
   paintFrame();
@@ -484,7 +648,9 @@ function createArmyMarkerSprite(
     depthTest: true,
   });
   const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(0.55, 0.55, 1);
+  // Keep markers small so hexes/structures stay readable
+  const scale = selected ? 0.28 : 0.2;
+  sprite.scale.set(scale, scale * (canvas.height / canvas.width), 1);
   sprite.userData = { kind: "army", armyId: army.id };
   return sprite;
 }
@@ -544,30 +710,36 @@ function buildArmyMarkers(
 
 type OverlayState = {
   cities: City[];
+  structures: PlanetStructure[];
   tileClaims: Record<string, string>;
   armies: Army[];
   symbols: ArmySymbol[];
   factions: Faction[];
   selectedCityId: string | null;
   selectedDistrictId: string | null;
+  selectedStructureId: string | null;
   selectedArmyId: string | null;
 };
 
 export function HexPlanet({
   planetId,
   planetType,
+  classification,
   accentColor,
   cities,
+  structures,
   tileClaims,
   armies,
   symbols,
   factions,
   selectedCityId,
   selectedDistrictId,
+  selectedStructureId,
   selectedArmyId,
   placingArmyId,
   terrainPaintFactionId,
   onSelectSettlement,
+  onSelectStructure,
   onSelectArmy,
   onPlaceArmy,
   onMoveArmy,
@@ -575,6 +747,7 @@ export function HexPlanet({
 }: HexPlanetProps) {
   const mountRef = useRef<HTMLDivElement>(null);
   const onSelectSettlementRef = useRef(onSelectSettlement);
+  const onSelectStructureRef = useRef(onSelectStructure);
   const onSelectArmyRef = useRef(onSelectArmy);
   const onPlaceArmyRef = useRef(onPlaceArmy);
   const onMoveArmyRef = useRef(onMoveArmy);
@@ -582,7 +755,9 @@ export function HexPlanet({
   const placingRef = useRef(placingArmyId);
   const paintRef = useRef(terrainPaintFactionId);
   const citiesRef = useRef(cities);
+  const structuresRef = useRef(structures);
   onSelectSettlementRef.current = onSelectSettlement;
+  onSelectStructureRef.current = onSelectStructure;
   onSelectArmyRef.current = onSelectArmy;
   onPlaceArmyRef.current = onPlaceArmy;
   onMoveArmyRef.current = onMoveArmy;
@@ -590,6 +765,7 @@ export function HexPlanet({
   placingRef.current = placingArmyId;
   paintRef.current = terrainPaintFactionId;
   citiesRef.current = cities;
+  structuresRef.current = structures;
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -624,7 +800,9 @@ export function HexPlanet({
     const core = new THREE.Mesh(
       new THREE.SphereGeometry(PLANET_RADIUS * 0.97, 48, 48),
       new THREE.MeshLambertMaterial({
-        color: new THREE.Color(coreColorForType(planetType)),
+        color: new THREE.Color(
+          coreColorForPlanet(classification, planetType),
+        ),
       }),
     );
     planet.add(core);
@@ -634,13 +812,15 @@ export function HexPlanet({
     ({ surface, seams } = buildPlanetMeshes(
       planetId,
       planetType,
+      classification,
       cities,
       factions,
       tileClaims,
+      structures,
     ));
     planet.add(surface, seams);
 
-    let borders = buildBorderLines(cities, factions, tileClaims);
+    let borders = buildBorderLines(cities, factions, tileClaims, structures);
     planet.add(borders);
 
     let settlements = buildSettlementMarkers(
@@ -651,6 +831,14 @@ export function HexPlanet({
       accentColor,
     );
     planet.add(settlements);
+
+    let structureMarkers = buildStructureMarkers(
+      structures,
+      factions,
+      selectedStructureId,
+      accentColor,
+    );
+    planet.add(structureMarkers);
 
     let armyMarkers = buildArmyMarkers(
       armies,
@@ -678,7 +866,7 @@ export function HexPlanet({
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
     let pointerDown: { x: number; y: number } | null = null;
-    let tileHighlight: THREE.Mesh | null = null;
+    let tileHighlight: THREE.Group | null = null;
     let armyDrag: {
       armyId: string;
       sprite: THREE.Sprite;
@@ -689,6 +877,46 @@ export function HexPlanet({
       lastTile: number | null;
       pending: Map<number, string | null>;
     } | null = null;
+    let faceAnim: {
+      from: THREE.Quaternion;
+      to: THREE.Quaternion;
+      t: number;
+      duration: number;
+    } | null = null;
+    const faceLocal = new THREE.Vector3();
+    const faceWorld = new THREE.Vector3();
+    const faceToCamera = new THREE.Vector3();
+    const faceDelta = new THREE.Quaternion();
+    const faceScratchQ = new THREE.Quaternion();
+
+    /**
+     * Spin the planet group so the feature faces the camera.
+     * Camera / orbit distance stay fixed — same feel as dragging the globe.
+     */
+    const faceFeature = (dir: SphereDir) => {
+      faceLocal.set(dir.x, dir.y, dir.z);
+      if (faceLocal.lengthSq() < 1e-8) return;
+      faceLocal.normalize();
+
+      // Where this feature currently points in world space
+      faceWorld.copy(faceLocal).applyQuaternion(planet.quaternion);
+      // Direction from planet center toward the camera
+      faceToCamera.copy(camera.position).sub(controls.target).normalize();
+      if (faceToCamera.lengthSq() < 1e-8) return;
+
+      const align = faceWorld.dot(faceToCamera);
+      if (align > 0.995) return; // already facing
+
+      faceDelta.setFromUnitVectors(faceWorld, faceToCamera);
+      const from = planet.quaternion.clone();
+      const to = faceScratchQ.copy(faceDelta).multiply(from).normalize();
+
+      const angle = from.angleTo(to);
+      if (angle < 0.02) return;
+
+      const duration = THREE.MathUtils.clamp(0.3 + angle * 0.25, 0.35, 0.7);
+      faceAnim = { from, to: to.clone(), t: 0, duration };
+    };
 
     const disposeGroup = (g: THREE.Object3D) => {
       g.traverse((obj) => {
@@ -736,16 +964,17 @@ export function HexPlanet({
       raycaster.setFromCamera(pointer, camera);
     };
 
+    const localDirFromWorldPoint = (worldPoint: THREE.Vector3): SphereDir => {
+      const local = planet.worldToLocal(worldPoint.clone());
+      local.normalize();
+      return { x: local.x, y: local.y, z: local.z };
+    };
+
     const tileIndexFromSurfaceHit = (): number | null => {
       const hits = raycaster.intersectObject(surface, false);
       const hit = hits[0];
       if (!hit) return null;
-      const n = hit.point.clone().normalize();
-      return nearestTileIndex(planetSphere(), {
-        x: n.x,
-        y: n.y,
-        z: n.z,
-      });
+      return nearestTileIndex(planetSphere(), localDirFromWorldPoint(hit.point));
     };
 
     const applyTerrainPaintAtPointer = () => {
@@ -758,7 +987,10 @@ export function HexPlanet({
       }
       setHighlightedTile(tileIndex);
       if (terrainPaint.lastTile === tileIndex) return;
-      const occupied = settlementTileSet(citiesRef.current);
+      const occupied = settlementTileSet(
+        citiesRef.current,
+        structuresRef.current,
+      );
       if (occupied.has(tileIndex)) return;
       terrainPaint.lastTile = tileIndex;
       const factionId = brush === TERRAIN_PAINT_ERASE ? null : brush;
@@ -797,6 +1029,8 @@ export function HexPlanet({
     };
 
     const onPointerDown = (e: PointerEvent) => {
+      faceAnim = null;
+
       if (e.button === 2) {
         e.preventDefault();
         setPointerFromEvent(e);
@@ -851,12 +1085,8 @@ export function HexPlanet({
         setHighlightedTile(null);
         return;
       }
-      const n = surfaceHit.point.clone().normalize();
-      const tileIndex = nearestTileIndex(planetSphere(), {
-        x: n.x,
-        y: n.y,
-        z: n.z,
-      });
+      const n = localDirFromWorldPoint(surfaceHit.point);
+      const tileIndex = nearestTileIndex(planetSphere(), n);
       armyDrag.tileIndex = tileIndex;
       setHighlightedTile(tileIndex);
       const center = dirFromTileIndex(tileIndex);
@@ -893,6 +1123,7 @@ export function HexPlanet({
       const pickables = [
         ...armyMarkers.children,
         ...settlements.children,
+        ...structureMarkers.children,
         surface,
       ];
       const hits = raycaster.intersectObjects(pickables, false);
@@ -900,12 +1131,10 @@ export function HexPlanet({
       if (placingRef.current) {
         const surfaceHit = hits.find((h) => h.object === surface);
         if (surfaceHit) {
-          const n = surfaceHit.point.clone().normalize();
-          const tileIndex = nearestTileIndex(planetSphere(), {
-            x: n.x,
-            y: n.y,
-            z: n.z,
-          });
+          const tileIndex = nearestTileIndex(
+            planetSphere(),
+            localDirFromWorldPoint(surfaceHit.point),
+          );
           onPlaceArmyRef.current(dirFromTileIndex(tileIndex));
           return;
         }
@@ -914,6 +1143,15 @@ export function HexPlanet({
       const armyHit = hits.find((h) => h.object.userData?.kind === "army");
       if (armyHit) {
         onSelectArmyRef.current(armyHit.object.userData.armyId as string);
+        return;
+      }
+      const structureHit = hits.find(
+        (h) => h.object.userData?.kind === "structure",
+      );
+      if (structureHit) {
+        onSelectStructureRef.current(
+          structureHit.object.userData.structureId as string,
+        );
         return;
       }
       const settleHit = hits.find(
@@ -927,6 +1165,29 @@ export function HexPlanet({
           districtId: string | null;
         };
         onSelectSettlementRef.current(cityId, districtId);
+        return;
+      }
+
+      // Click on hex fill (not just the 3D marker) still selects the feature
+      const surfaceHit = hits.find((h) => h.object === surface);
+      if (surfaceHit) {
+        const tileIndex = nearestTileIndex(
+          planetSphere(),
+          localDirFromWorldPoint(surfaceHit.point),
+        );
+        const feature = featureAtTile(
+          tileIndex,
+          citiesRef.current,
+          structuresRef.current,
+        );
+        if (!feature) return;
+        if (feature.kind === "structure") {
+          onSelectStructureRef.current(feature.structureId);
+        } else if (feature.kind === "district") {
+          onSelectSettlementRef.current(feature.cityId, feature.districtId);
+        } else {
+          onSelectSettlementRef.current(feature.cityId, null);
+        }
       }
     };
 
@@ -952,8 +1213,25 @@ export function HexPlanet({
     renderer.domElement.addEventListener("pointercancel", onPointerCancel);
 
     let frame = 0;
+    let lastTs = performance.now();
     const tick = () => {
       frame = requestAnimationFrame(tick);
+      const now = performance.now();
+      const dt = Math.min(0.05, (now - lastTs) / 1000);
+      lastTs = now;
+
+      if (faceAnim) {
+        faceAnim.t = Math.min(1, faceAnim.t + dt / faceAnim.duration);
+        const u = faceAnim.t;
+        // Smoothstep — steady spin, no ease punch
+        const ease = u * u * (3 - 2 * u);
+        planet.quaternion.slerpQuaternions(faceAnim.from, faceAnim.to, ease);
+        if (faceAnim.t >= 1) {
+          planet.quaternion.copy(faceAnim.to);
+          faceAnim = null;
+        }
+      }
+
       controls.update();
       renderer.render(scene, camera);
     };
@@ -976,24 +1254,35 @@ export function HexPlanet({
       }
       // Keep paint stroke state; only clear highlight when idle.
       if (!terrainPaint) clearTileHighlight();
-      planet.remove(surface, seams, borders, settlements, armyMarkers);
+      planet.remove(
+        surface,
+        seams,
+        borders,
+        settlements,
+        structureMarkers,
+        armyMarkers,
+      );
       disposeGroup(surface);
       disposeGroup(seams);
       disposeGroup(borders);
       disposeGroup(settlements);
+      disposeGroup(structureMarkers);
       disposeGroup(armyMarkers);
 
       ({ surface, seams } = buildPlanetMeshes(
         planetId,
         planetType,
+        classification,
         state.cities,
         state.factions,
         state.tileClaims,
+        state.structures,
       ));
       borders = buildBorderLines(
         state.cities,
         state.factions,
         state.tileClaims,
+        state.structures,
       );
       settlements = buildSettlementMarkers(
         state.cities,
@@ -1002,18 +1291,39 @@ export function HexPlanet({
         state.selectedDistrictId,
         accentColor,
       );
+      structureMarkers = buildStructureMarkers(
+        state.structures,
+        state.factions,
+        state.selectedStructureId,
+        accentColor,
+      );
       armyMarkers = buildArmyMarkers(
         state.armies,
         state.symbols,
         state.factions,
         state.selectedArmyId,
       );
-      planet.add(surface, seams, borders, settlements, armyMarkers);
+      planet.add(
+        surface,
+        seams,
+        borders,
+        settlements,
+        structureMarkers,
+        armyMarkers,
+      );
     };
 
     (
-      mount as HTMLDivElement & { __refreshOverlays?: typeof refreshOverlays }
+      mount as HTMLDivElement & {
+        __refreshOverlays?: typeof refreshOverlays;
+        __faceFeature?: typeof faceFeature;
+      }
     ).__refreshOverlays = refreshOverlays;
+    (
+      mount as HTMLDivElement & {
+        __faceFeature?: typeof faceFeature;
+      }
+    ).__faceFeature = faceFeature;
 
     return () => {
       cancelAnimationFrame(frame);
@@ -1026,6 +1336,8 @@ export function HexPlanet({
       renderer.domElement.removeEventListener("pointercancel", onPointerCancel);
       delete (mount as HTMLDivElement & { __refreshOverlays?: unknown })
         .__refreshOverlays;
+      delete (mount as HTMLDivElement & { __faceFeature?: unknown })
+        .__faceFeature;
       clearTileHighlight();
       core.geometry.dispose();
       (core.material as THREE.Material).dispose();
@@ -1033,6 +1345,7 @@ export function HexPlanet({
       disposeGroup(seams);
       disposeGroup(borders);
       disposeGroup(settlements);
+      disposeGroup(structureMarkers);
       disposeGroup(armyMarkers);
       renderer.dispose();
       if (renderer.domElement.parentElement === mount) {
@@ -1040,7 +1353,7 @@ export function HexPlanet({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [planetId, planetType, accentColor]);
+  }, [planetId, planetType, classification, accentColor]);
 
   useEffect(() => {
     const mount = mountRef.current as
@@ -1050,24 +1363,79 @@ export function HexPlanet({
       | null;
     mount?.__refreshOverlays?.({
       cities,
+      structures,
       tileClaims,
       armies,
       symbols,
       factions,
       selectedCityId,
       selectedDistrictId,
+      selectedStructureId,
       selectedArmyId,
     });
   }, [
     cities,
+    structures,
     tileClaims,
     armies,
     symbols,
     factions,
     selectedCityId,
     selectedDistrictId,
+    selectedStructureId,
     selectedArmyId,
   ]);
+
+  // Rotate the camera so the selected city / district / structure faces the user
+  const lastFacedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    lastFacedKeyRef.current = null;
+  }, [planetId]);
+  useEffect(() => {
+    const mount = mountRef.current as
+      | (HTMLDivElement & {
+          __faceFeature?: (dir: SphereDir) => void;
+        })
+      | null;
+    if (!mount?.__faceFeature) return;
+
+    const focusKey = selectedStructureId
+      ? `structure:${selectedStructureId}`
+      : selectedDistrictId
+        ? `district:${selectedDistrictId}`
+        : selectedCityId
+          ? `city:${selectedCityId}`
+          : null;
+
+    if (!focusKey) {
+      lastFacedKeyRef.current = null;
+      return;
+    }
+    if (lastFacedKeyRef.current === focusKey) return;
+    lastFacedKeyRef.current = focusKey;
+
+    let dir: SphereDir | null = null;
+    if (selectedStructureId) {
+      dir =
+        structuresRef.current.find((s) => s.id === selectedStructureId)?.dir ??
+        null;
+    } else if (selectedDistrictId) {
+      for (const city of citiesRef.current) {
+        const district = city.districts.find(
+          (d) => d.id === selectedDistrictId,
+        );
+        if (district) {
+          dir = district.dir;
+          break;
+        }
+      }
+    } else if (selectedCityId) {
+      dir =
+        citiesRef.current.find((c) => c.id === selectedCityId)?.dir ?? null;
+    }
+
+    if (dir) mount.__faceFeature(dir);
+  }, [selectedCityId, selectedDistrictId, selectedStructureId]);
 
   return (
     <div

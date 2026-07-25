@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type { Campaign } from "../types/campaign";
 import { ensurePlanetCities } from "./settlements";
+import { normalizeStarClass } from "./stars";
+import { normalizePlanetClassification } from "./planetClass";
 
 const battleEntrySchema = z.object({
   id: z.string(),
@@ -28,6 +30,20 @@ const starSystemSchema = z.object({
   x: z.number(),
   y: z.number(),
   notes: z.string(),
+  starClass: z
+    .enum([
+      "O",
+      "B",
+      "A",
+      "F",
+      "G",
+      "K",
+      "M",
+      "neutron",
+      "pulsar",
+      "black_hole",
+    ])
+    .default("G"),
   controllingFactionId: z.string().optional(),
 });
 
@@ -75,6 +91,37 @@ const citySchema = z.object({
   dir: sphereDirSchema,
   districts: z.array(districtSchema),
   notes: z.string(),
+});
+
+const structureSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  kind: z.enum([
+    "void_dock",
+    "spire_cluster",
+    "underhive_gate",
+    "manufactorum_complex",
+    "ore_mine",
+    "slag_works",
+    "reactor",
+    "agri_dome",
+    "silo_complex",
+    "reservoir_works",
+    "fortress_bastion",
+    "trench_line",
+    "kill_zone",
+    "cathedral_complex",
+    "reliquary_vault",
+    "pilgrim_station",
+    "mining_claim",
+    "relay",
+    "outpost",
+    "ruins_site",
+  ]),
+  tileIndex: z.number().int().nonnegative(),
+  dir: sphereDirSchema,
+  controllingFactionId: z.string().optional(),
+  notes: z.string().default(""),
 });
 
 const armySchema = z.object({
@@ -166,11 +213,41 @@ const planetSchema = z.object({
   systemId: z.string(),
   name: z.string(),
   orbitIndex: z.number(),
-  type: z.enum(["hive", "forge", "agri", "death", "shrine", "custom"]),
+  type: z.enum([
+    "hive",
+    "forge",
+    "agri",
+    "death",
+    "shrine",
+    "asteroid_belt",
+    "custom",
+  ]),
+  classification: z
+    .enum([
+      "ice",
+      "tundra",
+      "water",
+      "islands",
+      "jungle",
+      "earthlike",
+      "super_earth",
+      "desert",
+      "arid",
+      "savannah",
+      "swamp",
+      "volcanic",
+      "magma",
+      "toxic",
+      "barren",
+      "gas_giant",
+      "tidally_locked",
+    ])
+    .default("earthlike"),
   controllingFactionId: z.string().optional(),
   notes: z.string(),
   battles: z.array(battleEntrySchema),
   cities: z.array(citySchema).default([]),
+  structures: z.array(structureSchema).default([]),
   tileClaims: z.record(z.string(), z.string()).optional().default({}),
   armies: z.array(armySchema).default([]),
 });
@@ -199,11 +276,25 @@ export function parseCampaignJson(json: string): Campaign {
       events: campaign.timeline?.events ?? [],
     },
     mapSize: campaign.mapSize,
-    planets: campaign.planets.map((p) => ({
-      ...ensurePlanetCities(p),
-      tileClaims: p.tileClaims ?? {},
-      armies: p.armies ?? [],
+    systems: campaign.systems.map((s) => ({
+      ...s,
+      starClass: normalizeStarClass(s.starClass),
     })),
+    planets: campaign.planets.map((p) => {
+      const ensured = ensurePlanetCities({
+        ...p,
+        classification: normalizePlanetClassification(p.classification),
+        structures: p.structures ?? [],
+        cities: p.cities ?? [],
+        armies: p.armies ?? [],
+      });
+      return {
+        ...ensured,
+        tileClaims: ensured.tileClaims ?? {},
+        armies: ensured.armies ?? [],
+        structures: ensured.structures ?? [],
+      };
+    }),
   };
 }
 

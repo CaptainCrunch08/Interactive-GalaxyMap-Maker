@@ -115,12 +115,13 @@ export function GalaxyChronicleMap({
                     key={fleet.id}
                     fleet={fleet}
                     color={fac?.color ?? "#4fd2ff"}
-                    x={system.x + 18}
-                    y={system.y - 14}
+                    x={system.x + 22}
+                    y={system.y - 28}
                     selected={false}
                     moving={false}
                     mapScale={mapScale}
                     offsetIndex={i}
+                    stackCount={systemFleets.length}
                     onSelect={() => undefined}
                   />
                 );

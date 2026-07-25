@@ -185,3 +185,20 @@ body {
   border-color: rgba(79, 210, 255, 0.3);
   box-shadow: inset 2px 0 0 var(--color-cyan);
 }
+
+/* Pulsar relativistic jets ? soft beam shimmer */
+.pulsar-jets {
+  animation: pulsar-jet-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes pulsar-jet-pulse {
+  0%,
+  100% {
+    opacity: 0.75;
+    filter: brightness(1);
+  }
+  50% {
+    opacity: 1;
+    filter: brightness(1.25);
+  }
+}

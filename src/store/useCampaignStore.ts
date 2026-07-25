@@ -7,13 +7,19 @@ import {
 } from "../lib/generateGalaxy";
 import {
   assignAllDistricts,
+  assignAllStructures,
   ensurePlanetCities,
-  generatePlanetCities,
+  generatePlanetSurface,
   planetOwnerFromCities,
   scrubTileClaims,
   settlementTileSet,
 } from "../lib/settlements";
 import { getSystemOwnership } from "../lib/territory";
+import { normalizeStarClass, pickRandomStarClass } from "../lib/stars";
+import {
+  normalizePlanetClassification,
+  pickRandomClassification,
+} from "../lib/planetClass";
 import type {
   Army,
   ArmySymbol,
@@ -23,6 +29,7 @@ import type {
   Fleet,
   FleetLocation,
   Planet,
+  PlanetClassification,
   PlanetType,
   Ship,
   ShipChassis,
@@ -60,6 +67,7 @@ function clearNavigationState() {
     selectedPlanetId: null,
     selectedCityId: null,
     selectedDistrictId: null,
+    selectedStructureId: null,
     selectedArmyId: null,
     placingArmyId: null,
     selectedFleetId: null,
@@ -87,9 +95,19 @@ function ensureCampaignSettlements(campaign: Campaign): Campaign {
       frames: campaign.timeline?.frames ?? [],
       events: campaign.timeline?.events ?? [],
     },
+    systems: campaign.systems.map((s) => ({
+      ...s,
+      starClass: normalizeStarClass(s.starClass),
+    })),
     planets: campaign.planets.map((p) =>
       ensurePlanetCities(
-        { ...p, cities: p.cities ?? [], armies: p.armies ?? [] },
+        {
+          ...p,
+          classification: normalizePlanetClassification(p.classification),
+          cities: p.cities ?? [],
+          structures: p.structures ?? [],
+          armies: p.armies ?? [],
+        },
         {
           defaultFactionId: p.controllingFactionId,
           rivalFactionId: rivalFor(p),
@@ -114,6 +132,7 @@ interface CampaignState {
   selectedPlanetId: string | null;
   selectedCityId: string | null;
   selectedDistrictId: string | null;
+  selectedStructureId: string | null;
   selectedArmyId: string | null;
   /** When set, next surface click moves this army. */
   placingArmyId: string | null;
@@ -154,6 +173,7 @@ interface CampaignState {
     cityId: string | null,
     districtId?: string | null,
   ) => void;
+  selectStructure: (structureId: string | null) => void;
 
   addSystem: (x: number, y: number) => string;
   updateSystem: (id: string, patch: Partial<StarSystem>) => void;
@@ -175,6 +195,11 @@ interface CampaignState {
     planetId: string,
     cityId: string,
     districtId: string,
+    factionId: string | null,
+  ) => void;
+  setStructureOwner: (
+    planetId: string,
+    structureId: string,
     factionId: string | null,
   ) => void;
   setTileClaims: (
@@ -295,6 +320,7 @@ export const useCampaignStore = create<CampaignState>()(
       selectedPlanetId: null,
       selectedCityId: null,
       selectedDistrictId: null,
+      selectedStructureId: null,
       selectedArmyId: null,
       placingArmyId: null,
       selectedFleetId: null,
@@ -402,6 +428,23 @@ export const useCampaignStore = create<CampaignState>()(
       enterPlanet: (planetId) => {
         const planet = get().campaign.planets.find((p) => p.id === planetId);
         if (!planet) return;
+        if (planet.type === "asteroid_belt") {
+          set({
+            viewLevel: "planet",
+            focusedSystemId: planet.systemId,
+            focusedPlanetId: planetId,
+            selectedPlanetId: planetId,
+            selectedCityId: null,
+            selectedDistrictId: null,
+          selectedStructureId: null,
+            selectedArmyId: null,
+            placingArmyId: null,
+            terrainPaintFactionId: null,
+            fleetMoveModeId: null,
+            inspectorOpen: true,
+          });
+          return;
+        }
         set((s) => {
           const ensured = ensurePlanetCities(planet, {
             defaultFactionId: planet.controllingFactionId,
@@ -421,6 +464,7 @@ export const useCampaignStore = create<CampaignState>()(
             selectedPlanetId: planetId,
             selectedCityId: null,
             selectedDistrictId: null,
+          selectedStructureId: null,
             selectedArmyId: null,
             placingArmyId: null,
             terrainPaintFactionId: null,
@@ -431,7 +475,7 @@ export const useCampaignStore = create<CampaignState>()(
 
       enterStrategic: (planetId) => {
         const planet = get().campaign.planets.find((p) => p.id === planetId);
-        if (!planet) return;
+        if (!planet || planet.type === "asteroid_belt") return;
         set((s) => {
           const ensured = ensurePlanetCities(planet, {
             defaultFactionId: planet.controllingFactionId,
@@ -475,6 +519,7 @@ export const useCampaignStore = create<CampaignState>()(
             viewLevel: "planet",
             selectedCityId: null,
             selectedDistrictId: null,
+          selectedStructureId: null,
             placingArmyId: null,
             terrainPaintFactionId: null,
           });
@@ -485,6 +530,7 @@ export const useCampaignStore = create<CampaignState>()(
             selectedPlanetId: null,
             selectedCityId: null,
             selectedDistrictId: null,
+          selectedStructureId: null,
             selectedArmyId: null,
             placingArmyId: null,
             terrainPaintFactionId: null,
@@ -498,6 +544,7 @@ export const useCampaignStore = create<CampaignState>()(
             selectedPlanetId: null,
             selectedCityId: null,
             selectedDistrictId: null,
+          selectedStructureId: null,
             selectedArmyId: null,
             placingArmyId: null,
             terrainPaintFactionId: null,
@@ -514,6 +561,7 @@ export const useCampaignStore = create<CampaignState>()(
           selectedPlanetId: null,
           selectedCityId: null,
           selectedDistrictId: null,
+          selectedStructureId: null,
         }),
 
       selectPlanet: (planetId) => set({ selectedPlanetId: planetId }),
@@ -522,6 +570,16 @@ export const useCampaignStore = create<CampaignState>()(
         set({
           selectedCityId: cityId,
           selectedDistrictId: districtId ?? null,
+          selectedStructureId: null,
+          selectedArmyId: null,
+          inspectorOpen: true,
+        }),
+
+      selectStructure: (structureId) =>
+        set({
+          selectedStructureId: structureId,
+          selectedCityId: null,
+          selectedDistrictId: null,
           selectedArmyId: null,
           inspectorOpen: true,
         }),
@@ -536,6 +594,7 @@ export const useCampaignStore = create<CampaignState>()(
           x: clampGalaxyCoord(x, size),
           y: clampGalaxyCoord(y, size),
           notes: "",
+          starClass: pickRandomStarClass(),
         };
         set((s) => ({
           ...withCampaign(s, {
@@ -619,6 +678,10 @@ export const useCampaignStore = create<CampaignState>()(
                       ...p,
                       controllingFactionId: owner,
                       cities: assignAllDistricts(p.cities ?? [], owner ?? null),
+                      structures: assignAllStructures(
+                        p.structures ?? [],
+                        owner ?? null,
+                      ),
                     }
                   : p,
               ),
@@ -632,7 +695,7 @@ export const useCampaignStore = create<CampaignState>()(
           (p) => p.systemId === systemId,
         );
         const system = get().campaign.systems.find((s) => s.id === systemId);
-        const cities = generatePlanetCities(id, "custom", {
+        const { cities, structures } = generatePlanetSurface(id, "custom", {
           defaultFactionId: system?.controllingFactionId,
         });
         const planet: Planet = {
@@ -641,11 +704,14 @@ export const useCampaignStore = create<CampaignState>()(
           name: `Planet ${existing.length + 1}`,
           orbitIndex: existing.length,
           type: "custom" as PlanetType,
+          classification: pickRandomClassification() as PlanetClassification,
           controllingFactionId:
-            planetOwnerFromCities(cities) ?? system?.controllingFactionId,
+            planetOwnerFromCities(cities, undefined, structures) ??
+            system?.controllingFactionId,
           notes: "",
           battles: [],
           cities,
+          structures,
           armies: [],
         };
         set((s) => ({
@@ -697,6 +763,7 @@ export const useCampaignStore = create<CampaignState>()(
         get().updatePlanet(planetId, {
           controllingFactionId: owner,
           cities: assignAllDistricts(planet.cities ?? [], factionId),
+          structures: assignAllStructures(planet.structures ?? [], factionId),
         });
       },
 
@@ -722,6 +789,7 @@ export const useCampaignStore = create<CampaignState>()(
               controllingFactionId: planetOwnerFromCities(
                 cities,
                 p.tileClaims,
+                p.structures ?? [],
               ),
             };
           });
@@ -756,6 +824,35 @@ export const useCampaignStore = create<CampaignState>()(
               controllingFactionId: planetOwnerFromCities(
                 cities,
                 p.tileClaims,
+                p.structures ?? [],
+              ),
+            };
+          });
+          return withCampaign(
+            s,
+            withHistoryCapture({ ...s.campaign, planets }),
+          );
+        }),
+
+      setStructureOwner: (planetId, structureId, factionId) =>
+        set((s) => {
+          const planets = s.campaign.planets.map((p) => {
+            if (p.id !== planetId) return p;
+            const structures = (p.structures ?? []).map((st) =>
+              st.id === structureId
+                ? {
+                    ...st,
+                    controllingFactionId: factionId || undefined,
+                  }
+                : st,
+            );
+            return {
+              ...p,
+              structures,
+              controllingFactionId: planetOwnerFromCities(
+                p.cities ?? [],
+                p.tileClaims,
+                structures,
               ),
             };
           });
@@ -769,7 +866,10 @@ export const useCampaignStore = create<CampaignState>()(
         set((s) => {
           const planets = s.campaign.planets.map((p) => {
             if (p.id !== planetId) return p;
-            const occupied = settlementTileSet(p.cities ?? []);
+            const occupied = settlementTileSet(
+              p.cities ?? [],
+              p.structures ?? [],
+            );
             const next = { ...(p.tileClaims ?? {}) };
             for (const [key, factionId] of Object.entries(claims)) {
               const tileIndex = Number(key);
@@ -777,13 +877,18 @@ export const useCampaignStore = create<CampaignState>()(
               if (factionId) next[String(tileIndex)] = factionId;
               else delete next[String(tileIndex)];
             }
-            const tileClaims = scrubTileClaims(next, p.cities ?? []);
+            const tileClaims = scrubTileClaims(
+              next,
+              p.cities ?? [],
+              p.structures ?? [],
+            );
             return {
               ...p,
               tileClaims,
               controllingFactionId: planetOwnerFromCities(
                 p.cities ?? [],
                 tileClaims,
+                p.structures ?? [],
               ),
             };
           });
@@ -800,7 +905,11 @@ export const useCampaignStore = create<CampaignState>()(
             return {
               ...p,
               tileClaims: {},
-              controllingFactionId: planetOwnerFromCities(p.cities ?? [], {}),
+              controllingFactionId: planetOwnerFromCities(
+                p.cities ?? [],
+                {},
+                p.structures ?? [],
+              ),
             };
           });
           return withCampaign(
@@ -822,20 +931,29 @@ export const useCampaignStore = create<CampaignState>()(
           const rival = s.campaign.factions.find(
             (f) => f.id !== planet.controllingFactionId,
           )?.id;
-          const cities = generatePlanetCities(planet.id, planet.type, {
-            defaultFactionId: planet.controllingFactionId,
-            rivalFactionId: rival,
-            contestedRate: rival ? 0.35 : 0,
-          });
-          const tileClaims = scrubTileClaims(planet.tileClaims, cities);
+          const { cities, structures } = generatePlanetSurface(
+            planet.id,
+            planet.type,
+            {
+              defaultFactionId: planet.controllingFactionId,
+              rivalFactionId: rival,
+              contestedRate: rival ? 0.35 : 0,
+            },
+          );
+          const tileClaims = scrubTileClaims(
+            planet.tileClaims,
+            cities,
+            structures,
+          );
           const planets = s.campaign.planets.map((p) =>
             p.id === planetId
               ? {
                   ...p,
                   cities,
+                  structures,
                   tileClaims,
                   controllingFactionId:
-                    planetOwnerFromCities(cities, tileClaims) ??
+                    planetOwnerFromCities(cities, tileClaims, structures) ??
                     p.controllingFactionId,
                 }
               : p,
@@ -844,6 +962,7 @@ export const useCampaignStore = create<CampaignState>()(
             ...withCampaign(s, { ...s.campaign, planets }),
             selectedCityId: null,
             selectedDistrictId: null,
+            selectedStructureId: null,
           };
         }),
 
@@ -963,6 +1082,7 @@ export const useCampaignStore = create<CampaignState>()(
           fleetMoveModeId: null,
           selectedCityId: null,
           selectedDistrictId: null,
+          selectedStructureId: null,
           inspectorOpen: true,
         }),
 
@@ -1004,6 +1124,7 @@ export const useCampaignStore = create<CampaignState>()(
           selectedArmyId: null,
           selectedCityId: null,
           selectedDistrictId: null,
+          selectedStructureId: null,
           inspectorOpen: true,
         }));
         return id;
@@ -1114,6 +1235,7 @@ export const useCampaignStore = create<CampaignState>()(
           selectedArmyId: null,
           selectedCityId: null,
           selectedDistrictId: null,
+          selectedStructureId: null,
           placingArmyId: null,
           inspectorOpen: true,
         }),
@@ -1294,6 +1416,11 @@ export const useCampaignStore = create<CampaignState>()(
                     : d,
                 ),
               })),
+              structures: (p.structures ?? []).map((st) =>
+                st.controllingFactionId === id
+                  ? { ...st, controllingFactionId: undefined }
+                  : st,
+              ),
               armies: (p.armies ?? []).filter((a) => a.factionId !== id),
             })),
           }),

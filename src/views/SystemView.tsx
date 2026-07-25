@@ -6,7 +6,12 @@ import {
 } from "react-zoom-pan-pinch";
 import { OrbitRing } from "../components/system/OrbitRing";
 import { PlanetNode } from "../components/system/PlanetNode";
+import { AsteroidBeltRing } from "../components/system/AsteroidBeltRing";
 import { FleetMarker } from "../components/fleet/FleetMarker";
+import {
+  PulsarJets,
+  pulsarJetAngle,
+} from "../components/galaxy/PulsarJets";
 import { useMapCamera } from "../hooks/useMapCamera";
 import {
   SYSTEM_VIEW_SIZE,
@@ -18,6 +23,12 @@ import {
   fleetsAtSystemStar,
   fleetsInOrbit,
 } from "../lib/fleets";
+import {
+  normalizeStarClass,
+  starAppearance,
+  starBodyGradient,
+} from "../lib/stars";
+import { STAR_CLASS_LABELS } from "../types/campaign";
 import { useCampaignStore } from "../store/useCampaignStore";
 
 const INITIAL_SCALE = 0.85;
@@ -61,6 +72,9 @@ export function SystemView() {
 
   const center = SYSTEM_VIEW_SIZE / 2;
   const outermost = maxOrbitRadius(planets.length);
+  const starClass = normalizeStarClass(system.starClass);
+  const starLook = starAppearance(starClass);
+  const starSize = starLook.systemSize;
   const starFleets = fleetsAtSystemStar(fleets, system.id);
 
   return (
@@ -104,6 +118,7 @@ export function SystemView() {
                 typeof planet.orbitIndex === "number"
                   ? planet.orbitIndex
                   : index;
+              if (planet.type === "asteroid_belt") return null;
               return (
                 <OrbitRing
                   key={`orbit-${planet.id}`}
@@ -117,40 +132,54 @@ export function SystemView() {
               <OrbitRing radius={outermost} center={center} />
             )}
 
-            <button
-              type="button"
-              className="absolute rounded-full border-0 p-0 cursor-pointer z-10"
+            <div
+              className="absolute z-10"
               style={{
                 left: center,
                 top: center,
-                width: 48,
-                height: 48,
+                width: starSize,
+                height: starSize,
                 transform: "translate(-50%, -50%)",
-                background:
-                  "radial-gradient(circle at 35% 35%, #fff8e7, #f59e0b 40%, #c2410c 100%)",
-                boxShadow:
-                  canIntraMove && movingFleet?.location.kind !== "system"
-                    ? "0 0 40px #4fd2ff, 0 0 90px #ea580c33"
-                    : "0 0 40px #f59e0b66, 0 0 90px #ea580c33",
-                outline:
-                  canIntraMove && movingFleet?.location.kind !== "system"
-                    ? "2px solid #4fd2ff"
-                    : undefined,
               }}
-              title="System star"
-              onClick={(e) => {
-                e.stopPropagation();
-                if (canIntraMove && fleetMoveModeId) {
-                  moveFleet(fleetMoveModeId, {
-                    kind: "system",
-                    systemId: system.id,
-                  });
-                }
-              }}
-            />
+            >
+              {starClass === "pulsar" && (
+                <PulsarJets
+                  length={starSize * 2.8}
+                  baseWidth={Math.max(10, starSize * 0.55)}
+                  color={starLook.color}
+                  highlight={starLook.highlight}
+                  angleDeg={pulsarJetAngle(system.id)}
+                />
+              )}
+              <button
+                type="button"
+                className="absolute inset-0 rounded-full border-0 p-0 cursor-pointer"
+                style={{
+                  background: starBodyGradient(starClass),
+                  boxShadow:
+                    canIntraMove && movingFleet?.location.kind !== "system"
+                      ? `0 0 40px #4fd2ff, 0 0 90px ${starLook.corona}44`
+                      : `0 0 40px ${starLook.color}88, 0 0 90px ${starLook.corona}44`,
+                  outline:
+                    canIntraMove && movingFleet?.location.kind !== "system"
+                      ? "2px solid #4fd2ff"
+                      : undefined,
+                }}
+                title={STAR_CLASS_LABELS[starClass]}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (canIntraMove && fleetMoveModeId) {
+                    moveFleet(fleetMoveModeId, {
+                      kind: "system",
+                      systemId: system.id,
+                    });
+                  }
+                }}
+              />
+            </div>
 
             <h2
-              className="absolute font-display tracking-wide text-star pointer-events-none"
+              className="absolute font-display tracking-wide text-star pointer-events-none text-center"
               style={{
                 left: center,
                 top: center - outermost - 48,
@@ -159,6 +188,9 @@ export function SystemView() {
               }}
             >
               {system.name}
+              <span className="block text-[11px] text-muted font-body tracking-wider uppercase mt-1">
+                {STAR_CLASS_LABELS[starClass]}
+              </span>
             </h2>
 
             {planets.length === 0 && (
@@ -186,35 +218,49 @@ export function SystemView() {
               const px = center + pos.x;
               const py = center + pos.y;
               const orbitFleets = fleetsInOrbit(fleets, system.id, planet.id);
+              const selected =
+                selectedPlanetId === planet.id ||
+                (canIntraMove &&
+                  !(
+                    movingFleet?.location.kind === "orbit" &&
+                    movingFleet.location.planetId === planet.id
+                  ));
+              const onNavigate = () => {
+                if (canIntraMove && fleetMoveModeId) {
+                  moveFleet(fleetMoveModeId, {
+                    kind: "orbit",
+                    systemId: system.id,
+                    planetId: planet.id,
+                  });
+                  return;
+                }
+                selectPlanet(planet.id);
+                enterPlanet(planet.id);
+              };
+
               return (
                 <div key={planet.id}>
-                  <PlanetNode
-                    planet={planet}
-                    x={px}
-                    y={py}
-                    faction={faction}
-                    selected={
-                      selectedPlanetId === planet.id ||
-                      (canIntraMove &&
-                        !(
-                          movingFleet?.location.kind === "orbit" &&
-                          movingFleet.location.planetId === planet.id
-                        ))
-                    }
-                    mapScale={mapScale}
-                    onNavigate={() => {
-                      if (canIntraMove && fleetMoveModeId) {
-                        moveFleet(fleetMoveModeId, {
-                          kind: "orbit",
-                          systemId: system.id,
-                          planetId: planet.id,
-                        });
-                        return;
-                      }
-                      selectPlanet(planet.id);
-                      enterPlanet(planet.id);
-                    }}
-                  />
+                  {planet.type === "asteroid_belt" ? (
+                    <AsteroidBeltRing
+                      planet={planet}
+                      radius={orbitRadiusForIndex(orbitIndex)}
+                      center={center}
+                      faction={faction}
+                      selected={selected}
+                      mapScale={mapScale}
+                      onNavigate={onNavigate}
+                    />
+                  ) : (
+                    <PlanetNode
+                      planet={planet}
+                      x={px}
+                      y={py}
+                      faction={faction}
+                      selected={selected}
+                      mapScale={mapScale}
+                      onNavigate={onNavigate}
+                    />
+                  )}
                   {orbitFleets.map((fleet, i) => {
                     const fac = campaign.factions.find(
                       (f) => f.id === fleet.factionId,
@@ -224,12 +270,13 @@ export function SystemView() {
                         key={fleet.id}
                         fleet={fleet}
                         color={fac?.color ?? "#4fd2ff"}
-                        x={px + 20}
-                        y={py - 12}
+                        x={px + 22}
+                        y={py - 26}
                         selected={selectedFleetId === fleet.id}
                         moving={fleetMoveModeId === fleet.id}
                         mapScale={mapScale}
                         offsetIndex={i}
+                        stackCount={orbitFleets.length}
                         onSelect={() => selectFleet(fleet.id)}
                       />
                     );
@@ -248,11 +295,12 @@ export function SystemView() {
                   fleet={fleet}
                   color={fac?.color ?? "#4fd2ff"}
                   x={center + 28}
-                  y={center - 20}
+                  y={center - 28}
                   selected={selectedFleetId === fleet.id}
                   moving={fleetMoveModeId === fleet.id}
                   mapScale={mapScale}
                   offsetIndex={i}
+                  stackCount={starFleets.length}
                   onSelect={() => selectFleet(fleet.id)}
                 />
               );

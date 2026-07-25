@@ -6,7 +6,30 @@ export type PlanetType =
   | "agri"
   | "death"
   | "shrine"
+  | "asteroid_belt"
   | "custom";
+
+/**
+ * Climate / environment class of a world (separate from role type like Hive/Forge).
+ */
+export type PlanetClassification =
+  | "ice"
+  | "tundra"
+  | "water"
+  | "islands"
+  | "jungle"
+  | "earthlike"
+  | "super_earth"
+  | "desert"
+  | "arid"
+  | "savannah"
+  | "swamp"
+  | "volcanic"
+  | "magma"
+  | "toxic"
+  | "barren"
+  | "gas_giant"
+  | "tidally_locked";
 
 export type DistrictKind =
   | "spire"
@@ -28,6 +51,32 @@ export type DistrictKind =
   | "cloister"
   | "quarter"
   | "ruins";
+
+/**
+ * Standalone surface structures (not nested under cities).
+ * World type drives which kinds appear on a planet.
+ */
+export type StructureKind =
+  | "void_dock"
+  | "spire_cluster"
+  | "underhive_gate"
+  | "manufactorum_complex"
+  | "ore_mine"
+  | "slag_works"
+  | "reactor"
+  | "agri_dome"
+  | "silo_complex"
+  | "reservoir_works"
+  | "fortress_bastion"
+  | "trench_line"
+  | "kill_zone"
+  | "cathedral_complex"
+  | "reliquary_vault"
+  | "pilgrim_station"
+  | "mining_claim"
+  | "relay"
+  | "outpost"
+  | "ruins_site";
 
 export interface Faction {
   id: string;
@@ -95,12 +144,27 @@ export interface BattleEntry {
   outcome: string;
 }
 
+/** Main-sequence and exotic stellar types for map visuals. */
+export type StarClass =
+  | "O"
+  | "B"
+  | "A"
+  | "F"
+  | "G"
+  | "K"
+  | "M"
+  | "neutron"
+  | "pulsar"
+  | "black_hole";
+
 export interface StarSystem {
   id: string;
   name: string;
   x: number;
   y: number;
   notes: string;
+  /** Spectral / exotic star classification (visual only; not faction). */
+  starClass: StarClass;
   /** Primary system owner; planets may diverge (contested). */
   controllingFactionId?: string;
 }
@@ -136,19 +200,34 @@ export interface City {
   notes: string;
 }
 
+/** Independent surface structure placed on its own hex. */
+export interface PlanetStructure {
+  id: string;
+  name: string;
+  kind: StructureKind;
+  tileIndex: number;
+  dir: SphereDir;
+  controllingFactionId?: string;
+  notes: string;
+}
+
 export interface Planet {
   id: string;
   systemId: string;
   name: string;
   orbitIndex: number;
   type: PlanetType;
+  /** Climate / environment (ignored for asteroid belts). */
+  classification: PlanetClassification;
   controllingFactionId?: string;
   notes: string;
   battles: BattleEntry[];
   /** Cities and districts factions contest on the surface. */
   cities: City[];
+  /** World-type structures on free hexes (mines, docks, forts, …). */
+  structures: PlanetStructure[];
   /**
-   * Ownership of open hexes (no city/district).
+   * Ownership of open hexes (no city/district/structure).
    * Keys are tile index strings → faction id. Settlement tiles always win.
    */
   tileClaims?: Record<string, string>;
@@ -224,8 +303,76 @@ export const PLANET_TYPE_LABELS: Record<PlanetType, string> = {
   agri: "Agri World",
   death: "Death World",
   shrine: "Shrine World",
+  asteroid_belt: "Asteroid Belt",
   custom: "Custom",
 };
+
+export const PLANET_CLASSIFICATION_LABELS: Record<PlanetClassification, string> =
+  {
+    ice: "Ice World",
+    tundra: "Tundra",
+    water: "Water World",
+    islands: "Islands",
+    jungle: "Jungle",
+    earthlike: "Earth-like",
+    super_earth: "Super Earth",
+    desert: "Desert",
+    arid: "Arid",
+    savannah: "Savannah",
+    swamp: "Swamp",
+    volcanic: "Volcanic",
+    magma: "Magma World",
+    toxic: "Toxic",
+    barren: "Barren",
+    gas_giant: "Gas Giant",
+    tidally_locked: "Tidally Locked",
+  };
+
+export const PLANET_CLASSIFICATION_ORDER: PlanetClassification[] = [
+  "ice",
+  "tundra",
+  "water",
+  "islands",
+  "jungle",
+  "earthlike",
+  "super_earth",
+  "desert",
+  "arid",
+  "savannah",
+  "swamp",
+  "volcanic",
+  "magma",
+  "toxic",
+  "barren",
+  "gas_giant",
+  "tidally_locked",
+];
+
+export const STAR_CLASS_LABELS: Record<StarClass, string> = {
+  O: "O-type (Blue giant)",
+  B: "B-type (Blue-white)",
+  A: "A-type (White)",
+  F: "F-type (Yellow-white)",
+  G: "G-type (Yellow)",
+  K: "K-type (Orange)",
+  M: "M-type (Red dwarf)",
+  neutron: "Neutron star",
+  pulsar: "Pulsar",
+  black_hole: "Black hole",
+};
+
+export const STAR_CLASS_ORDER: StarClass[] = [
+  "O",
+  "B",
+  "A",
+  "F",
+  "G",
+  "K",
+  "M",
+  "neutron",
+  "pulsar",
+  "black_hole",
+];
 
 export const DISTRICT_KIND_LABELS: Record<DistrictKind, string> = {
   spire: "Hive Spire",
@@ -247,6 +394,29 @@ export const DISTRICT_KIND_LABELS: Record<DistrictKind, string> = {
   cloister: "Cloister",
   quarter: "District",
   ruins: "Ruins",
+};
+
+export const STRUCTURE_KIND_LABELS: Record<StructureKind, string> = {
+  void_dock: "Void Dock",
+  spire_cluster: "Spire Cluster",
+  underhive_gate: "Underhive Gate",
+  manufactorum_complex: "Manufactorum Complex",
+  ore_mine: "Ore Mine",
+  slag_works: "Slag Works",
+  reactor: "Reactor",
+  agri_dome: "Agri Dome",
+  silo_complex: "Silo Complex",
+  reservoir_works: "Reservoir Works",
+  fortress_bastion: "Fortress Bastion",
+  trench_line: "Trench Line",
+  kill_zone: "Kill Zone",
+  cathedral_complex: "Cathedral Complex",
+  reliquary_vault: "Reliquary Vault",
+  pilgrim_station: "Pilgrim Station",
+  mining_claim: "Mining Claim",
+  relay: "Relay",
+  outpost: "Outpost",
+  ruins_site: "Ruins Site",
 };
 
 export const SHIP_CHASSIS_LABELS: Record<ShipChassis, string> = {

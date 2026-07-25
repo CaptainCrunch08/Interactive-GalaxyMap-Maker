@@ -1,14 +1,10 @@
-import { PLANET_TYPE_LABELS } from "../types/campaign";
+import {
+  PLANET_CLASSIFICATION_LABELS,
+  PLANET_TYPE_LABELS,
+} from "../types/campaign";
 import { useCampaignStore } from "../store/useCampaignStore";
-
-const TYPE_COLORS: Record<string, string> = {
-  hive: "#9ca3af",
-  forge: "#f59e0b",
-  agri: "#4ade80",
-  death: "#ef4444",
-  shrine: "#a78bfa",
-  custom: "#6b7280",
-};
+import { AsteroidBeltView } from "./AsteroidBeltView";
+import { classificationColor } from "../lib/planetClass";
 
 export function PlanetView() {
   const campaign = useCampaignStore((s) => s.campaign);
@@ -31,8 +27,15 @@ export function PlanetView() {
     );
   }
 
-  const base = TYPE_COLORS[planet.type] ?? "#6b7280";
+  if (planet.type === "asteroid_belt") {
+    return <AsteroidBeltView />;
+  }
+
+  const base = classificationColor(planet.classification);
   const accent = faction?.color ?? base;
+  const classLabel =
+    PLANET_CLASSIFICATION_LABELS[planet.classification] ??
+    PLANET_CLASSIFICATION_LABELS.earthlike;
 
   return (
     <div className="relative h-full w-full galaxy-bg overflow-hidden flex items-center justify-center">
@@ -93,7 +96,7 @@ export function PlanetView() {
             {planet.name}
           </h1>
           <p className="text-sm text-brass">
-            {PLANET_TYPE_LABELS[planet.type]}
+            {PLANET_TYPE_LABELS[planet.type]} · {classLabel}
             {faction ? ` · ${faction.name}` : " · Unclaimed"}
           </p>
           <p className="text-[11px] text-muted mt-3">

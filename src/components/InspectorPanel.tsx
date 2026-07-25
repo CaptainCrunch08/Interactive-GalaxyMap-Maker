@@ -1,9 +1,18 @@
-import { useRef, useState } from "react";
-import type { PlanetType } from "../types/campaign";
+import { useEffect, useRef, useState } from "react";
 import {
   DISTRICT_KIND_LABELS,
+  PLANET_CLASSIFICATION_LABELS,
+  PLANET_CLASSIFICATION_ORDER,
   PLANET_TYPE_LABELS,
+  STAR_CLASS_LABELS,
+  STAR_CLASS_ORDER,
+  STRUCTURE_KIND_LABELS,
   campaignMapSize,
+} from "../types/campaign";
+import type {
+  PlanetClassification,
+  PlanetType,
+  StarClass,
 } from "../types/campaign";
 import { useCampaignStore } from "../store/useCampaignStore";
 import {
@@ -55,6 +64,7 @@ export function InspectorPanel() {
   const setPlanetOwner = useCampaignStore((s) => s.setPlanetOwner);
   const setCityOwner = useCampaignStore((s) => s.setCityOwner);
   const setDistrictOwner = useCampaignStore((s) => s.setDistrictOwner);
+  const setStructureOwner = useCampaignStore((s) => s.setStructureOwner);
   const clearOpenTileClaims = useCampaignStore((s) => s.clearOpenTileClaims);
   const setTerrainPaintFaction = useCampaignStore(
     (s) => s.setTerrainPaintFaction,
@@ -78,6 +88,7 @@ export function InspectorPanel() {
   const deleteBattle = useCampaignStore((s) => s.deleteBattle);
   const selectedCityId = useCampaignStore((s) => s.selectedCityId);
   const selectedDistrictId = useCampaignStore((s) => s.selectedDistrictId);
+  const selectedStructureId = useCampaignStore((s) => s.selectedStructureId);
   const selectedArmyId = useCampaignStore((s) => s.selectedArmyId);
   const placingArmyId = useCampaignStore((s) => s.placingArmyId);
   const selectedFleetId = useCampaignStore((s) => s.selectedFleetId);
@@ -86,6 +97,7 @@ export function InspectorPanel() {
     (s) => s.terrainPaintFactionId,
   );
   const selectSettlement = useCampaignStore((s) => s.selectSettlement);
+  const selectStructure = useCampaignStore((s) => s.selectStructure);
   const enterTimeline = useCampaignStore((s) => s.enterTimeline);
   const captureTimelineFrame = useCampaignStore((s) => s.captureTimelineFrame);
   const clearTimelineFrames = useCampaignStore((s) => s.clearTimelineFrames);
@@ -132,6 +144,28 @@ export function InspectorPanel() {
   const showPlanetDetails =
     (viewLevel === "planet" || viewLevel === "strategic") && !!planet;
   const showTimelineEditor = viewLevel === "timeline" || showGalaxyOverview;
+
+  const planetScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showPlanetDetails) return;
+    const targetId = selectedStructureId
+      ? `structure-${selectedStructureId}`
+      : selectedDistrictId
+        ? `district-${selectedDistrictId}`
+        : selectedCityId
+          ? `city-${selectedCityId}`
+          : null;
+    if (!targetId) return;
+    const root = planetScrollRef.current;
+    const el = root?.querySelector(`#${CSS.escape(targetId)}`);
+    el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [
+    showPlanetDetails,
+    selectedCityId,
+    selectedDistrictId,
+    selectedStructureId,
+  ]);
 
   const handleImport = async (file: File) => {
     const { readCampaignFile } = await import("../lib/io");
@@ -578,7 +612,7 @@ export function InspectorPanel() {
           <div className="p-4 border-b border-panel-border space-y-2">
             <div className="flex items-center justify-between gap-2">
               <h2 className="font-display text-[10px] text-cyan uppercase tracking-[0.18em]">
-                Planet
+                {planet.type === "asteroid_belt" ? "Asteroid belt" : "Planet"}
               </h2>
               <div className="flex items-center gap-2">
                 <button
@@ -605,7 +639,10 @@ export function InspectorPanel() {
             )}
           </div>
 
-          <div className="flex-1 overflow-y-auto p-4 space-y-6">
+          <div
+            ref={planetScrollRef}
+            className="flex-1 overflow-y-auto p-4 space-y-6"
+          >
             <section>
               <label className="block text-xs text-muted mb-1">Name</label>
               <input
@@ -631,6 +668,29 @@ export function InspectorPanel() {
                   </option>
                 ))}
               </select>
+              {planet.type !== "asteroid_belt" && (
+                <>
+                  <label className="block text-xs text-muted mb-1">
+                    Classification
+                  </label>
+                  <select
+                    className={inputClass + " mb-2"}
+                    value={planet.classification ?? "earthlike"}
+                    onChange={(e) =>
+                      updatePlanet(planet.id, {
+                        classification: e.target
+                          .value as PlanetClassification,
+                      })
+                    }
+                  >
+                    {PLANET_CLASSIFICATION_ORDER.map((c) => (
+                      <option key={c} value={c}>
+                        {PLANET_CLASSIFICATION_LABELS[c]}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              )}
               <label className="block text-xs text-muted mb-1">
                 Controlling faction
               </label>
@@ -666,10 +726,12 @@ export function InspectorPanel() {
               />
             </section>
 
+            {planet.type !== "asteroid_belt" && (
+            <>
             <section>
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-xs uppercase text-muted tracking-wide">
-                  Cities & districts
+                  Cities, districts & structures
                 </h3>
                 <button
                   type="button"
@@ -677,7 +739,7 @@ export function InspectorPanel() {
                   onClick={() => {
                     if (
                       confirm(
-                        "Regenerate cities onto separate hex tiles for this world class?",
+                        "Regenerate cities, districts, and structures for this world class?",
                       )
                     )
                       regenerateSettlements(planet.id);
@@ -687,12 +749,14 @@ export function InspectorPanel() {
                 </button>
               </div>
               <p className="text-[10px] text-muted mb-2 leading-snug">
-                Each city and district owns one hex. Empire color outlines that
-                tile.
+                Cities and districts sit on hexes; world-type structures
+                (mines, docks, forts, …) occupy their own tiles. Empire color
+                outlines owned hexes.
               </p>
               {(() => {
                 const cities = planet.cities ?? [];
-                if (cities.length === 0) {
+                const structures = planet.structures ?? [];
+                if (cities.length === 0 && structures.length === 0) {
                   return (
                     <p className="text-xs text-muted">
                       No settlements yet. Open strategic view or regenerate.
@@ -725,6 +789,7 @@ export function InspectorPanel() {
                         return (
                           <li
                             key={city.id}
+                            id={`city-${city.id}`}
                             className={`rounded border p-2 space-y-2 ${
                               cityActive
                                 ? "border-cyan/40 bg-cyan/5"
@@ -776,36 +841,30 @@ export function InspectorPanel() {
                                 return (
                                   <li
                                     key={d.id}
-                                    className={`flex items-center gap-2 rounded px-1.5 py-1 ${
+                                    id={`district-${d.id}`}
+                                    className={`rounded px-1.5 py-1.5 space-y-1 ${
                                       active ? "bg-cyan/10" : ""
                                     }`}
                                   >
                                     <button
                                       type="button"
-                                      className="shrink-0 bg-transparent border-0 p-0 cursor-pointer"
+                                      className="w-full flex items-start gap-2 text-left bg-transparent border-0 p-0 cursor-pointer"
                                       onClick={() =>
                                         selectSettlement(city.id, d.id)
                                       }
-                                      title={d.name}
                                     >
                                       <FactionSwatch color={fac?.color} />
+                                      <span className="min-w-0 flex-1">
+                                        <span className="block text-xs text-text truncate">
+                                          {d.name}
+                                        </span>
+                                        <span className="block text-[10px] text-brass truncate">
+                                          {DISTRICT_KIND_LABELS[d.kind]}
+                                        </span>
+                                      </span>
                                     </button>
-                                    <div className="min-w-0 flex-1">
-                                      <button
-                                        type="button"
-                                        className="w-full text-left text-xs text-text truncate bg-transparent border-0 p-0 cursor-pointer"
-                                        onClick={() =>
-                                          selectSettlement(city.id, d.id)
-                                        }
-                                      >
-                                        {d.name}
-                                      </button>
-                                      <p className="text-[10px] text-muted truncate">
-                                        {DISTRICT_KIND_LABELS[d.kind]}
-                                      </p>
-                                    </div>
                                     <select
-                                      className={inputClass + " w-[42%] shrink-0"}
+                                      className={inputClass}
                                       style={{ fontSize: "0.7rem" }}
                                       value={d.controllingFactionId ?? ""}
                                       onChange={(e) => {
@@ -833,6 +892,69 @@ export function InspectorPanel() {
                         );
                       })}
                     </ul>
+                    {structures.length > 0 && (
+                      <div className="mt-4">
+                        <h4 className="text-[10px] uppercase tracking-wide text-muted mb-2">
+                          Structures
+                        </h4>
+                        <ul className="space-y-2">
+                          {structures.map((st) => {
+                            const fac = getFactionById(
+                              campaign,
+                              st.controllingFactionId,
+                            );
+                            const active = selectedStructureId === st.id;
+                            return (
+                              <li
+                                key={st.id}
+                                id={`structure-${st.id}`}
+                                className={`rounded px-2 py-1.5 space-y-1.5 border ${
+                                  active
+                                    ? "border-cyan/40 bg-cyan/5"
+                                    : "border-panel-border/60"
+                                }`}
+                              >
+                                <button
+                                  type="button"
+                                  className="w-full flex items-start gap-2 text-left bg-transparent border-0 p-0 cursor-pointer"
+                                  onClick={() => selectStructure(st.id)}
+                                >
+                                  <FactionSwatch color={fac?.color} />
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block text-xs text-star font-medium truncate">
+                                      {st.name}
+                                    </span>
+                                    <span className="block text-[10px] text-brass truncate">
+                                      {STRUCTURE_KIND_LABELS[st.kind]}
+                                    </span>
+                                  </span>
+                                </button>
+                                <select
+                                  className={inputClass}
+                                  style={{ fontSize: "0.7rem" }}
+                                  value={st.controllingFactionId ?? ""}
+                                  onChange={(e) => {
+                                    selectStructure(st.id);
+                                    setStructureOwner(
+                                      planet.id,
+                                      st.id,
+                                      e.target.value || null,
+                                    );
+                                  }}
+                                >
+                                  <option value="">Unclaimed</option>
+                                  {campaign.factions.map((f) => (
+                                    <option key={f.id} value={f.id}>
+                                      {f.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    )}
                   </>
                 );
               })()}
@@ -857,8 +979,8 @@ export function InspectorPanel() {
                 </button>
               </div>
               <p className="text-[10px] text-muted mb-2 leading-snug">
-                Paint empty hexes (not cities/districts) with an empire color.
-                Use Erase to unclaim.
+                Paint empty hexes (not cities, districts, or structures) with an
+                empire color. Use Erase to unclaim.
               </p>
               <div className="flex flex-wrap gap-1.5 mb-2">
                 <button
@@ -1047,6 +1169,8 @@ export function InspectorPanel() {
                 </ul>
               )}
             </section>
+            </>
+            )}
 
             <section>
               <div className="flex items-center justify-between mb-2">
@@ -1184,6 +1308,25 @@ export function InspectorPanel() {
               />
 
               <label className="block text-xs text-muted mb-1">
+                Star class
+              </label>
+              <select
+                className={inputClass + " mb-2"}
+                value={system.starClass ?? "G"}
+                onChange={(e) =>
+                  updateSystem(system.id, {
+                    starClass: e.target.value as StarClass,
+                  })
+                }
+              >
+                {STAR_CLASS_ORDER.map((c) => (
+                  <option key={c} value={c}>
+                    {STAR_CLASS_LABELS[c]}
+                  </option>
+                ))}
+              </select>
+
+              <label className="block text-xs text-muted mb-1">
                 System owner
               </label>
               <div className="flex items-center gap-2 mb-1">
@@ -1265,7 +1408,11 @@ export function InspectorPanel() {
                             {p.name}
                           </span>
                           <span className="text-muted truncate max-w-[40%]">
-                            {PLANET_TYPE_LABELS[p.type]}
+                            {p.type === "asteroid_belt"
+                              ? PLANET_TYPE_LABELS[p.type]
+                              : PLANET_CLASSIFICATION_LABELS[
+                                  p.classification
+                                ] ?? PLANET_TYPE_LABELS[p.type]}
                           </span>
                         </button>
                       </li>

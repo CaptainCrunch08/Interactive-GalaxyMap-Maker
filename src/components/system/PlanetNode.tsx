@@ -1,5 +1,9 @@
 import type { Faction, Planet } from "../../types/campaign";
-import { PLANET_TYPE_LABELS } from "../../types/campaign";
+import {
+  PLANET_CLASSIFICATION_LABELS,
+  PLANET_TYPE_LABELS,
+} from "../../types/campaign";
+import { classificationColor } from "../../lib/planetClass";
 
 interface PlanetNodeProps {
   planet: Planet;
@@ -11,15 +15,6 @@ interface PlanetNodeProps {
   onNavigate: () => void;
 }
 
-const TYPE_COLORS: Record<string, string> = {
-  hive: "#9ca3af",
-  forge: "#f59e0b",
-  agri: "#4ade80",
-  death: "#ef4444",
-  shrine: "#a78bfa",
-  custom: "#6b7280",
-};
-
 export function PlanetNode({
   planet,
   x,
@@ -29,9 +24,12 @@ export function PlanetNode({
   mapScale,
   onNavigate,
 }: PlanetNodeProps) {
-  const base = TYPE_COLORS[planet.type] ?? "#6b7280";
+  const base = classificationColor(planet.classification);
   const ring = faction?.color ?? base;
   const showLabel = mapScale >= 0.55 || selected;
+  const classLabel =
+    PLANET_CLASSIFICATION_LABELS[planet.classification] ??
+    PLANET_CLASSIFICATION_LABELS.earthlike;
 
   return (
     <button
@@ -42,7 +40,7 @@ export function PlanetNode({
         e.stopPropagation();
         onNavigate();
       }}
-      title={`${planet.name} — ${PLANET_TYPE_LABELS[planet.type]}`}
+      title={`${planet.name} — ${PLANET_TYPE_LABELS[planet.type]} · ${classLabel}`}
     >
       <span
         className="block w-3.5 h-3.5 rounded-full border transition-transform group-hover:scale-125"
@@ -60,7 +58,7 @@ export function PlanetNode({
             {planet.name}
           </span>
           <span className="text-[9px] leading-tight text-muted whitespace-nowrap">
-            {PLANET_TYPE_LABELS[planet.type]}
+            {classLabel}
           </span>
         </>
       )}

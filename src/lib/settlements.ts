@@ -3,10 +3,12 @@ import type {
   District,
   DistrictKind,
   Planet,
+  PlanetStructure,
   PlanetType,
   SphereDir,
+  StructureKind,
 } from "../types/campaign";
-import { DISTRICT_KIND_LABELS } from "../types/campaign";
+import { DISTRICT_KIND_LABELS, STRUCTURE_KIND_LABELS } from "../types/campaign";
 import { buildHexSphere, type HexSphere } from "./hexSphere";
 
 /** Must match HexPlanet FREQUENCY so tile indices stay valid. */
@@ -57,6 +59,7 @@ const CITY_PREFIX: Record<PlanetType, string[]> = {
   agri: ["Agri-Hub", "Silo", "Granary", "Harvest"],
   death: ["Fortress", "Outpost", "Hold", "Redoubt"],
   shrine: ["Shrine", "Basilica", "Sanctum", "Pilgrim"],
+  asteroid_belt: ["Station", "Mining", "Claim", "Relay"],
   custom: ["City", "Settlement", "Colony", "Station"],
 };
 
@@ -66,6 +69,7 @@ const DISTRICT_KINDS: Record<PlanetType, DistrictKind[]> = {
   agri: ["agriplex", "silo", "reservoir", "outpost", "quarter", "bastion"],
   death: ["fortress", "camp", "bastion", "outpost", "ruins", "quarter"],
   shrine: ["cathedral", "reliquary", "cloister", "quarter", "bastion", "ruins"],
+  asteroid_belt: ["outpost", "docks", "camp", "ruins", "bastion", "quarter"],
   custom: ["quarter", "bastion", "docks", "outpost", "ruins", "camp"],
 };
 
@@ -75,6 +79,7 @@ const CITY_COUNT: Record<PlanetType, [number, number]> = {
   agri: [2, 3],
   death: [2, 3],
   shrine: [2, 3],
+  asteroid_belt: [0, 1],
   custom: [2, 3],
 };
 
@@ -84,7 +89,63 @@ const DISTRICTS_PER_CITY: Record<PlanetType, [number, number]> = {
   agri: [2, 3],
   death: [2, 3],
   shrine: [2, 3],
+  asteroid_belt: [1, 2],
   custom: [2, 3],
+};
+
+const STRUCTURE_POOL: Record<PlanetType, StructureKind[]> = {
+  hive: ["void_dock", "spire_cluster", "underhive_gate", "outpost", "ruins_site"],
+  forge: [
+    "manufactorum_complex",
+    "ore_mine",
+    "slag_works",
+    "reactor",
+    "outpost",
+  ],
+  agri: ["agri_dome", "silo_complex", "reservoir_works", "outpost"],
+  death: ["fortress_bastion", "trench_line", "kill_zone", "outpost", "ruins_site"],
+  shrine: [
+    "cathedral_complex",
+    "reliquary_vault",
+    "pilgrim_station",
+    "outpost",
+    "ruins_site",
+  ],
+  asteroid_belt: ["mining_claim", "relay", "outpost"],
+  custom: ["outpost", "relay", "ruins_site", "mining_claim"],
+};
+
+const STRUCTURE_COUNT: Record<PlanetType, [number, number]> = {
+  hive: [4, 7],
+  forge: [5, 8],
+  agri: [3, 5],
+  death: [4, 6],
+  shrine: [3, 5],
+  asteroid_belt: [2, 4],
+  custom: [2, 4],
+};
+
+const STRUCTURE_NAME_PREFIX: Record<StructureKind, string[]> = {
+  void_dock: ["Void Dock", "Orbital Quay", "Drop-Port"],
+  spire_cluster: ["Spire Cluster", "Hab Spire", "Needle Stack"],
+  underhive_gate: ["Underhive Gate", "Sump Gate", "Depth Access"],
+  manufactorum_complex: ["Manufactorum", "Forge Complex", "Production Yard"],
+  ore_mine: ["Ore Mine", "Extraction Pit", "Deep Claim"],
+  slag_works: ["Slag Works", "Ash Foundry", "Waste Yard"],
+  reactor: ["Reactor", "Plasma Core", "Power Stack"],
+  agri_dome: ["Agri Dome", "Grow Dome", "Hydroplex"],
+  silo_complex: ["Silo Complex", "Grain Vault", "Harvest Bank"],
+  reservoir_works: ["Reservoir", "Aqua Works", "Catchment"],
+  fortress_bastion: ["Bastion", "Redoubt", "Keep"],
+  trench_line: ["Trench Line", "War Dig", "Fire Trench"],
+  kill_zone: ["Kill Zone", "Dead Ground", "Clearance Field"],
+  cathedral_complex: ["Cathedral", "Basilica", "Grand Shrine"],
+  reliquary_vault: ["Reliquary", "Sacred Vault", "Ossuary"],
+  pilgrim_station: ["Pilgrim Station", "Wayshrine", "Processional"],
+  mining_claim: ["Mining Claim", "Asteroid Pit", "Claim Marker"],
+  relay: ["Relay", "Vox Array", "Beacon"],
+  outpost: ["Outpost", "Watch Post", "Frontier Post"],
+  ruins_site: ["Ruins", "Dead Site", "Collapsed Works"],
 };
 
 function cityName(type: PlanetType, index: number, rng: Rng): string {
@@ -97,12 +158,18 @@ function districtName(kind: DistrictKind, index: number): string {
   return `${DISTRICT_KIND_LABELS[kind]} ${index + 1}`;
 }
 
+function structureName(kind: StructureKind, index: number, rng: Rng): string {
+  const prefix = pick(rng, STRUCTURE_NAME_PREFIX[kind]);
+  const numerals = ["Alpha", "Beta", "Gamma", "Delta", "I", "II", "III"];
+  return `${prefix} ${numerals[index % numerals.length]}`;
+}
+
 function dirFromTile(sphere: HexSphere, tileIndex: number): SphereDir {
   const t = sphere.tiles[tileIndex]!;
   return { x: t.center.x, y: t.center.y, z: t.center.z };
 }
 
-/** Graph distance BFS — keep city hubs spread out. */
+/** Graph distance BFS — keep hubs spread out. */
 function tileDistance(
   neighbors: number[][],
   start: number,
@@ -129,10 +196,13 @@ function pickSpreadTiles(
   count: number,
   minDist: number,
   rng: Rng,
+  exclude?: Set<number>,
 ): number[] {
   const order = shuffle(
     rng,
-    sphere.tiles.map((_, i) => i),
+    sphere.tiles
+      .map((_, i) => i)
+      .filter((i) => !exclude?.has(i)),
   );
   const picked: number[] = [];
   for (const idx of order) {
@@ -145,7 +215,6 @@ function pickSpreadTiles(
       if (picked.length >= count) break;
     }
   }
-  // Fallback if spacing is too strict
   for (const idx of order) {
     if (picked.length >= count) break;
     if (!picked.includes(idx)) picked.push(idx);
@@ -194,7 +263,6 @@ export function generatePlanetCities(
       rng,
       (sphere.neighbors[hub] ?? []).filter((n) => !used.has(n)),
     );
-    // Also allow 2-ring neighbors if needed
     const ring2: number[] = [];
     for (const n of sphere.neighbors[hub] ?? []) {
       for (const n2 of sphere.neighbors[n] ?? []) {
@@ -237,23 +305,85 @@ export function generatePlanetCities(
   });
 }
 
-/** Map tile index → owning faction (open claims, then city/district override). */
-export function settlementTileSet(cities: City[]): Set<number> {
+/**
+ * Place world-type structures on free hexes (not cities/districts).
+ */
+export function generatePlanetStructures(
+  planetId: string,
+  type: PlanetType,
+  occupied: Set<number>,
+  options: SettlementGenOptions = {},
+): PlanetStructure[] {
+  const rng = mulberry32(seedFromString(planetId + ":structures"));
+  const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
+  const [sMin, sMax] = STRUCTURE_COUNT[type];
+  const freeSlots = sphere.tiles.length - occupied.size;
+  const count = Math.min(randInt(rng, sMin, sMax), Math.max(0, freeSlots));
+  if (count === 0) return [];
+
+  const pool = STRUCTURE_POOL[type];
+  const tiles = pickSpreadTiles(sphere, count, 2, rng, occupied);
+  const {
+    defaultFactionId,
+    rivalFactionId,
+    contestedRate = rivalFactionId ? 0.3 : 0,
+  } = options;
+
+  return tiles.map((tileIndex, i) => {
+    let owner = defaultFactionId;
+    if (rivalFactionId && rng() < contestedRate) owner = rivalFactionId;
+    const kind = pick(rng, pool);
+    return {
+      id: crypto.randomUUID(),
+      name: structureName(kind, i, rng),
+      kind,
+      tileIndex,
+      dir: dirFromTile(sphere, tileIndex),
+      controllingFactionId: owner,
+      notes: "",
+    };
+  });
+}
+
+/** Cities + type structures for a world. */
+export function generatePlanetSurface(
+  planetId: string,
+  type: PlanetType,
+  options: SettlementGenOptions = {},
+): { cities: City[]; structures: PlanetStructure[] } {
+  const cities = generatePlanetCities(planetId, type, options);
+  const occupied = settlementTileSet(cities, []);
+  const structures = generatePlanetStructures(
+    planetId,
+    type,
+    occupied,
+    options,
+  );
+  return { cities, structures };
+}
+
+/** Map tile index set for cities, districts, and structures. */
+export function settlementTileSet(
+  cities: City[],
+  structures: PlanetStructure[] = [],
+): Set<number> {
   const set = new Set<number>();
   for (const city of cities) {
     set.add(city.tileIndex);
     for (const d of city.districts) set.add(d.tileIndex);
   }
+  for (const s of structures) set.add(s.tileIndex);
   return set;
 }
 
-/** Drop claims that sit on city/district tiles. */
+/** Drop claims that sit on city/district/structure tiles. */
 export function scrubTileClaims(
   claims: Record<string, string> | undefined,
   cities: City[],
+  structures: PlanetStructure[] = [],
 ): Record<string, string> {
   if (!claims) return {};
-  const occupied = settlementTileSet(cities);
+  const occupied = settlementTileSet(cities, structures);
   const next: Record<string, string> = {};
   for (const [key, factionId] of Object.entries(claims)) {
     if (!factionId || occupied.has(Number(key))) continue;
@@ -265,6 +395,7 @@ export function scrubTileClaims(
 export function tileOwnerMap(
   cities: City[],
   tileClaims?: Record<string, string>,
+  structures: PlanetStructure[] = [],
 ): Map<number, string> {
   const map = new Map<number, string>();
   if (tileClaims) {
@@ -282,12 +413,18 @@ export function tileOwnerMap(
       }
     }
   }
+  for (const s of structures) {
+    if (s.controllingFactionId != null) {
+      map.set(s.tileIndex, s.controllingFactionId);
+    }
+  }
   return map;
 }
 
 export function planetOwnerFromCities(
   cities: City[],
   tileClaims?: Record<string, string>,
+  structures: PlanetStructure[] = [],
 ): string | undefined {
   const owners = new Set<string>();
   for (const city of cities) {
@@ -295,6 +432,9 @@ export function planetOwnerFromCities(
     for (const d of city.districts) {
       if (d.controllingFactionId) owners.add(d.controllingFactionId);
     }
+  }
+  for (const s of structures) {
+    if (s.controllingFactionId) owners.add(s.controllingFactionId);
   }
   if (tileClaims) {
     for (const factionId of Object.values(tileClaims)) {
@@ -314,28 +454,68 @@ function settlementsNeedTiles(planet: Planet): boolean {
   );
 }
 
+function structuresNeedTiles(planet: Planet): boolean {
+  const list = planet.structures ?? [];
+  if (list.length === 0) return true;
+  return list.some((s) => typeof s.tileIndex !== "number");
+}
+
 export function ensurePlanetCities(
   planet: Planet,
   options?: SettlementGenOptions,
 ): Planet {
-  if (planet.cities && planet.cities.length > 0 && !settlementsNeedTiles(planet)) {
+  const hasCities =
+    planet.cities &&
+    planet.cities.length > 0 &&
+    !settlementsNeedTiles(planet);
+  const hasStructures =
+    planet.structures &&
+    planet.structures.length > 0 &&
+    !structuresNeedTiles(planet);
+
+  if (hasCities && hasStructures) {
+    const structures = planet.structures ?? [];
     return {
       ...planet,
-      tileClaims: scrubTileClaims(planet.tileClaims, planet.cities),
+      structures,
+      tileClaims: scrubTileClaims(
+        planet.tileClaims,
+        planet.cities,
+        structures,
+      ),
       armies: planet.armies ?? [],
     };
   }
-  const cities = generatePlanetCities(planet.id, planet.type, {
+
+  const genOpts: SettlementGenOptions = {
     defaultFactionId: planet.controllingFactionId ?? options?.defaultFactionId,
     rivalFactionId: options?.rivalFactionId,
     contestedRate: options?.contestedRate,
-  });
+  };
+
+  let cities = planet.cities ?? [];
+  if (!hasCities) {
+    cities = generatePlanetCities(planet.id, planet.type, genOpts);
+  }
+
+  let structures = planet.structures ?? [];
+  if (!hasStructures) {
+    structures = generatePlanetStructures(
+      planet.id,
+      planet.type,
+      settlementTileSet(cities, []),
+      genOpts,
+    );
+  }
+
+  const tileClaims = scrubTileClaims(planet.tileClaims, cities, structures);
   return {
     ...planet,
     cities,
-    tileClaims: scrubTileClaims(planet.tileClaims, cities),
+    structures,
+    tileClaims,
     controllingFactionId:
-      planetOwnerFromCities(cities, scrubTileClaims(planet.tileClaims, cities)) ??
+      planetOwnerFromCities(cities, tileClaims, structures) ??
       planet.controllingFactionId,
     armies: planet.armies ?? [],
   };
@@ -356,6 +536,17 @@ export function assignAllDistricts(
   }));
 }
 
+export function assignAllStructures(
+  structures: PlanetStructure[],
+  factionId: string | null,
+): PlanetStructure[] {
+  const owner = factionId || undefined;
+  return structures.map((s) => ({
+    ...s,
+    controllingFactionId: owner,
+  }));
+}
+
 export function countDistrictsByFaction(cities: City[]): Map<string, number> {
   const map = new Map<string, number>();
   const bump = (id: string | undefined) => {
@@ -367,4 +558,8 @@ export function countDistrictsByFaction(cities: City[]): Map<string, number> {
     for (const d of city.districts) bump(d.controllingFactionId);
   }
   return map;
+}
+
+export function structureLabel(kind: StructureKind): string {
+  return STRUCTURE_KIND_LABELS[kind];
 }
