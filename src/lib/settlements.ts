@@ -94,7 +94,7 @@ const DISTRICTS_PER_CITY: Record<PlanetType, [number, number]> = {
 };
 
 const STRUCTURE_POOL: Record<PlanetType, StructureKind[]> = {
-  hive: ["void_dock", "spire_cluster", "underhive_gate", "outpost", "ruins_site"],
+  hive: ["space_port", "spire_cluster", "underhive_gate", "outpost", "ruins_site"],
   forge: [
     "manufactorum_complex",
     "ore_mine",
@@ -126,7 +126,7 @@ const STRUCTURE_COUNT: Record<PlanetType, [number, number]> = {
 };
 
 const STRUCTURE_NAME_PREFIX: Record<StructureKind, string[]> = {
-  void_dock: ["Void Dock", "Orbital Quay", "Drop-Port"],
+  space_port: ["Space Port", "Starport", "Drop-Port"],
   spire_cluster: ["Spire Cluster", "Hab Spire", "Needle Stack"],
   underhive_gate: ["Underhive Gate", "Sump Gate", "Depth Access"],
   manufactorum_complex: ["Manufactorum", "Forge Complex", "Production Yard"],

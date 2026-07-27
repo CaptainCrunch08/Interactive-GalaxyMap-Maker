@@ -42,6 +42,8 @@ export function InspectorPanel() {
   const fileRef = useRef<HTMLInputElement>(null);
   const symbolFileRef = useRef<HTMLInputElement>(null);
   const campaign = useCampaignStore((s) => s.campaign);
+  const isDirty = useCampaignStore((s) => s.isDirty);
+  const saveGalaxy = useCampaignStore((s) => s.saveGalaxy);
   const viewLevel = useCampaignStore((s) => s.viewLevel);
   const editMode = useCampaignStore((s) => s.editMode);
   const selectedSystemId = useCampaignStore((s) => s.selectedSystemId);
@@ -208,6 +210,14 @@ export function InspectorPanel() {
               onChange={(e) => setCampaignName(e.target.value)}
             />
             <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className={`hud-btn ${isDirty ? "hud-btn-active" : ""}`}
+                onClick={() => saveGalaxy()}
+                title="Download this galaxy as JSON"
+              >
+                Save
+              </button>
               <button
                 type="button"
                 className="hud-btn"

@@ -14,6 +14,7 @@ import {
   scrubTileClaims,
   settlementTileSet,
 } from "../lib/settlements";
+import { normalizeStructureKind } from "../lib/structureMeshes";
 import { getSystemOwnership } from "../lib/territory";
 import { normalizeStarClass, pickRandomStarClass } from "../lib/stars";
 import {
@@ -77,10 +78,15 @@ function clearNavigationState() {
   };
 }
 
-function withCampaign(state: CampaignState, campaign: Campaign) {
+function withCampaign(
+  state: CampaignState,
+  campaign: Campaign,
+  options?: { dirty?: boolean },
+) {
   return {
     campaign,
     maps: { ...state.maps, [state.activeMapId]: campaign },
+    isDirty: options?.dirty ?? true,
   };
 }
 
@@ -105,7 +111,10 @@ function ensureCampaignSettlements(campaign: Campaign): Campaign {
           ...p,
           classification: normalizePlanetClassification(p.classification),
           cities: p.cities ?? [],
-          structures: p.structures ?? [],
+          structures: (p.structures ?? []).map((st) => ({
+            ...st,
+            kind: normalizeStructureKind(st.kind),
+          })),
           armies: p.armies ?? [],
         },
         {
@@ -144,6 +153,8 @@ interface CampaignState {
    */
   terrainPaintFactionId: string | null;
   editMode: boolean;
+  /** True when the active galaxy has changes since last Save. */
+  isDirty: boolean;
 
   toggleSideMenu: () => void;
   toggleInspector: () => void;
@@ -153,6 +164,9 @@ interface CampaignState {
   }) => void;
   switchMap: (mapId: string) => void;
   deleteMap: (mapId: string) => void;
+  /** Download active galaxy JSON and clear dirty flag. */
+  saveGalaxy: () => void;
+  markSaved: () => void;
 
   setCampaignName: (name: string) => void;
   importCampaign: (campaign: Campaign) => void;
@@ -327,6 +341,7 @@ export const useCampaignStore = create<CampaignState>()(
       fleetMoveModeId: null,
       terrainPaintFactionId: null,
       editMode: false,
+      isDirty: false,
 
       toggleSideMenu: () => set((s) => ({ sideMenuOpen: !s.sideMenuOpen })),
       toggleInspector: () =>
@@ -340,10 +355,11 @@ export const useCampaignStore = create<CampaignState>()(
             ? generateGalaxyCampaign(options.size ?? "medium", name)
             : { ...createEmptyCampaign(), name };
         set((s) => ({
-          maps: { ...s.maps, [id]: campaign },
+          maps: { ...withCampaign(s, s.campaign, { dirty: false }).maps, [id]: campaign },
           mapOrder: [...s.mapOrder, id],
           activeMapId: id,
           campaign,
+          isDirty: false,
           ...clearNavigationState(),
         }));
       },
@@ -351,11 +367,12 @@ export const useCampaignStore = create<CampaignState>()(
       switchMap: (mapId) => {
         const state = get();
         if (mapId === state.activeMapId || !state.maps[mapId]) return;
-        const maps = withCampaign(state, state.campaign).maps;
+        const maps = withCampaign(state, state.campaign, { dirty: false }).maps;
         set({
           maps,
           activeMapId: mapId,
           campaign: maps[mapId],
+          isDirty: false,
           ...clearNavigationState(),
         });
       },
@@ -363,7 +380,9 @@ export const useCampaignStore = create<CampaignState>()(
       deleteMap: (mapId) => {
         const state = get();
         if (state.mapOrder.length <= 1 || !state.maps[mapId]) return;
-        const maps = { ...withCampaign(state, state.campaign).maps };
+        const maps = {
+          ...withCampaign(state, state.campaign, { dirty: false }).maps,
+        };
         delete maps[mapId];
         const mapOrder = state.mapOrder.filter((id) => id !== mapId);
         if (state.activeMapId === mapId) {
@@ -373,6 +392,7 @@ export const useCampaignStore = create<CampaignState>()(
             mapOrder,
             activeMapId,
             campaign: maps[activeMapId],
+            isDirty: false,
             ...clearNavigationState(),
           });
         } else {
@@ -380,18 +400,30 @@ export const useCampaignStore = create<CampaignState>()(
         }
       },
 
+      saveGalaxy: () => {
+        const campaign = get().campaign;
+        void import("../lib/io").then(({ downloadCampaign }) => {
+          downloadCampaign(campaign);
+          get().markSaved();
+        });
+      },
+
+      markSaved: () => set({ isDirty: false }),
+
       setCampaignName: (name) =>
         set((s) => withCampaign(s, { ...s.campaign, name })),
 
       importCampaign: (campaign) =>
         set((s) => ({
-          ...withCampaign(s, ensureCampaignSettlements(campaign)),
+          ...withCampaign(s, ensureCampaignSettlements(campaign), {
+            dirty: false,
+          }),
           ...clearNavigationState(),
         })),
 
       resetToDemo: () =>
         set((s) => ({
-          ...withCampaign(s, createDemoCampaign()),
+          ...withCampaign(s, createDemoCampaign(), { dirty: false }),
           ...clearNavigationState(),
         })),
 
@@ -1518,7 +1550,7 @@ export const useCampaignStore = create<CampaignState>()(
         return persistedState;
       },
       partialize: (state) => {
-        const maps = withCampaign(state, state.campaign).maps;
+        const maps = withCampaign(state, state.campaign, { dirty: false }).maps;
         return {
           maps,
           mapOrder: state.mapOrder,
@@ -1539,6 +1571,7 @@ export const useCampaignStore = create<CampaignState>()(
             mapOrder: [id],
             activeMapId: id,
             campaign,
+            isDirty: false,
           };
         }
 
@@ -1557,6 +1590,7 @@ export const useCampaignStore = create<CampaignState>()(
             mapOrder: p.mapOrder,
             activeMapId,
             campaign,
+            isDirty: false,
           };
         }
 

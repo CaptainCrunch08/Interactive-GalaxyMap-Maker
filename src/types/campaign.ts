@@ -57,7 +57,7 @@ export type DistrictKind =
  * World type drives which kinds appear on a planet.
  */
 export type StructureKind =
-  | "void_dock"
+  | "space_port"
   | "spire_cluster"
   | "underhive_gate"
   | "manufactorum_complex"
@@ -377,7 +377,7 @@ export const STAR_CLASS_ORDER: StarClass[] = [
 export const DISTRICT_KIND_LABELS: Record<DistrictKind, string> = {
   spire: "Hive Spire",
   underhive: "Underhive",
-  docks: "Void Docks",
+  docks: "Space Docks",
   bastion: "Bastion",
   manufactorum: "Manufactorum",
   foundry: "Foundry",
@@ -397,7 +397,7 @@ export const DISTRICT_KIND_LABELS: Record<DistrictKind, string> = {
 };
 
 export const STRUCTURE_KIND_LABELS: Record<StructureKind, string> = {
-  void_dock: "Void Dock",
+  space_port: "Space Port",
   spire_cluster: "Spire Cluster",
   underhive_gate: "Underhive Gate",
   manufactorum_complex: "Manufactorum Complex",

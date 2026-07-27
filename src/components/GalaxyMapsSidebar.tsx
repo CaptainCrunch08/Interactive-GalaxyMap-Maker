@@ -1,22 +1,56 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useCampaignStore } from "../store/useCampaignStore";
 import { NewGalaxyDialog } from "./NewGalaxyDialog";
+import type { GalaxySize } from "../lib/generateGalaxy";
+
+type LeaveAction =
+  | { kind: "switch"; mapId: string }
+  | { kind: "create"; options: { kind: "empty" | "generated"; size?: GalaxySize } }
+  | { kind: "delete"; mapId: string; name: string };
 
 export function GalaxyMapsSidebar() {
   const sideMenuOpen = useCampaignStore((s) => s.sideMenuOpen);
   const mapOrder = useCampaignStore((s) => s.mapOrder);
   const maps = useCampaignStore((s) => s.maps);
   const activeMapId = useCampaignStore((s) => s.activeMapId);
+  const campaign = useCampaignStore((s) => s.campaign);
+  const isDirty = useCampaignStore((s) => s.isDirty);
   const switchMap = useCampaignStore((s) => s.switchMap);
   const createMap = useCampaignStore((s) => s.createMap);
   const deleteMap = useCampaignStore((s) => s.deleteMap);
+  const saveGalaxy = useCampaignStore((s) => s.saveGalaxy);
   const setCampaignName = useCampaignStore((s) => s.setCampaignName);
   const toggleSideMenu = useCampaignStore((s) => s.toggleSideMenu);
   const [newGalaxyOpen, setNewGalaxyOpen] = useState(false);
+  const [leaveAction, setLeaveAction] = useState<LeaveAction | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{
     id: string;
     name: string;
   } | null>(null);
+
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!useCampaignStore.getState().isDirty) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
+
+  const runLeaveAction = (action: LeaveAction) => {
+    if (action.kind === "switch") switchMap(action.mapId);
+    else if (action.kind === "create") createMap(action.options);
+    else deleteMap(action.mapId);
+  };
+
+  const requestLeave = (action: LeaveAction) => {
+    if (!isDirty) {
+      runLeaveAction(action);
+      return;
+    }
+    setLeaveAction(action);
+  };
 
   if (!sideMenuOpen) return null;
 
@@ -44,10 +78,15 @@ export function GalaxyMapsSidebar() {
           </button>
         </div>
 
-        <div className="px-3 pt-3 pb-1">
+        <div className="px-3 pt-3 pb-1 flex items-center justify-between gap-2">
           <p className="text-[10px] font-display uppercase tracking-wider text-muted">
             Galaxy maps
           </p>
+          {isDirty && (
+            <span className="text-[9px] uppercase tracking-wider text-brass">
+              Unsaved
+            </span>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-0.5">
@@ -60,9 +99,15 @@ export function GalaxyMapsSidebar() {
                 <button
                   type="button"
                   className={`outliner-item flex-1 min-w-0 ${active ? "outliner-item-active" : ""}`}
-                  onClick={() => switchMap(id)}
+                  onClick={() => {
+                    if (id === activeMapId) return;
+                    requestLeave({ kind: "switch", mapId: id });
+                  }}
                 >
-                  <span className="block truncate">{map.name}</span>
+                  <span className="block truncate">
+                    {map.name}
+                    {active && isDirty ? " •" : ""}
+                  </span>
                 </button>
                 {mapOrder.length > 1 && (
                   <button
@@ -82,6 +127,14 @@ export function GalaxyMapsSidebar() {
         </div>
 
         <div className="p-3 border-t border-panel-border space-y-2">
+          <button
+            type="button"
+            className={`hud-btn w-full ${isDirty ? "hud-btn-active" : ""}`}
+            onClick={() => saveGalaxy()}
+            title="Download this galaxy as a JSON file"
+          >
+            {isDirty ? "Save galaxy…" : "Save galaxy"}
+          </button>
           <button
             type="button"
             className="hud-btn w-full"
@@ -105,7 +158,7 @@ export function GalaxyMapsSidebar() {
         onCancel={() => setNewGalaxyOpen(false)}
         onConfirm={(options) => {
           setNewGalaxyOpen(false);
-          createMap(options);
+          requestLeave({ kind: "create", options });
         }}
       />
 
@@ -140,11 +193,72 @@ export function GalaxyMapsSidebar() {
                 type="button"
                 className="hud-btn flex-1 text-crimson border-crimson/40"
                 onClick={() => {
-                  deleteMap(pendingDelete.id);
+                  const { id, name } = pendingDelete;
                   setPendingDelete(null);
+                  if (id === activeMapId && isDirty) {
+                    requestLeave({ kind: "delete", mapId: id, name });
+                  } else {
+                    deleteMap(id);
+                  }
                 }}
               >
                 Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {leaveAction && (
+        <div
+          className="fixed inset-0 z-[85] flex items-center justify-center p-4 bg-void/75"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="leave-galaxy-title"
+        >
+          <div className="hud-panel w-full max-w-sm p-4 shadow-xl space-y-4">
+            <h2
+              id="leave-galaxy-title"
+              className="font-display text-sm text-cyan uppercase tracking-[0.14em]"
+            >
+              Unsaved changes
+            </h2>
+            <p className="text-xs text-muted leading-relaxed">
+              Save{" "}
+              <span className="text-star">{campaign.name}</span> before
+              leaving this galaxy? A JSON file will download to your computer.
+            </p>
+            <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                className="hud-btn w-full hud-btn-active"
+                onClick={() => {
+                  const action = leaveAction;
+                  setLeaveAction(null);
+                  saveGalaxy();
+                  // Allow download to start, then leave
+                  window.setTimeout(() => runLeaveAction(action), 50);
+                }}
+              >
+                Save and continue
+              </button>
+              <button
+                type="button"
+                className="hud-btn w-full"
+                onClick={() => {
+                  const action = leaveAction;
+                  setLeaveAction(null);
+                  runLeaveAction(action);
+                }}
+              >
+                Don&apos;t save
+              </button>
+              <button
+                type="button"
+                className="hud-btn w-full"
+                onClick={() => setLeaveAction(null)}
+              >
+                Cancel
               </button>
             </div>
           </div>
