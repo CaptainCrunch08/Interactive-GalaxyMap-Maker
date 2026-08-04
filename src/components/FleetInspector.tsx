@@ -8,7 +8,10 @@ import {
   locationLabel,
   shipCount,
 } from "../lib/fleets";
+import { playMoveBlockReason } from "../lib/play";
+import { factionSymbolIds } from "../lib/factionSymbols";
 import { getFactionById } from "../lib/territory";
+import { normalizeCampaignPlay } from "../types/campaign";
 import { useCampaignStore } from "../store/useCampaignStore";
 
 const inputClass = "hud-input";
@@ -44,6 +47,12 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
 
   const fac = getFactionById(campaign, fleet.factionId);
   const moving = fleetMoveModeId === fleet.id;
+  const moveBlock = playMoveBlockReason(
+    campaign,
+    fleet.factionId,
+    fleet.id,
+    "fleet",
+  );
 
   return (
     <>
@@ -113,7 +122,10 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
               className={inputClass + " flex-1"}
               value={fleet.factionId}
               onChange={(e) =>
-                updateFleet(fleet.id, { factionId: e.target.value })
+                updateFleet(fleet.id, {
+                  factionId: e.target.value,
+                  symbolId: undefined,
+                })
               }
             >
               {campaign.factions.map((f) => (
@@ -123,12 +135,42 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
               ))}
             </select>
           </div>
+          <label className="block text-xs text-muted mb-1">Symbol</label>
+          <select
+            className={inputClass + " mb-2"}
+            value={fleet.symbolId ?? ""}
+            onChange={(e) =>
+              updateFleet(fleet.id, {
+                symbolId: e.target.value || undefined,
+              })
+            }
+          >
+            <option value="">
+              Faction primary
+              {fac?.defaultSymbolId
+                ? ` (${
+                    campaign.symbols?.find((s) => s.id === fac.defaultSymbolId)
+                      ?.name ?? "default"
+                  })`
+                : ""}
+            </option>
+            {(fac ? factionSymbolIds(fac) : [])
+              .map((id) => (campaign.symbols ?? []).find((s) => s.id === id))
+              .filter(Boolean)
+              .map((s) => (
+                <option key={s!.id} value={s!.id}>
+                  {s!.name}
+                  {s!.id === fac?.defaultSymbolId ? " (primary)" : ""}
+                </option>
+              ))}
+          </select>
           <p className="text-[10px] text-muted mb-2">
             {chassisSummary(fleet) || "No ships"}
           </p>
           <button
             type="button"
             className={`hud-btn w-full ${moving ? "hud-btn-active" : ""}`}
+            title={moveBlock ?? undefined}
             onClick={() => setFleetMoveMode(moving ? null : fleet.id)}
           >
             {moving
@@ -137,6 +179,11 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
                 : "Click star or planet…"
               : "Move fleet"}
           </button>
+          {moveBlock && !moving && (
+            <p className="text-[10px] text-brass mt-1.5 leading-snug">
+              {moveBlock}
+            </p>
+          )}
           {moving && (
             <p className="text-[10px] text-cyan mt-1.5 leading-snug">
               {viewLevel === "galaxy"
@@ -151,25 +198,32 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
             <h3 className="text-xs uppercase text-muted tracking-wide">
               Ships
             </h3>
-            <select
-              className={inputClass}
-              style={{ fontSize: "0.7rem", width: "auto" }}
-              value=""
-              onChange={(e) => {
-                const chassis = e.target.value as ShipChassis;
-                if (!chassis) return;
-                addShip(fleet.id, chassis);
-                e.target.value = "";
-              }}
-            >
-              <option value="">+ Add chassis…</option>
-              {SHIP_CHASSIS_ORDER.map((c) => (
-                <option key={c} value={c}>
-                  {SHIP_CHASSIS_LABELS[c]}
-                </option>
-              ))}
-            </select>
+            {!normalizeCampaignPlay(campaign.play).active && (
+              <select
+                className={inputClass}
+                style={{ fontSize: "0.7rem", width: "auto" }}
+                value=""
+                onChange={(e) => {
+                  const chassis = e.target.value as ShipChassis;
+                  if (!chassis) return;
+                  addShip(fleet.id, chassis);
+                  e.target.value = "";
+                }}
+              >
+                <option value="">+ Add chassis…</option>
+                {SHIP_CHASSIS_ORDER.map((c) => (
+                  <option key={c} value={c}>
+                    {SHIP_CHASSIS_LABELS[c]}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
+          {normalizeCampaignPlay(campaign.play).active && (
+            <p className="text-[10px] text-muted mb-2">
+              Build ships with building points at an owned Space Port.
+            </p>
+          )}
           {fleet.ships.length === 0 ? (
             <p className="text-xs text-muted">No ships in this fleet.</p>
           ) : (
@@ -272,7 +326,9 @@ export function FleetListSection({
     <section>
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-xs uppercase text-muted tracking-wide">{title}</h3>
-        {systemId && campaign.factions.length > 0 && (
+        {systemId &&
+          campaign.factions.length > 0 &&
+          !normalizeCampaignPlay(campaign.play).active && (
           <select
             className={inputClass}
             style={{ fontSize: "0.7rem", width: "auto" }}
@@ -296,7 +352,9 @@ export function FleetListSection({
       {fleets.length === 0 ? (
         <p className="text-xs text-muted">
           {systemId
-            ? "No fleets in this system."
+            ? normalizeCampaignPlay(campaign.play).active
+              ? "No fleets here. Recruit at a Space Port on a planet."
+              : "No fleets in this system."
             : "No fleets yet. Open a system to deploy one."}
         </p>
       ) : (

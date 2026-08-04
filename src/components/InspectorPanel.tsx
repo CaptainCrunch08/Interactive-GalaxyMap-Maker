@@ -7,7 +7,6 @@ import {
   STAR_CLASS_LABELS,
   STAR_CLASS_ORDER,
   STRUCTURE_KIND_LABELS,
-  campaignMapSize,
 } from "../types/campaign";
 import type {
   PlanetClassification,
@@ -22,6 +21,30 @@ import {
   systemOwnerSelectValue,
 } from "../lib/territory";
 import { countDistrictsByFaction } from "../lib/settlements";
+import {
+  canBuildManufactorum,
+  canRecruitDetachment,
+  canRecruitShip,
+  canUseSpacePort,
+  DETACHMENT_BP_COST,
+  getBuildingPoints,
+  incomeForFaction,
+  MANUFACTORUM_BP_COST,
+  ownedCities,
+  shipBpCost,
+} from "../lib/buildingPoints";
+import {
+  ARMY_MOVE_RANGE,
+  armyMovementRemaining,
+  playMoveBlockReason,
+} from "../lib/play";
+import { armyStrength, VICTORY_KIND_LABELS } from "../lib/battleResolve";
+import { factionSymbolIds } from "../lib/factionSymbols";
+import {
+  normalizeCampaignPlay,
+  SHIP_CHASSIS_LABELS,
+  SHIP_CHASSIS_ORDER,
+} from "../types/campaign";
 import { TERRAIN_PAINT_ERASE } from "./strategic/HexPlanet";
 import { FleetInspector, FleetListSection } from "./FleetInspector";
 import { formatTime, parseTimeInput } from "../views/TimelineView";
@@ -40,12 +63,10 @@ function FactionSwatch({ color }: { color?: string }) {
 
 export function InspectorPanel() {
   const fileRef = useRef<HTMLInputElement>(null);
-  const symbolFileRef = useRef<HTMLInputElement>(null);
   const campaign = useCampaignStore((s) => s.campaign);
   const isDirty = useCampaignStore((s) => s.isDirty);
   const saveGalaxy = useCampaignStore((s) => s.saveGalaxy);
   const viewLevel = useCampaignStore((s) => s.viewLevel);
-  const editMode = useCampaignStore((s) => s.editMode);
   const selectedSystemId = useCampaignStore((s) => s.selectedSystemId);
   const focusedSystemId = useCampaignStore((s) => s.focusedSystemId);
   const focusedPlanetId = useCampaignStore((s) => s.focusedPlanetId);
@@ -58,10 +79,6 @@ export function InspectorPanel() {
   const addPlanet = useCampaignStore((s) => s.addPlanet);
   const updatePlanet = useCampaignStore((s) => s.updatePlanet);
   const deletePlanet = useCampaignStore((s) => s.deletePlanet);
-  const addFaction = useCampaignStore((s) => s.addFaction);
-  const updateFaction = useCampaignStore((s) => s.updateFaction);
-  const deleteFaction = useCampaignStore((s) => s.deleteFaction);
-  const addSystem = useCampaignStore((s) => s.addSystem);
   const setSystemOwner = useCampaignStore((s) => s.setSystemOwner);
   const setPlanetOwner = useCampaignStore((s) => s.setPlanetOwner);
   const setCityOwner = useCampaignStore((s) => s.setCityOwner);
@@ -72,10 +89,11 @@ export function InspectorPanel() {
     (s) => s.setTerrainPaintFaction,
   );
   const regenerateSettlements = useCampaignStore((s) => s.regenerateSettlements);
-  const addSymbol = useCampaignStore((s) => s.addSymbol);
-  const updateSymbol = useCampaignStore((s) => s.updateSymbol);
-  const deleteSymbol = useCampaignStore((s) => s.deleteSymbol);
   const addArmy = useCampaignStore((s) => s.addArmy);
+  const recruitDetachment = useCampaignStore((s) => s.recruitDetachment);
+  const recruitShip = useCampaignStore((s) => s.recruitShip);
+  const playBuildMode = useCampaignStore((s) => s.playBuildMode);
+  const setPlayBuildMode = useCampaignStore((s) => s.setPlayBuildMode);
   const updateArmy = useCampaignStore((s) => s.updateArmy);
   const deleteArmy = useCampaignStore((s) => s.deleteArmy);
   const selectArmy = useCampaignStore((s) => s.selectArmy);
@@ -151,19 +169,25 @@ export function InspectorPanel() {
 
   useEffect(() => {
     if (!showPlanetDetails) return;
-    const targetId = selectedStructureId
-      ? `structure-${selectedStructureId}`
-      : selectedDistrictId
-        ? `district-${selectedDistrictId}`
-        : selectedCityId
-          ? `city-${selectedCityId}`
-          : null;
+    const targetId = selectedArmyId
+      ? `army-${selectedArmyId}`
+      : selectedStructureId
+        ? `structure-${selectedStructureId}`
+        : selectedDistrictId
+          ? `district-${selectedDistrictId}`
+          : selectedCityId
+            ? `city-${selectedCityId}`
+            : null;
     if (!targetId) return;
     const root = planetScrollRef.current;
     const el = root?.querySelector(`#${CSS.escape(targetId)}`);
-    el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    el?.scrollIntoView({
+      behavior: "smooth",
+      block: selectedArmyId ? "center" : "nearest",
+    });
   }, [
     showPlanetDetails,
+    selectedArmyId,
     selectedCityId,
     selectedDistrictId,
     selectedStructureId,
@@ -268,9 +292,6 @@ export function InspectorPanel() {
                 Timeline
               </button>
             </div>
-            <p className="text-xs text-muted">
-              Mode: {editMode ? "Edit (drag stars)" : "Navigate (click to enter)"}
-            </p>
           </div>
 
           <div className="flex-1 overflow-y-auto p-4 space-y-6">
@@ -416,141 +437,10 @@ export function InspectorPanel() {
             )}
 
             <section>
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="text-xs uppercase text-muted tracking-wide">
-                  Factions
-                </h3>
-                <button
-                  type="button"
-                  className="text-xs text-brass"
-                  onClick={() => addFaction()}
-                >
-                  + Add
-                </button>
-              </div>
-              {campaign.factions.length === 0 ? (
-                <p className="text-xs text-muted">No factions defined.</p>
-              ) : (
-                <ul className="space-y-2">
-                  {campaign.factions.map((f) => (
-                    <li key={f.id} className="space-y-1">
-                      <div className="flex gap-2 items-center">
-                        <input
-                          type="color"
-                          className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent"
-                          value={f.color}
-                          onChange={(e) =>
-                            updateFaction(f.id, { color: e.target.value })
-                          }
-                        />
-                        <input
-                          className={inputClass + " flex-1"}
-                          value={f.name}
-                          onChange={(e) =>
-                            updateFaction(f.id, { name: e.target.value })
-                          }
-                        />
-                        <button
-                          type="button"
-                          className="text-xs text-crimson shrink-0"
-                          onClick={() => deleteFaction(f.id)}
-                        >
-                          ×
-                        </button>
-                      </div>
-                      {(campaign.symbols?.length ?? 0) > 0 && (
-                        <select
-                          className={inputClass}
-                          style={{ fontSize: "0.75rem" }}
-                          value={f.defaultSymbolId ?? ""}
-                          onChange={(e) =>
-                            updateFaction(f.id, {
-                              defaultSymbolId: e.target.value || undefined,
-                            })
-                          }
-                        >
-                          <option value="">Default army symbol…</option>
-                          {(campaign.symbols ?? []).map((s) => (
-                            <option key={s.id} value={s.id}>
-                              {s.name}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            <section>
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="text-xs uppercase text-muted tracking-wide">
-                  Army symbols
-                </h3>
-                <button
-                  type="button"
-                  className="text-xs text-brass"
-                  onClick={() => symbolFileRef.current?.click()}
-                >
-                  + Import
-                </button>
-                <input
-                  ref={symbolFileRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    void import("../lib/io").then(async ({ readImageAsDataUrl }) => {
-                      try {
-                        const dataUrl = await readImageAsDataUrl(file);
-                        const base = file.name.replace(/\.[^.]+$/, "") || "Symbol";
-                        addSymbol(base, dataUrl);
-                      } catch {
-                        alert("Could not import that image.");
-                      }
-                    });
-                    e.target.value = "";
-                  }}
-                />
-              </div>
-              {(campaign.symbols ?? []).length === 0 ? (
-                <p className="text-xs text-muted">
-                  Import PNG/SVG icons to mark armies on planets.
-                </p>
-              ) : (
-                <ul className="space-y-2">
-                  {(campaign.symbols ?? []).map((sym) => (
-                    <li
-                      key={sym.id}
-                      className="flex items-center gap-2 rounded border border-panel-border/80 p-1.5"
-                    >
-                      <img
-                        src={sym.imageDataUrl}
-                        alt=""
-                        className="w-9 h-9 object-contain rounded bg-void/60 border border-panel-border"
-                      />
-                      <input
-                        className={inputClass + " flex-1"}
-                        style={{ fontSize: "0.75rem" }}
-                        value={sym.name}
-                        onChange={(e) =>
-                          updateSymbol(sym.id, { name: e.target.value })
-                        }
-                      />
-                      <button
-                        type="button"
-                        className="text-xs text-crimson shrink-0"
-                        onClick={() => deleteSymbol(sym.id)}
-                      >
-                        ×
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <p className="text-xs text-muted leading-relaxed">
+                Manage factions and symbols in{" "}
+                <span className="text-cyan">Maps → Edit Galaxy</span>.
+              </p>
             </section>
 
             <section>
@@ -597,23 +487,10 @@ export function InspectorPanel() {
             <FleetListSection title="Fleets" />
 
             <section>
-              <p className="text-xs text-muted mb-2">
-                Select a star or add a new system.
+              <p className="text-xs text-muted leading-relaxed">
+                Add or arrange systems in{" "}
+                <span className="text-cyan">Maps → Edit Galaxy</span>.
               </p>
-              <button
-                type="button"
-                className="text-sm px-3 py-2 rounded border border-brass-dim text-brass w-full"
-                onClick={() =>
-                  addSystem(
-                    campaignMapSize(campaign) / 2 +
-                      campaign.systems.length * 40,
-                    campaignMapSize(campaign) / 2 +
-                      campaign.systems.length * 30,
-                  )
-                }
-              >
-                + Add system
-              </button>
             </section>
           </div>
         </>
@@ -1045,12 +922,200 @@ export function InspectorPanel() {
               )}
             </section>
 
+            {(() => {
+              const play = normalizeCampaignPlay(campaign.play);
+              if (!play.active || !play.activeFactionId || !planet) return null;
+              const factionId = play.activeFactionId;
+              const bp = getBuildingPoints(planet, factionId);
+              const income = incomeForFaction(planet, factionId);
+              const detCheck = canRecruitDetachment(
+                campaign,
+                planet,
+                factionId,
+              );
+              const portCheck = canUseSpacePort(campaign, planet, factionId);
+              const citiesOwned = ownedCities(planet, factionId);
+              const buildCityId =
+                playBuildMode?.kind === "manufactorum" &&
+                playBuildMode.planetId === planet.id
+                  ? playBuildMode.cityId
+                  : (selectedCityId &&
+                      citiesOwned.some((c) => c.id === selectedCityId)
+                    ? selectedCityId
+                    : citiesOwned[0]?.id ?? null);
+              const manufCheck = canBuildManufactorum(
+                campaign,
+                planet,
+                factionId,
+                buildCityId,
+              );
+              const fac = getFactionById(campaign, factionId);
+              return (
+                <section>
+                  <h3 className="text-xs uppercase text-muted tracking-wide mb-2">
+                    Building points
+                  </h3>
+                  <p className="text-xs text-muted mb-2 flex items-center gap-2">
+                    <FactionSwatch color={fac?.color} />
+                    <span>
+                      <span className="text-cyan font-medium">{bp} BP</span>
+                      {" on this world"}
+                      {income > 0 ? (
+                        <span className="text-muted">
+                          {" "}
+                          · +{income}/turn from manufactorums
+                        </span>
+                      ) : null}
+                    </span>
+                  </p>
+                  <div className="flex flex-col gap-1.5">
+                    <button
+                      type="button"
+                      className="hud-btn w-full"
+                      disabled={!detCheck.ok}
+                      title={detCheck.ok ? undefined : detCheck.message}
+                      onClick={() => recruitDetachment(planet.id)}
+                    >
+                      Recruit detachment ({DETACHMENT_BP_COST} BP)
+                    </button>
+                    {!detCheck.ok && (
+                      <p className="text-[10px] text-brass leading-snug">
+                        {detCheck.message}
+                      </p>
+                    )}
+
+                    <p className="text-[10px] uppercase tracking-wider text-muted pt-1">
+                      Build manufactorum
+                    </p>
+                    {citiesOwned.length > 0 && (
+                      <label className="flex flex-col gap-0.5 text-[10px] text-muted">
+                        Around city
+                        <select
+                          className="hud-btn w-full text-left"
+                          value={buildCityId ?? ""}
+                          onChange={(e) => {
+                            const cityId = e.target.value;
+                            if (
+                              playBuildMode?.kind === "manufactorum" &&
+                              cityId
+                            ) {
+                              setPlayBuildMode({
+                                kind: "manufactorum",
+                                planetId: planet.id,
+                                cityId,
+                              });
+                            }
+                            selectSettlement(cityId, null);
+                          }}
+                        >
+                          {citiesOwned.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                    <button
+                      type="button"
+                      className={`hud-btn w-full ${
+                        playBuildMode?.kind === "manufactorum"
+                          ? "hud-btn-active"
+                          : ""
+                      }`}
+                      disabled={!manufCheck.ok && playBuildMode == null}
+                      title={
+                        manufCheck.ok
+                          ? "Then click a free hex next to the city on the strategic map"
+                          : manufCheck.message
+                      }
+                      onClick={() => {
+                        if (playBuildMode?.kind === "manufactorum") {
+                          setPlayBuildMode(null);
+                          return;
+                        }
+                        if (!manufCheck.ok) {
+                          return;
+                        }
+                        setPlayBuildMode({
+                          kind: "manufactorum",
+                          planetId: planet.id,
+                          cityId: manufCheck.city.id,
+                        });
+                        if (viewLevel !== "strategic") {
+                          enterPlanet(planet.id);
+                        }
+                      }}
+                    >
+                      {playBuildMode?.kind === "manufactorum"
+                        ? "Click hex around city… (cancel)"
+                        : `Build manufactorum (${MANUFACTORUM_BP_COST} BP)`}
+                    </button>
+                    {!manufCheck.ok && playBuildMode == null && (
+                      <p className="text-[10px] text-brass leading-snug">
+                        {manufCheck.message}
+                      </p>
+                    )}
+                    {playBuildMode?.kind === "manufactorum" && (
+                      <p className="text-[10px] text-cyan leading-snug">
+                        Open the strategic map and click a free hex adjacent to{" "}
+                        {manufCheck.ok
+                          ? manufCheck.city.name
+                          : "the city"}
+                        .
+                      </p>
+                    )}
+
+                    <p className="text-[10px] uppercase tracking-wider text-muted pt-1">
+                      Build ship at Space Port
+                    </p>
+                    {!portCheck.ok ? (
+                      <p className="text-[10px] text-brass leading-snug">
+                        {portCheck.message}
+                      </p>
+                    ) : (
+                      <div className="flex flex-wrap gap-1 max-h-36 overflow-y-auto">
+                        {SHIP_CHASSIS_ORDER.map((chassis) => {
+                          const shipCheck = canRecruitShip(
+                            campaign,
+                            planet,
+                            factionId,
+                            chassis,
+                          );
+                          const cost = shipBpCost(chassis);
+                          return (
+                            <button
+                              key={chassis}
+                              type="button"
+                              className="hud-btn"
+                              disabled={!shipCheck.ok}
+                              title={
+                                shipCheck.ok
+                                  ? `${SHIP_CHASSIS_LABELS[chassis]} · ${cost} BP`
+                                  : shipCheck.message
+                              }
+                              onClick={() =>
+                                recruitShip(planet.id, chassis)
+                              }
+                            >
+                              {SHIP_CHASSIS_LABELS[chassis]} ({cost})
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </section>
+              );
+            })()}
+
             <section>
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-xs uppercase text-muted tracking-wide">
                   Armies
                 </h3>
-                {campaign.factions.length > 0 && (
+                {campaign.factions.length > 0 &&
+                  !normalizeCampaignPlay(campaign.play).active && (
                   <select
                     className={inputClass}
                     style={{ fontSize: "0.7rem", width: "auto" }}
@@ -1073,7 +1138,9 @@ export function InspectorPanel() {
               </div>
               {(planet.armies ?? []).length === 0 ? (
                 <p className="text-xs text-muted">
-                  Deploy an army, assign a symbol, then place it on the globe.
+                  {normalizeCampaignPlay(campaign.play).active
+                    ? "Recruit a detachment with building points at a War Camp."
+                    : "Deploy an army, assign a symbol, then place it on the globe."}
                 </p>
               ) : (
                 <ul className="space-y-3">
@@ -1081,21 +1148,36 @@ export function InspectorPanel() {
                     const fac = getFactionById(campaign, army.factionId);
                     const active = selectedArmyId === army.id;
                     const placing = placingArmyId === army.id;
+                    const armyMoveBlock = playMoveBlockReason(
+                      campaign,
+                      army.factionId,
+                      army.id,
+                      "army",
+                    );
+                    const play = normalizeCampaignPlay(campaign.play);
+                    const movesLeft = play.active
+                      ? armyMovementRemaining(play, army.id)
+                      : null;
+                    const str = armyStrength(army);
                     return (
                       <li
                         key={army.id}
-                        className={`rounded border p-2 space-y-2 ${
+                        id={`army-${army.id}`}
+                        className={`rounded border p-2 space-y-2 cursor-pointer ${
                           active
                             ? "border-cyan/40 bg-cyan/5"
                             : "border-panel-border/80"
                         }`}
+                        onClick={() => selectArmy(army.id)}
                       >
                         <div className="flex items-center gap-2">
-                          {army.symbolId ? (
+                          {(army.symbolId ?? fac?.defaultSymbolId) ? (
                             <img
                               src={
                                 campaign.symbols?.find(
-                                  (s) => s.id === army.symbolId,
+                                  (s) =>
+                                    s.id ===
+                                    (army.symbolId ?? fac?.defaultSymbolId),
                                 )?.imageDataUrl
                               }
                               alt=""
@@ -1130,6 +1212,23 @@ export function InspectorPanel() {
                             ×
                           </button>
                         </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] uppercase tracking-wider text-muted shrink-0">
+                            STR
+                          </span>
+                          <div className="flex-1 h-1.5 rounded-sm bg-void/80 overflow-hidden border border-panel-border/60">
+                            <div
+                              className="h-full rounded-sm"
+                              style={{
+                                width: `${Math.max(2, str)}%`,
+                                background: fac?.color ?? "#c9a227",
+                              }}
+                            />
+                          </div>
+                          <span className="text-[10px] tabular-nums text-muted w-10 text-right">
+                            {str}%
+                          </span>
+                        </div>
                         <select
                           className={inputClass}
                           style={{ fontSize: "0.75rem" }}
@@ -1156,16 +1255,34 @@ export function InspectorPanel() {
                             })
                           }
                         >
-                          <option value="">No symbol</option>
-                          {(campaign.symbols ?? []).map((s) => (
-                            <option key={s.id} value={s.id}>
-                              {s.name}
-                            </option>
-                          ))}
+                          <option value="">
+                            Faction primary
+                            {fac?.defaultSymbolId
+                              ? ` (${
+                                  campaign.symbols?.find(
+                                    (s) => s.id === fac.defaultSymbolId,
+                                  )?.name ?? "default"
+                                })`
+                              : ""}
+                          </option>
+                          {(fac ? factionSymbolIds(fac) : [])
+                            .map((id) =>
+                              (campaign.symbols ?? []).find((s) => s.id === id),
+                            )
+                            .filter(Boolean)
+                            .map((s) => (
+                              <option key={s!.id} value={s!.id}>
+                                {s!.name}
+                                {s!.id === fac?.defaultSymbolId
+                                  ? " (primary)"
+                                  : ""}
+                              </option>
+                            ))}
                         </select>
                         <button
                           type="button"
                           className={`hud-btn w-full ${placing ? "hud-btn-active" : ""}`}
+                          title={armyMoveBlock ?? undefined}
                           onClick={() => {
                             selectArmy(army.id);
                             setPlacingArmy(placing ? null : army.id);
@@ -1173,6 +1290,16 @@ export function InspectorPanel() {
                         >
                           {placing ? "Click map to place…" : "Place on planet"}
                         </button>
+                        {movesLeft != null && !armyMoveBlock && (
+                          <p className="text-[10px] text-muted leading-snug">
+                            Movement {movesLeft}/{ARMY_MOVE_RANGE} hexes left
+                          </p>
+                        )}
+                        {!placing && armyMoveBlock && (
+                          <p className="text-[10px] text-brass leading-snug">
+                            {armyMoveBlock}
+                          </p>
+                        )}
                       </li>
                     );
                   })}
@@ -1224,6 +1351,19 @@ export function InspectorPanel() {
                           ×
                         </button>
                       </div>
+                      {battle.victoryKind && (
+                        <p className="text-[10px] text-brass uppercase tracking-wider">
+                          {VICTORY_KIND_LABELS[battle.victoryKind]}
+                          {battle.attackerVp != null &&
+                          battle.defenderVp != null
+                            ? ` · ${battle.attackerVp}–${battle.defenderVp} VP`
+                            : ""}
+                          {battle.attackerCasualties != null ||
+                          battle.defenderCasualties != null
+                            ? ` · KIA ${(battle.attackerCasualties ?? 0) + (battle.defenderCasualties ?? 0)}`
+                            : ""}
+                        </p>
+                      )}
                       <input
                         className={inputClass}
                         style={{ fontSize: "0.75rem" }}

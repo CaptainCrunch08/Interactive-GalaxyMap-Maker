@@ -10,6 +10,7 @@ import { FactionTerritoryLayer } from "./FactionTerritoryLayer";
 import { HyperlaneLayer } from "./HyperlaneLayer";
 import { StarNode } from "./StarNode";
 import { FleetMarker } from "../fleet/FleetMarker";
+import { resolveFleetSymbolUrl } from "../../lib/fleetSymbols";
 import { useMapCamera } from "../../hooks/useMapCamera";
 import { getDominantFactionForSystem } from "../../store/useCampaignStore";
 import { fleetsBySystemId } from "../../lib/fleets";
@@ -80,7 +81,11 @@ export function GalaxyChronicleMap({
             <div className="galaxy-nebula pointer-events-none absolute inset-0" />
             <GalaxyBounds size={mapSize} />
             <FactionTerritoryLayer campaign={campaign} />
-            <HyperlaneLayer systems={campaign.systems} mapSize={mapSize} />
+            <HyperlaneLayer
+              systems={campaign.systems}
+              mapSize={mapSize}
+              campaign={campaign}
+            />
             {campaign.systems.map((system) => {
               const ownership = getSystemOwnership(campaign, system.id);
               return (
@@ -115,6 +120,11 @@ export function GalaxyChronicleMap({
                     key={fleet.id}
                     fleet={fleet}
                     color={fac?.color ?? "#4fd2ff"}
+                    symbolUrl={resolveFleetSymbolUrl(
+                      fleet,
+                      fac,
+                      campaign.symbols,
+                    )}
                     x={system.x + 22}
                     y={system.y - 28}
                     selected={false}

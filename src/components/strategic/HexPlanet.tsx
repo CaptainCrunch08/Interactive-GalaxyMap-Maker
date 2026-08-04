@@ -6,16 +6,20 @@ import type {
   ArmySymbol,
   City,
   Faction,
+  FamousBattleSite,
   PlanetClassification,
   PlanetStructure,
   PlanetType,
   SphereDir,
 } from "../../types/campaign";
 import { buildHexSphere, nearestTileIndex } from "../../lib/hexSphere";
+import { engageTargetsForArmy } from "../../lib/battleResolve";
 import { buildFactionBorders } from "../../lib/planetBorders";
 import {
   coreColorForPlanet,
   sampleTerrainAtDirection,
+  TERRAIN_KIND_ERASE,
+  type TerrainKind,
 } from "../../lib/planetTerrain";
 import {
   SETTLEMENT_HEX_FREQUENCY,
@@ -25,12 +29,14 @@ import {
 import { getStructureGeometry } from "../../lib/structureMeshes";
 
 const FREQUENCY = SETTLEMENT_HEX_FREQUENCY;
+/** Combat target hex glow (distinct from selection / paint accent). */
+const ENGAGE_HIGHLIGHT = "#e85a4f";
 const PLANET_RADIUS = 1.35;
 /** Shrink tiles toward their centers so gaps show empire borders clearly. */
 const TILE_INSET = 0.86;
 /** Army tags sit just above the hex crust (flush, not floating). */
 const ARMY_SURFACE_RADIUS = PLANET_RADIUS * 1.022;
-const ARMY_MARKER_SIZE = 0.095;
+const ARMY_MARKER_SIZE = 0.11;
 /** When a city/structure shares the hex, slide the tag toward the camera. */
 const ARMY_OCCUPIED_OFFSET = 0.055;
 const ARMY_OCCUPIED_LIFT = 0.014;
@@ -53,21 +59,41 @@ type HexPlanetProps = {
   structures: PlanetStructure[];
   tileClaims: Record<string, string>;
   armies: Army[];
+  famousBattleSites?: FamousBattleSite[];
   symbols: ArmySymbol[];
   factions: Faction[];
   selectedCityId: string | null;
   selectedDistrictId: string | null;
   selectedStructureId: string | null;
   selectedArmyId: string | null;
+  selectedFamousBattleId?: string | null;
   placingArmyId: string | null;
+  /**
+   * Play-mode: when set, highlight hexes this detachment can fight on
+   * and click those hexes (or rival markers there) to open battle resolve.
+   */
+  engageArmyId?: string | null;
   /** Faction id to paint, TERRAIN_PAINT_ERASE to clear, or null when off. */
   terrainPaintFactionId: string | null;
+  /** Biome brush: TerrainKind, TERRAIN_KIND_ERASE, or null. */
+  terrainPaintKind?: string | null;
+  /** When true, left-click on a free hex places a city/district/structure. */
+  surfacePlaceActive?: boolean;
+  /** Manual biome overrides by tile index. */
+  tileTerrain?: Record<string, string>;
   onSelectSettlement: (cityId: string, districtId: string | null) => void;
   onSelectStructure: (structureId: string) => void;
   onSelectArmy: (armyId: string) => void;
+  onSelectFamousBattle?: (siteId: string | null) => void;
   onPlaceArmy: (dir: SphereDir) => void;
-  onMoveArmy: (armyId: string, dir: SphereDir) => void;
+  onMoveArmy: (armyId: string, dir: SphereDir) => boolean;
+  /**
+   * Play-mode engage: attacker challenges a rival on a fightable hex.
+   */
+  onEngageArmy?: (attackerArmyId: string, defenderArmyId: string) => void;
   onClaimTiles: (claims: Record<number, string | null>) => void;
+  onPaintTerrain?: (patches: Record<number, string | null>) => void;
+  onPlaceAtTile?: (tileIndex: number) => void;
 };
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -252,6 +278,7 @@ function buildPlanetMeshes(
   factions: Faction[],
   tileClaims?: Record<string, string>,
   structures: PlanetStructure[] = [],
+  tileTerrain?: Record<string, string>,
 ): { surface: THREE.Mesh; seams: THREE.LineSegments } {
   const { tiles } = planetSphere();
   const owners = tileOwnerMap(cities, tileClaims, structures);
@@ -267,6 +294,7 @@ function buildPlanetMeshes(
 
   for (let ti = 0; ti < tiles.length; ti++) {
     const tile = tiles[ti]!;
+    const override = tileTerrain?.[String(ti)] as TerrainKind | undefined;
     const { fill, height } = sampleTerrainAtDirection(
       tile.center.x,
       tile.center.y,
@@ -274,6 +302,7 @@ function buildPlanetMeshes(
       planetId,
       classification,
       planetType,
+      override ?? null,
     );
     const [cr0, cg0, cb0] = hexToRgb(fill);
     let [cr, cg, cb] = displayRgb(cr0, cg0, cb0);
@@ -485,6 +514,112 @@ function buildSettlementMarkers(
   return group;
 }
 
+function createCrossedSwordsTexture(tier: "heroic" | "epochal"): THREE.CanvasTexture {
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  ctx.clearRect(0, 0, size, size);
+
+  const metal = tier === "epochal" ? "#f0d060" : "#c8d0d8";
+  const grip = tier === "epochal" ? "#8b4518" : "#4a3020";
+
+  const drawSword = (angle: number) => {
+    ctx.save();
+    ctx.translate(size / 2, size / 2);
+    ctx.rotate(angle);
+    // blade
+    ctx.fillStyle = metal;
+    ctx.beginPath();
+    ctx.moveTo(-4, -48);
+    ctx.lineTo(4, -48);
+    ctx.lineTo(6, 8);
+    ctx.lineTo(-6, 8);
+    ctx.closePath();
+    ctx.fill();
+    // tip
+    ctx.beginPath();
+    ctx.moveTo(-4, -48);
+    ctx.lineTo(0, -56);
+    ctx.lineTo(4, -48);
+    ctx.closePath();
+    ctx.fill();
+    // guard
+    ctx.fillStyle = metal;
+    ctx.fillRect(-14, 6, 28, 5);
+    // grip
+    ctx.fillStyle = grip;
+    ctx.fillRect(-3.5, 11, 7, 18);
+    // pommel
+    ctx.fillStyle = metal;
+    ctx.beginPath();
+    ctx.arc(0, 32, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  };
+
+  drawSword(-Math.PI / 4);
+  drawSword(Math.PI / 4);
+
+  // small ring plaque base
+  ctx.strokeStyle = tier === "epochal" ? "#e8c547" : "#9eb0c0";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(size / 2, size / 2, 58, 0, Math.PI * 2);
+  ctx.stroke();
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function buildFamousBattleMarkers(
+  sites: FamousBattleSite[],
+  selectedId: string | null,
+): THREE.Group {
+  const group = new THREE.Group();
+  for (const site of sites) {
+    const selected = selectedId === site.id;
+    const tex = createCrossedSwordsTexture(site.tier);
+    const size = selected ? 0.14 : 0.11;
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(size, size), mat);
+    mesh.position.copy(placeOnSphere(site.dir, PLANET_RADIUS * 1.028));
+    // Face outward from the planet (lookAt center + rotateX would invert the art)
+    mesh.lookAt(mesh.position.clone().multiplyScalar(2));
+    mesh.userData = {
+      kind: "famous-battle",
+      siteId: site.id,
+      dir: { ...site.dir },
+    };
+    group.add(mesh);
+
+    if (selected) {
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(size * 0.7, size * 0.85, 24),
+        new THREE.MeshBasicMaterial({
+          color: site.tier === "epochal" ? "#e8c547" : "#c0c8d0",
+          side: THREE.DoubleSide,
+          transparent: true,
+          opacity: 0.9,
+        }),
+      );
+      ring.position.copy(placeOnSphere(site.dir, PLANET_RADIUS * 1.026));
+      ring.lookAt(ring.position.clone().multiplyScalar(2));
+      ring.userData = { kind: "decor" };
+      group.add(ring);
+    }
+  }
+  return group;
+}
+
 function buildStructureMarkers(
   structures: PlanetStructure[],
   factions: Faction[],
@@ -543,50 +678,62 @@ function createArmyMarker(
   color: string,
   selected: boolean,
 ): THREE.Mesh {
+  const W = 256;
+  const H = 256;
   const canvas = document.createElement("canvas");
-  canvas.width = 128;
-  canvas.height = 128;
+  canvas.width = W;
+  canvas.height = H;
   const ctx = canvas.getContext("2d")!;
-  const pad = selected ? 6 : 10;
-  const plate = 128 - pad * 2;
-  const label =
-    army.name.length > 12 ? `${army.name.slice(0, 11)}…` : army.name;
+  const pad = selected ? 10 : 14;
+  const nameBand = selected ? 64 : 48;
+  const plate = W - pad * 2;
+  const iconBottom = H - pad - nameBand - 6;
+  const iconTop = pad + 8;
+  const iconSize = Math.max(40, iconBottom - iconTop);
 
   const paintFrame = (img?: HTMLImageElement) => {
-    ctx.clearRect(0, 0, 128, 128);
-    ctx.fillStyle = "rgba(8, 16, 24, 0.92)";
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "rgba(8, 16, 24, 0.94)";
     ctx.strokeStyle = selected ? color : "rgba(79, 210, 255, 0.55)";
-    ctx.lineWidth = selected ? 5 : 3;
-    roundRect(ctx, pad, pad, plate, plate, 8);
+    ctx.lineWidth = selected ? 7 : 4;
+    roundRect(ctx, pad, pad, plate, plate, 12);
     ctx.fill();
     ctx.stroke();
 
-    const iconPad = pad + 10;
-    const iconSize = plate - 20;
+    const iconLeft = pad + (plate - iconSize) / 2;
     if (img && img.naturalWidth > 0) {
-      drawContainedImage(ctx, img, iconPad, iconPad, iconSize, iconSize);
+      drawContainedImage(ctx, img, iconLeft, iconTop, iconSize, iconSize);
     } else {
+      const cx = W / 2;
+      const cy = iconTop + iconSize / 2;
       ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.arc(64, 64, plate * 0.22, 0, Math.PI * 2);
+      ctx.arc(cx, cy, iconSize * 0.28, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = "#0a1018";
-      ctx.font = "bold 36px sans-serif";
+      ctx.font = `bold ${Math.round(iconSize * 0.32)}px sans-serif`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText((army.name[0] ?? "?").toUpperCase(), 64, 64);
+      ctx.fillText((army.name[0] ?? "?").toUpperCase(), cx, cy);
     }
 
-    if (selected) {
-      ctx.fillStyle = "rgba(6, 12, 20, 0.88)";
-      roundRect(ctx, pad + 4, 128 - pad - 22, plate - 8, 20, 4);
-      ctx.fill();
-      ctx.fillStyle = "#e8f0f8";
-      ctx.font = "600 14px 'Exo 2', sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(label, 64, 128 - pad - 12);
-    }
+    // Name band — always visible; larger when selected
+    const bandY = H - pad - nameBand;
+    ctx.fillStyle = selected
+      ? "rgba(6, 12, 20, 0.92)"
+      : "rgba(6, 12, 20, 0.82)";
+    roundRect(ctx, pad + 6, bandY, plate - 12, nameBand - 4, 6);
+    ctx.fill();
+    ctx.fillStyle = "#e8f0f8";
+    drawFittedLabel(
+      ctx,
+      army.name,
+      W / 2,
+      bandY + (nameBand - 4) / 2,
+      plate - 24,
+      nameBand - 12,
+      selected ? 22 : 16,
+    );
   };
 
   paintFrame();
@@ -604,7 +751,7 @@ function createArmyMarker(
     if (img.complete && img.naturalWidth > 0) paintFrame(img);
   }
 
-  const size = selected ? ARMY_MARKER_SIZE * 1.12 : ARMY_MARKER_SIZE;
+  const size = selected ? ARMY_MARKER_SIZE * 1.28 : ARMY_MARKER_SIZE;
   const mesh = new THREE.Mesh(
     new THREE.PlaneGeometry(size, size),
     new THREE.MeshBasicMaterial({
@@ -619,6 +766,74 @@ function createArmyMarker(
   );
   mesh.userData = { kind: "army", armyId: army.id, dir: { ...army.dir } };
   return mesh;
+}
+
+/**
+ * Draw army name fitting width — shrink font, then wrap up to 2 lines,
+ * then ellipsize as last resort.
+ */
+function drawFittedLabel(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  cx: number,
+  cy: number,
+  maxWidth: number,
+  maxHeight: number,
+  maxFont: number,
+) {
+  const minFont = 11;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#e8f0f8";
+
+  const wrapTwoLines = (fontSize: number): string[] | null => {
+    ctx.font = `600 ${fontSize}px 'Exo 2', sans-serif`;
+    if (ctx.measureText(text).width <= maxWidth) return [text];
+    const words = text.split(/\s+/).filter(Boolean);
+    if (words.length < 2) return null;
+    let best: string[] | null = null;
+    for (let i = 1; i < words.length; i++) {
+      const a = words.slice(0, i).join(" ");
+      const b = words.slice(i).join(" ");
+      if (
+        ctx.measureText(a).width <= maxWidth &&
+        ctx.measureText(b).width <= maxWidth
+      ) {
+        best = [a, b];
+      }
+    }
+    return best;
+  };
+
+  for (let fontSize = maxFont; fontSize >= minFont; fontSize -= 1) {
+    const lineH = fontSize * 1.15;
+    const lines = wrapTwoLines(fontSize);
+    if (!lines) continue;
+    if (lines.length * lineH > maxHeight + 1) continue;
+    const totalH = lines.length * lineH;
+    let y = cy - totalH / 2 + lineH / 2;
+    ctx.font = `600 ${fontSize}px 'Exo 2', sans-serif`;
+    for (const line of lines) {
+      ctx.fillText(line, cx, y);
+      y += lineH;
+    }
+    return;
+  }
+
+  // Ellipsis fallback at min size
+  ctx.font = `600 ${minFont}px 'Exo 2', sans-serif`;
+  let truncated = text;
+  while (
+    truncated.length > 1 &&
+    ctx.measureText(`${truncated}…`).width > maxWidth
+  ) {
+    truncated = truncated.slice(0, -1);
+  }
+  ctx.fillText(
+    truncated === text ? text : `${truncated}…`,
+    cx,
+    cy,
+  );
 }
 
 const _armyZ = new THREE.Vector3();
@@ -718,7 +933,8 @@ function buildArmyMarkers(
   const group = new THREE.Group();
   for (const army of armies) {
     const fac = factions.find((f) => f.id === army.factionId);
-    const symbol = symbols.find((s) => s.id === army.symbolId);
+    const symbolId = army.symbolId ?? fac?.defaultSymbolId;
+    const symbol = symbols.find((s) => s.id === symbolId);
     const marker = createArmyMarker(
       army,
       symbol,
@@ -737,13 +953,17 @@ type OverlayState = {
   cities: City[];
   structures: PlanetStructure[];
   tileClaims: Record<string, string>;
+  tileTerrain: Record<string, string>;
   armies: Army[];
+  famousBattleSites: FamousBattleSite[];
   symbols: ArmySymbol[];
   factions: Faction[];
   selectedCityId: string | null;
   selectedDistrictId: string | null;
   selectedStructureId: string | null;
   selectedArmyId: string | null;
+  selectedFamousBattleId: string | null;
+  engageArmyId: string | null;
 };
 
 export function HexPlanet({
@@ -754,43 +974,72 @@ export function HexPlanet({
   cities,
   structures,
   tileClaims,
+  tileTerrain = {},
   armies,
+  famousBattleSites = [],
   symbols,
   factions,
   selectedCityId,
   selectedDistrictId,
   selectedStructureId,
   selectedArmyId,
+  selectedFamousBattleId = null,
   placingArmyId,
+  engageArmyId = null,
   terrainPaintFactionId,
+  terrainPaintKind = null,
+  surfacePlaceActive = false,
   onSelectSettlement,
   onSelectStructure,
   onSelectArmy,
+  onSelectFamousBattle,
   onPlaceArmy,
   onMoveArmy,
+  onEngageArmy,
   onClaimTiles,
+  onPaintTerrain,
+  onPlaceAtTile,
 }: HexPlanetProps) {
   const mountRef = useRef<HTMLDivElement>(null);
   const onSelectSettlementRef = useRef(onSelectSettlement);
   const onSelectStructureRef = useRef(onSelectStructure);
   const onSelectArmyRef = useRef(onSelectArmy);
+  const onSelectFamousBattleRef = useRef(onSelectFamousBattle);
   const onPlaceArmyRef = useRef(onPlaceArmy);
   const onMoveArmyRef = useRef(onMoveArmy);
+  const onEngageArmyRef = useRef(onEngageArmy);
   const onClaimTilesRef = useRef(onClaimTiles);
+  const onPaintTerrainRef = useRef(onPaintTerrain);
+  const onPlaceAtTileRef = useRef(onPlaceAtTile);
   const placingRef = useRef(placingArmyId);
   const paintRef = useRef(terrainPaintFactionId);
+  const kindPaintRef = useRef(terrainPaintKind);
+  const surfacePlaceRef = useRef(surfacePlaceActive);
   const citiesRef = useRef(cities);
   const structuresRef = useRef(structures);
+  const armiesRef = useRef(armies);
+  const selectedArmyIdRef = useRef(selectedArmyId);
+  const engageArmyIdRef = useRef(engageArmyId);
+  const engageTargetsRef = useRef<Map<number, string[]>>(new Map());
   onSelectSettlementRef.current = onSelectSettlement;
   onSelectStructureRef.current = onSelectStructure;
   onSelectArmyRef.current = onSelectArmy;
+  onSelectFamousBattleRef.current = onSelectFamousBattle;
   onPlaceArmyRef.current = onPlaceArmy;
   onMoveArmyRef.current = onMoveArmy;
+  onEngageArmyRef.current = onEngageArmy;
   onClaimTilesRef.current = onClaimTiles;
+  onPaintTerrainRef.current = onPaintTerrain;
+  onPlaceAtTileRef.current = onPlaceAtTile;
   placingRef.current = placingArmyId;
   paintRef.current = terrainPaintFactionId;
+  kindPaintRef.current = terrainPaintKind;
+  surfacePlaceRef.current = surfacePlaceActive;
   citiesRef.current = cities;
   structuresRef.current = structures;
+  armiesRef.current = armies;
+  selectedArmyIdRef.current = selectedArmyId;
+  engageArmyIdRef.current = engageArmyId;
 
   const occupiedTilesRef = useRef<Set<number>>(new Set());
   occupiedTilesRef.current = settlementTileSet(cities, structures);
@@ -799,8 +1048,8 @@ export function HexPlanet({
     const mount = mountRef.current;
     if (!mount) return;
 
-    const width = mount.clientWidth || 640;
-    const height = mount.clientHeight || 480;
+    const width = Math.max(1, mount.clientWidth || 640);
+    const height = Math.max(1, mount.clientHeight || 480);
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(42, width / height, 0.1, 100);
@@ -811,7 +1060,9 @@ export function HexPlanet({
       alpha: true,
     });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setSize(width, height);
+    renderer.setSize(width, height, false);
+    renderer.domElement.style.width = "100%";
+    renderer.domElement.style.height = "100%";
     renderer.setClearColor(0x000000, 0);
     mount.appendChild(renderer.domElement);
 
@@ -845,6 +1096,7 @@ export function HexPlanet({
       factions,
       tileClaims,
       structures,
+      tileTerrain,
     ));
     planet.add(surface, seams);
 
@@ -875,6 +1127,12 @@ export function HexPlanet({
       selectedArmyId,
     );
     planet.add(armyMarkers);
+
+    let famousBattleMarkers = buildFamousBattleMarkers(
+      famousBattleSites,
+      selectedFamousBattleId,
+    );
+    planet.add(famousBattleMarkers);
     scene.add(planet);
 
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -895,6 +1153,7 @@ export function HexPlanet({
     const pointer = new THREE.Vector2();
     let pointerDown: { x: number; y: number } | null = null;
     let tileHighlight: THREE.Group | null = null;
+    let engageHighlightRoot: THREE.Group | null = null;
     let armyDrag: {
       armyId: string;
       marker: THREE.Mesh;
@@ -905,6 +1164,7 @@ export function HexPlanet({
     let terrainPaint: {
       lastTile: number | null;
       pending: Map<number, string | null>;
+      mode: "faction" | "biome";
     } | null = null;
     let faceAnim: {
       from: THREE.Quaternion;
@@ -975,6 +1235,38 @@ export function HexPlanet({
       tileHighlight = null;
     };
 
+    const clearEngageHighlights = () => {
+      if (!engageHighlightRoot) return;
+      planet.remove(engageHighlightRoot);
+      disposeGroup(engageHighlightRoot);
+      engageHighlightRoot = null;
+    };
+
+    const refreshEngageHighlights = (
+      armiesList: Army[],
+      attackerId: string | null,
+    ) => {
+      clearEngageHighlights();
+      if (!attackerId) {
+        engageTargetsRef.current = new Map();
+        return;
+      }
+      const targets = engageTargetsForArmy(
+        armiesList,
+        attackerId,
+        planetSphere(),
+      );
+      engageTargetsRef.current = targets;
+      if (targets.size === 0) return;
+      const root = new THREE.Group();
+      root.userData = { kind: "engage-highlights" };
+      for (const tileIndex of targets.keys()) {
+        root.add(buildTileHighlight(tileIndex, ENGAGE_HIGHLIGHT));
+      }
+      engageHighlightRoot = root;
+      planet.add(root);
+    };
+
     const setHighlightedTile = (tileIndex: number | null) => {
       if (
         tileIndex != null &&
@@ -988,7 +1280,7 @@ export function HexPlanet({
       planet.add(tileHighlight);
     };
 
-    const setPointerFromEvent = (e: PointerEvent) => {
+    const setPointerFromEvent = (e: { clientX: number; clientY: number }) => {
       const rect = renderer.domElement.getBoundingClientRect();
       pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -1009,8 +1301,7 @@ export function HexPlanet({
     };
 
     const applyTerrainPaintAtPointer = () => {
-      const brush = paintRef.current;
-      if (brush == null || !terrainPaint) return;
+      if (!terrainPaint) return;
       const tileIndex = tileIndexFromSurfaceHit();
       if (tileIndex == null) {
         setHighlightedTile(null);
@@ -1018,14 +1309,26 @@ export function HexPlanet({
       }
       setHighlightedTile(tileIndex);
       if (terrainPaint.lastTile === tileIndex) return;
-      const occupied = settlementTileSet(
-        citiesRef.current,
-        structuresRef.current,
-      );
-      if (occupied.has(tileIndex)) return;
+
+      if (terrainPaint.mode === "faction") {
+        const brush = paintRef.current;
+        if (brush == null) return;
+        const occupied = settlementTileSet(
+          citiesRef.current,
+          structuresRef.current,
+        );
+        if (occupied.has(tileIndex)) return;
+        terrainPaint.lastTile = tileIndex;
+        const factionId = brush === TERRAIN_PAINT_ERASE ? null : brush;
+        terrainPaint.pending.set(tileIndex, factionId);
+        return;
+      }
+
+      const brush = kindPaintRef.current;
+      if (brush == null) return;
       terrainPaint.lastTile = tileIndex;
-      const factionId = brush === TERRAIN_PAINT_ERASE ? null : brush;
-      terrainPaint.pending.set(tileIndex, factionId);
+      const kind = brush === TERRAIN_KIND_ERASE ? null : brush;
+      terrainPaint.pending.set(tileIndex, kind);
     };
 
     const endArmyDrag = (commit: boolean) => {
@@ -1034,7 +1337,14 @@ export function HexPlanet({
       armyDrag = null;
       controls.enabled = true;
       if (commit && tileIndex != null) {
-        onMoveArmyRef.current(armyId, dirFromTileIndex(tileIndex));
+        const accepted = onMoveArmyRef.current(
+          armyId,
+          dirFromTileIndex(tileIndex),
+        );
+        if (!accepted) {
+          marker.position.copy(startPos);
+          marker.quaternion.copy(startQuat);
+        }
       } else {
         marker.position.copy(startPos);
         marker.quaternion.copy(startQuat);
@@ -1045,19 +1355,39 @@ export function HexPlanet({
     const endTerrainPaint = (commit: boolean) => {
       if (!terrainPaint) return;
       const pending = terrainPaint.pending;
+      const mode = terrainPaint.mode;
       terrainPaint = null;
       controls.enabled = true;
       clearTileHighlight();
       if (!commit || pending.size === 0) return;
       const batch: Record<number, string | null> = {};
-      for (const [tileIndex, factionId] of pending) {
-        batch[tileIndex] = factionId;
+      for (const [tileIndex, value] of pending) {
+        batch[tileIndex] = value;
       }
-      onClaimTilesRef.current(batch);
+      if (mode === "biome") {
+        onPaintTerrainRef.current?.(batch);
+      } else {
+        onClaimTilesRef.current(batch);
+      }
     };
 
     const onContextMenu = (e: Event) => {
       e.preventDefault();
+    };
+
+    const tryEngageAtTile = (tileIndex: number, preferArmyId?: string) => {
+      const attackerId = engageArmyIdRef.current;
+      const engage = onEngageArmyRef.current;
+      if (!attackerId || !engage) return false;
+      const defenders = engageTargetsRef.current.get(tileIndex);
+      if (!defenders || defenders.length === 0) return false;
+      const defenderId =
+        (preferArmyId && defenders.includes(preferArmyId)
+          ? preferArmyId
+          : defenders[0]) ?? null;
+      if (!defenderId) return false;
+      engage(attackerId, defenderId);
+      return true;
     };
 
     const onPointerDown = (e: PointerEvent) => {
@@ -1091,9 +1421,17 @@ export function HexPlanet({
 
       if (e.button !== 0) return;
 
-      if (paintRef.current != null && !placingRef.current) {
+      if (
+        !placingRef.current &&
+        !surfacePlaceRef.current &&
+        (paintRef.current != null || kindPaintRef.current != null)
+      ) {
         setPointerFromEvent(e);
-        terrainPaint = { lastTile: null, pending: new Map() };
+        terrainPaint = {
+          lastTile: null,
+          pending: new Map(),
+          mode: kindPaintRef.current != null ? "biome" : "faction",
+        };
         controls.enabled = false;
         renderer.domElement.setPointerCapture(e.pointerId);
         applyTerrainPaintAtPointer();
@@ -1159,6 +1497,7 @@ export function HexPlanet({
       setPointerFromEvent(e);
 
       const pickables = [
+        ...famousBattleMarkers.children,
         ...armyMarkers.children,
         ...settlements.children,
         ...structureMarkers.children,
@@ -1178,15 +1517,46 @@ export function HexPlanet({
         }
       }
 
+      if (surfacePlaceRef.current && onPlaceAtTileRef.current) {
+        const surfaceHit = hits.find((h) => h.object === surface);
+        if (surfaceHit) {
+          const tileIndex = nearestTileIndex(
+            planetSphere(),
+            localDirFromWorldPoint(surfaceHit.point),
+          );
+          if (!occupiedTilesRef.current.has(tileIndex)) {
+            onPlaceAtTileRef.current(tileIndex);
+          }
+          return;
+        }
+      }
+
+      const famousHit = hits.find(
+        (h) => h.object.userData?.kind === "famous-battle",
+      );
+      if (famousHit) {
+        const siteId = famousHit.object.userData.siteId as string;
+        onSelectFamousBattleRef.current?.(siteId);
+        return;
+      }
+
       const armyHit = hits.find((h) => h.object.userData?.kind === "army");
       if (armyHit) {
-        onSelectArmyRef.current(armyHit.object.userData.armyId as string);
+        onSelectFamousBattleRef.current?.(null);
+        const armyId = armyHit.object.userData.armyId as string;
+        const army = armiesRef.current.find((a) => a.id === armyId);
+        if (army) {
+          const tileIndex = nearestTileIndex(planetSphere(), army.dir);
+          if (tryEngageAtTile(tileIndex, armyId)) return;
+        }
+        onSelectArmyRef.current(armyId);
         return;
       }
       const structureHit = hits.find(
         (h) => h.object.userData?.kind === "structure",
       );
       if (structureHit) {
+        onSelectFamousBattleRef.current?.(null);
         onSelectStructureRef.current(
           structureHit.object.userData.structureId as string,
         );
@@ -1198,6 +1568,7 @@ export function HexPlanet({
           h.object.userData?.kind === "district",
       );
       if (settleHit) {
+        onSelectFamousBattleRef.current?.(null);
         const { cityId, districtId } = settleHit.object.userData as {
           cityId: string;
           districtId: string | null;
@@ -1213,12 +1584,17 @@ export function HexPlanet({
           planetSphere(),
           localDirFromWorldPoint(surfaceHit.point),
         );
+        if (tryEngageAtTile(tileIndex)) return;
         const feature = featureAtTile(
           tileIndex,
           citiesRef.current,
           structuresRef.current,
         );
-        if (!feature) return;
+        if (!feature) {
+          onSelectFamousBattleRef.current?.(null);
+          return;
+        }
+        onSelectFamousBattleRef.current?.(null);
         if (feature.kind === "structure") {
           onSelectStructureRef.current(feature.structureId);
         } else if (feature.kind === "district") {
@@ -1249,6 +1625,8 @@ export function HexPlanet({
     renderer.domElement.addEventListener("pointermove", onPointerMove);
     renderer.domElement.addEventListener("pointerup", onPointerUp);
     renderer.domElement.addEventListener("pointercancel", onPointerCancel);
+
+    refreshEngageHighlights(armies, engageArmyId);
 
     let frame = 0;
     let lastTs = performance.now();
@@ -1294,11 +1672,14 @@ export function HexPlanet({
 
     const onResize = () => {
       if (!mount) return;
-      const w = mount.clientWidth;
-      const h = mount.clientHeight;
-      camera.aspect = w / Math.max(h, 1);
+      const w = Math.max(1, mount.clientWidth);
+      const h = Math.max(1, mount.clientHeight);
+      if (w < 2 || h < 2) return;
+      camera.aspect = w / h;
       camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
+      renderer.setSize(w, h, false);
+      renderer.domElement.style.width = "100%";
+      renderer.domElement.style.height = "100%";
     };
     const ro = new ResizeObserver(onResize);
     ro.observe(mount);
@@ -1316,6 +1697,7 @@ export function HexPlanet({
         settlements,
         structureMarkers,
         armyMarkers,
+        famousBattleMarkers,
       );
       disposeGroup(surface);
       disposeGroup(seams);
@@ -1323,6 +1705,7 @@ export function HexPlanet({
       disposeGroup(settlements);
       disposeGroup(structureMarkers);
       disposeGroup(armyMarkers);
+      disposeGroup(famousBattleMarkers);
 
       ({ surface, seams } = buildPlanetMeshes(
         planetId,
@@ -1332,6 +1715,7 @@ export function HexPlanet({
         state.factions,
         state.tileClaims,
         state.structures,
+        state.tileTerrain,
       ));
       borders = buildBorderLines(
         state.cities,
@@ -1358,6 +1742,10 @@ export function HexPlanet({
         state.factions,
         state.selectedArmyId,
       );
+      famousBattleMarkers = buildFamousBattleMarkers(
+        state.famousBattleSites,
+        state.selectedFamousBattleId,
+      );
       planet.add(
         surface,
         seams,
@@ -1365,7 +1753,9 @@ export function HexPlanet({
         settlements,
         structureMarkers,
         armyMarkers,
+        famousBattleMarkers,
       );
+      refreshEngageHighlights(state.armies, state.engageArmyId);
     };
 
     (
@@ -1394,6 +1784,7 @@ export function HexPlanet({
       delete (mount as HTMLDivElement & { __faceFeature?: unknown })
         .__faceFeature;
       clearTileHighlight();
+      clearEngageHighlights();
       core.geometry.dispose();
       (core.material as THREE.Material).dispose();
       disposeGroup(surface);
@@ -1402,6 +1793,7 @@ export function HexPlanet({
       disposeGroup(settlements);
       disposeGroup(structureMarkers);
       disposeGroup(armyMarkers);
+      disposeGroup(famousBattleMarkers);
       renderer.dispose();
       if (renderer.domElement.parentElement === mount) {
         mount.removeChild(renderer.domElement);
@@ -1420,28 +1812,36 @@ export function HexPlanet({
       cities,
       structures,
       tileClaims,
+      tileTerrain,
       armies,
+      famousBattleSites,
       symbols,
       factions,
       selectedCityId,
       selectedDistrictId,
       selectedStructureId,
       selectedArmyId,
+      selectedFamousBattleId: selectedFamousBattleId ?? null,
+      engageArmyId: engageArmyId ?? null,
     });
   }, [
     cities,
     structures,
     tileClaims,
+    tileTerrain,
     armies,
+    famousBattleSites,
     symbols,
     factions,
     selectedCityId,
     selectedDistrictId,
     selectedStructureId,
     selectedArmyId,
+    selectedFamousBattleId,
+    engageArmyId,
   ]);
 
-  // Rotate the camera so the selected city / district / structure faces the user
+  // Rotate so the selected army / city / district / structure / battle faces the user
   const lastFacedKeyRef = useRef<string | null>(null);
   useEffect(() => {
     lastFacedKeyRef.current = null;
@@ -1454,13 +1854,17 @@ export function HexPlanet({
       | null;
     if (!mount?.__faceFeature) return;
 
-    const focusKey = selectedStructureId
-      ? `structure:${selectedStructureId}`
-      : selectedDistrictId
-        ? `district:${selectedDistrictId}`
-        : selectedCityId
-          ? `city:${selectedCityId}`
-          : null;
+    const focusKey = selectedFamousBattleId
+      ? `famous:${selectedFamousBattleId}`
+      : selectedArmyId
+        ? `army:${selectedArmyId}`
+        : selectedStructureId
+          ? `structure:${selectedStructureId}`
+          : selectedDistrictId
+            ? `district:${selectedDistrictId}`
+            : selectedCityId
+              ? `city:${selectedCityId}`
+              : null;
 
     if (!focusKey) {
       lastFacedKeyRef.current = null;
@@ -1470,7 +1874,14 @@ export function HexPlanet({
     lastFacedKeyRef.current = focusKey;
 
     let dir: SphereDir | null = null;
-    if (selectedStructureId) {
+    if (selectedFamousBattleId) {
+      dir =
+        famousBattleSites.find((s) => s.id === selectedFamousBattleId)?.dir ??
+        null;
+    } else if (selectedArmyId) {
+      dir =
+        armiesRef.current.find((a) => a.id === selectedArmyId)?.dir ?? null;
+    } else if (selectedStructureId) {
       dir =
         structuresRef.current.find((s) => s.id === selectedStructureId)?.dir ??
         null;
@@ -1490,13 +1901,24 @@ export function HexPlanet({
     }
 
     if (dir) mount.__faceFeature(dir);
-  }, [selectedCityId, selectedDistrictId, selectedStructureId]);
+  }, [
+    selectedFamousBattleId,
+    selectedArmyId,
+    selectedCityId,
+    selectedDistrictId,
+    selectedStructureId,
+    armies,
+    famousBattleSites,
+  ]);
 
   return (
     <div
       ref={mountRef}
-      className={`w-full h-full min-h-[280px] touch-none ${
-        placingArmyId || terrainPaintFactionId
+      className={`w-full h-full min-h-0 touch-none ${
+        placingArmyId ||
+        terrainPaintFactionId ||
+        terrainPaintKind ||
+        surfacePlaceActive
           ? "cursor-crosshair"
           : "cursor-grab active:cursor-grabbing"
       }`}

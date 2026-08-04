@@ -7,11 +7,9 @@ import {
 import { OrbitRing } from "../components/system/OrbitRing";
 import { PlanetNode } from "../components/system/PlanetNode";
 import { AsteroidBeltRing } from "../components/system/AsteroidBeltRing";
+import { SystemStar } from "../components/system/SystemStar";
 import { FleetMarker } from "../components/fleet/FleetMarker";
-import {
-  PulsarJets,
-  pulsarJetAngle,
-} from "../components/galaxy/PulsarJets";
+import { resolveFleetSymbolUrl } from "../lib/fleetSymbols";
 import { useMapCamera } from "../hooks/useMapCamera";
 import {
   SYSTEM_VIEW_SIZE,
@@ -22,12 +20,9 @@ import {
 import {
   fleetsAtSystemStar,
   fleetsInOrbit,
+  fleetsInSystem,
 } from "../lib/fleets";
-import {
-  normalizeStarClass,
-  starAppearance,
-  starBodyGradient,
-} from "../lib/stars";
+import { normalizeStarClass, starAppearance } from "../lib/stars";
 import { STAR_CLASS_LABELS } from "../types/campaign";
 import { useCampaignStore } from "../store/useCampaignStore";
 
@@ -45,6 +40,7 @@ export function SystemView() {
   const selectPlanet = useCampaignStore((s) => s.selectPlanet);
   const selectFleet = useCampaignStore((s) => s.selectFleet);
   const moveFleet = useCampaignStore((s) => s.moveFleet);
+  const playMoveHint = useCampaignStore((s) => s.playMoveHint);
 
   const { minScale, maxScale, syncTargetScale } = useMapCamera(
     transformRef,
@@ -73,8 +69,7 @@ export function SystemView() {
   const center = SYSTEM_VIEW_SIZE / 2;
   const outermost = maxOrbitRadius(planets.length);
   const starClass = normalizeStarClass(system.starClass);
-  const starLook = starAppearance(starClass);
-  const starSize = starLook.systemSize;
+  const starSize = starAppearance(starClass).systemSize;
   const starFleets = fleetsAtSystemStar(fleets, system.id);
 
   return (
@@ -142,30 +137,13 @@ export function SystemView() {
                 transform: "translate(-50%, -50%)",
               }}
             >
-              {starClass === "pulsar" && (
-                <PulsarJets
-                  length={starSize * 2.8}
-                  baseWidth={Math.max(10, starSize * 0.55)}
-                  color={starLook.color}
-                  highlight={starLook.highlight}
-                  angleDeg={pulsarJetAngle(system.id)}
-                />
-              )}
-              <button
-                type="button"
-                className="absolute inset-0 rounded-full border-0 p-0 cursor-pointer"
-                style={{
-                  background: starBodyGradient(starClass),
-                  boxShadow:
-                    canIntraMove && movingFleet?.location.kind !== "system"
-                      ? `0 0 40px #4fd2ff, 0 0 90px ${starLook.corona}44`
-                      : `0 0 40px ${starLook.color}88, 0 0 90px ${starLook.corona}44`,
-                  outline:
-                    canIntraMove && movingFleet?.location.kind !== "system"
-                      ? "2px solid #4fd2ff"
-                      : undefined,
-                }}
-                title={STAR_CLASS_LABELS[starClass]}
+              <SystemStar
+                starClass={starClass}
+                size={starSize}
+                seed={system.id}
+                selected={
+                  canIntraMove && movingFleet?.location.kind !== "system"
+                }
                 onClick={(e) => {
                   e.stopPropagation();
                   if (canIntraMove && fleetMoveModeId) {
@@ -217,7 +195,6 @@ export function SystemView() {
               );
               const px = center + pos.x;
               const py = center + pos.y;
-              const orbitFleets = fleetsInOrbit(fleets, system.id, planet.id);
               const selected =
                 selectedPlanetId === planet.id ||
                 (canIntraMove &&
@@ -261,31 +238,33 @@ export function SystemView() {
                       onNavigate={onNavigate}
                     />
                   )}
-                  {orbitFleets.map((fleet, i) => {
-                    const fac = campaign.factions.find(
-                      (f) => f.id === fleet.factionId,
-                    );
-                    return (
-                      <FleetMarker
-                        key={fleet.id}
-                        fleet={fleet}
-                        color={fac?.color ?? "#4fd2ff"}
-                        x={px + 22}
-                        y={py - 26}
-                        selected={selectedFleetId === fleet.id}
-                        moving={fleetMoveModeId === fleet.id}
-                        mapScale={mapScale}
-                        offsetIndex={i}
-                        stackCount={orbitFleets.length}
-                        onSelect={() => selectFleet(fleet.id)}
-                      />
-                    );
-                  })}
                 </div>
               );
             })}
 
-            {starFleets.map((fleet, i) => {
+            {fleetsInSystem(fleets, system.id).map((fleet) => {
+              let ax: number;
+              let ay: number;
+              let peers: typeof fleets;
+              if (fleet.location.kind === "orbit") {
+                const planetId = fleet.location.planetId;
+                const planet = planets.find((p) => p.id === planetId);
+                if (!planet) return null;
+                const orbitIndex =
+                  typeof planet.orbitIndex === "number"
+                    ? planet.orbitIndex
+                    : planets.findIndex((p) => p.id === planet.id);
+                const pos = orbitPosition(Math.max(0, orbitIndex));
+                ax = center + pos.x + 28;
+                ay = center + pos.y - 30;
+                peers = fleetsInOrbit(fleets, system.id, planetId);
+              } else {
+                ax = center + 36;
+                ay = center - 34;
+                peers = starFleets;
+              }
+              const i = peers.findIndex((f) => f.id === fleet.id);
+              if (i < 0) return null;
               const fac = campaign.factions.find(
                 (f) => f.id === fleet.factionId,
               );
@@ -294,13 +273,19 @@ export function SystemView() {
                   key={fleet.id}
                   fleet={fleet}
                   color={fac?.color ?? "#4fd2ff"}
-                  x={center + 28}
-                  y={center - 28}
+                  symbolUrl={resolveFleetSymbolUrl(
+                    fleet,
+                    fac,
+                    campaign.symbols,
+                  )}
+                  x={ax}
+                  y={ay}
                   selected={selectedFleetId === fleet.id}
                   moving={fleetMoveModeId === fleet.id}
                   mapScale={mapScale}
                   offsetIndex={i}
-                  stackCount={starFleets.length}
+                  stackCount={peers.length}
+                  appearance="ship"
                   onSelect={() => selectFleet(fleet.id)}
                 />
               );
@@ -311,7 +296,9 @@ export function SystemView() {
 
       <div className="absolute bottom-0 inset-x-0 z-10 pointer-events-none flex justify-center pb-3 px-3">
         <div className="pointer-events-auto hud-panel flex items-center gap-3 px-3 py-2 text-[11px] text-muted">
-          {fleetMoveModeId && canIntraMove ? (
+          {playMoveHint ? (
+            <span className="text-brass">{playMoveHint}</span>
+          ) : fleetMoveModeId && canIntraMove ? (
             <span className="text-cyan">
               Click the star or a planet to relocate {movingFleet?.name}
             </span>

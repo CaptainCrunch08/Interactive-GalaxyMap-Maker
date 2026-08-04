@@ -8,7 +8,10 @@ import type {
   SphereDir,
   StructureKind,
 } from "../types/campaign";
-import { DISTRICT_KIND_LABELS, STRUCTURE_KIND_LABELS } from "../types/campaign";
+import {
+  DISTRICT_KIND_LABELS,
+  STRUCTURE_KIND_LABELS,
+} from "../types/campaign";
 import { buildHexSphere, type HexSphere } from "./hexSphere";
 
 /** Must match HexPlanet FREQUENCY so tile indices stay valid. */
@@ -64,13 +67,24 @@ const CITY_PREFIX: Record<PlanetType, string[]> = {
 };
 
 const DISTRICT_KINDS: Record<PlanetType, DistrictKind[]> = {
-  hive: ["spire", "underhive", "docks", "bastion", "quarter", "ruins"],
+  hive: ["spire", "underhive", "docks", "bastion", "quarter", "manufactorum", "ruins"],
   forge: ["manufactorum", "foundry", "refinery", "railhead", "bastion", "ruins"],
-  agri: ["agriplex", "silo", "reservoir", "outpost", "quarter", "bastion"],
-  death: ["fortress", "camp", "bastion", "outpost", "ruins", "quarter"],
-  shrine: ["cathedral", "reliquary", "cloister", "quarter", "bastion", "ruins"],
+  agri: ["agriplex", "silo", "reservoir", "outpost", "quarter", "bastion", "manufactorum"],
+  death: ["fortress", "camp", "bastion", "outpost", "ruins", "quarter", "manufactorum"],
+  shrine: ["cathedral", "reliquary", "cloister", "quarter", "bastion", "ruins", "manufactorum"],
   asteroid_belt: ["outpost", "docks", "camp", "ruins", "bastion", "quarter"],
-  custom: ["quarter", "bastion", "docks", "outpost", "ruins", "camp"],
+  custom: ["quarter", "bastion", "docks", "outpost", "ruins", "camp", "manufactorum"],
+};
+
+/** Guaranteed manufactorums per city (forge > hive > agri / others). */
+const MANUFACTORUMS_PER_CITY: Record<PlanetType, [number, number]> = {
+  forge: [2, 3],
+  hive: [1, 2],
+  agri: [0, 1],
+  death: [0, 1],
+  shrine: [0, 1],
+  asteroid_belt: [0, 0],
+  custom: [0, 1],
 };
 
 const CITY_COUNT: Record<PlanetType, [number, number]> = {
@@ -258,7 +272,10 @@ export function generatePlanetCities(
     if (rivalFactionId && rng() < contestedRate * 0.5) owner = rivalFactionId;
 
     const [dMin, dMax] = DISTRICTS_PER_CITY[type];
-    const want = randInt(rng, dMin, dMax);
+    const [mMin, mMax] = MANUFACTORUMS_PER_CITY[type];
+    const manufCount = randInt(rng, mMin, mMax);
+    const otherWant = randInt(rng, dMin, dMax);
+    const want = manufCount + otherWant;
     const neighborPool = shuffle(
       rng,
       (sphere.neighbors[hub] ?? []).filter((n) => !used.has(n)),
@@ -278,10 +295,14 @@ export function generatePlanetCities(
 
     for (const t of districtTiles) used.add(t);
 
+    const otherKinds = kinds.filter((k) => k !== "manufactorum");
+    const kindPool = otherKinds.length > 0 ? otherKinds : kinds;
+
     const districts: District[] = districtTiles.map((tileIndex, di) => {
       let dOwner = owner;
       if (rivalFactionId && rng() < contestedRate) dOwner = rivalFactionId;
-      const kind = pick(rng, kinds);
+      const kind: DistrictKind =
+        di < manufCount ? "manufactorum" : pick(rng, kindPool);
       return {
         id: crypto.randomUUID(),
         name: districtName(kind, di),
@@ -374,6 +395,141 @@ export function settlementTileSet(
   }
   for (const s of structures) set.add(s.tileIndex);
   return set;
+}
+
+/** Place one structure on the first free hex (or null if full). */
+export function createStructureOnFreeHex(
+  planet: Planet,
+  kind: StructureKind,
+  options?: { name?: string; controllingFactionId?: string },
+): PlanetStructure | null {
+  const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
+  const occupied = settlementTileSet(planet.cities ?? [], planet.structures ?? []);
+  let tileIndex = -1;
+  for (let i = 0; i < sphere.tiles.length; i++) {
+    if (!occupied.has(i)) {
+      tileIndex = i;
+      break;
+    }
+  }
+  if (tileIndex < 0) return null;
+  return createStructureAtTile(planet, tileIndex, kind, options);
+}
+
+/** Place a structure on a specific free hex. */
+export function createStructureAtTile(
+  planet: Planet,
+  tileIndex: number,
+  kind: StructureKind,
+  options?: { name?: string; controllingFactionId?: string },
+): PlanetStructure | null {
+  const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
+  if (tileIndex < 0 || tileIndex >= sphere.tiles.length) return null;
+  const occupied = settlementTileSet(planet.cities ?? [], planet.structures ?? []);
+  if (occupied.has(tileIndex)) return null;
+  const count = (planet.structures ?? []).filter((s) => s.kind === kind).length;
+  return {
+    id: crypto.randomUUID(),
+    name: options?.name ?? `${structureLabel(kind)} ${count + 1}`,
+    kind,
+    tileIndex,
+    dir: dirFromTile(sphere, tileIndex),
+    controllingFactionId:
+      options?.controllingFactionId ?? planet.controllingFactionId,
+    notes: "",
+  };
+}
+
+/** Place a new city hub on a free hex. */
+export function createCityAtTile(
+  planet: Planet,
+  tileIndex: number,
+  options?: { name?: string; controllingFactionId?: string },
+): City | null {
+  const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
+  if (tileIndex < 0 || tileIndex >= sphere.tiles.length) return null;
+  const occupied = settlementTileSet(planet.cities ?? [], planet.structures ?? []);
+  if (occupied.has(tileIndex)) return null;
+  const n = (planet.cities ?? []).length + 1;
+  const owner =
+    options?.controllingFactionId ?? planet.controllingFactionId;
+  return {
+    id: crypto.randomUUID(),
+    name: options?.name ?? `City ${n}`,
+    tileIndex,
+    controllingFactionId: owner,
+    dir: dirFromTile(sphere, tileIndex),
+    districts: [],
+    notes: "",
+  };
+}
+
+/** Attach a district to a city on a free hex. */
+export function createDistrictAtTile(
+  planet: Planet,
+  cityId: string,
+  tileIndex: number,
+  kind: DistrictKind,
+  options?: { name?: string; controllingFactionId?: string },
+): { cities: City[] } | null {
+  const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
+  if (tileIndex < 0 || tileIndex >= sphere.tiles.length) return null;
+  const occupied = settlementTileSet(planet.cities ?? [], planet.structures ?? []);
+  if (occupied.has(tileIndex)) return null;
+  const cities = planet.cities ?? [];
+  const city = cities.find((c) => c.id === cityId);
+  if (!city) return null;
+  const count = city.districts.filter((d) => d.kind === kind).length;
+  const district: District = {
+    id: crypto.randomUUID(),
+    name:
+      options?.name ??
+      `${DISTRICT_KIND_LABELS[kind]} ${count + 1}`,
+    kind,
+    controllingFactionId:
+      options?.controllingFactionId ??
+      city.controllingFactionId ??
+      planet.controllingFactionId,
+    tileIndex,
+    dir: dirFromTile(sphere, tileIndex),
+    notes: "",
+  };
+  return {
+    cities: cities.map((c) =>
+      c.id === cityId
+        ? { ...c, districts: [...c.districts, district] }
+        : c,
+    ),
+  };
+}
+
+/** Free tiles in ring-1/2 around a city hub (same footprint as generation). */
+export function tilesAroundCity(
+  city: City,
+  occupied?: Set<number>,
+): number[] {
+  const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
+  const hub = city.tileIndex;
+  const blocked = occupied ?? new Set<number>();
+  const near = new Set<number>();
+  for (const n of sphere.neighbors[hub] ?? []) {
+    if (!blocked.has(n) && n !== hub) near.add(n);
+    for (const n2 of sphere.neighbors[n] ?? []) {
+      if (!blocked.has(n2) && n2 !== hub) near.add(n2);
+    }
+  }
+  return [...near];
+}
+
+export function isTileAroundCity(city: City, tileIndex: number): boolean {
+  const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
+  const hub = city.tileIndex;
+  if (tileIndex === hub) return false;
+  for (const n of sphere.neighbors[hub] ?? []) {
+    if (n === tileIndex) return true;
+    if ((sphere.neighbors[n] ?? []).includes(tileIndex)) return true;
+  }
+  return false;
 }
 
 /** Drop claims that sit on city/district/structure tiles. */

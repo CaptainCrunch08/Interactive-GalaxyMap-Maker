@@ -19,6 +19,8 @@ export function GalaxyMapsSidebar() {
   const createMap = useCampaignStore((s) => s.createMap);
   const deleteMap = useCampaignStore((s) => s.deleteMap);
   const saveGalaxy = useCampaignStore((s) => s.saveGalaxy);
+  const openGalaxyEditor = useCampaignStore((s) => s.openGalaxyEditor);
+  const openGalaxyOverview = useCampaignStore((s) => s.openGalaxyOverview);
   const setCampaignName = useCampaignStore((s) => s.setCampaignName);
   const toggleSideMenu = useCampaignStore((s) => s.toggleSideMenu);
   const [newGalaxyOpen, setNewGalaxyOpen] = useState(false);
@@ -127,6 +129,20 @@ export function GalaxyMapsSidebar() {
         </div>
 
         <div className="p-3 border-t border-panel-border space-y-2">
+          <button
+            type="button"
+            className="hud-btn w-full"
+            onClick={() => openGalaxyOverview("strategic")}
+          >
+            Galactic Overview
+          </button>
+          <button
+            type="button"
+            className="hud-btn w-full"
+            onClick={() => openGalaxyEditor("factions")}
+          >
+            Edit Galaxy
+          </button>
           <button
             type="button"
             className={`hud-btn w-full ${isDirty ? "hud-btn-active" : ""}`}

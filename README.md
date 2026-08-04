@@ -1,6 +1,6 @@
 # Interactive-GalaxyMap-Maker
 
-Allows for custom or procedural generation of interactive galaxies for long term campaigns. Includes a turn based system for each faction/player, fleet movements, regiment movements, area control, a timelapse of events, and more.
+Allows for custom or procedural generation of interactive galaxies for long term campaigns. Includes an optional hotseat turn tracker per faction, fleet movements, regiment movements, area control, a timelapse of events, and more.
 
 Interactive sector map for narrative wargame campaigns. Pan and zoom a galaxy view, drill into star systems and planets, and track factions, notes, and battle logs. Data auto-saves in the browser and can be exported as JSON.
 
@@ -11,16 +11,16 @@ Interactive sector map for narrative wargame campaigns. Pan and zoom a galaxy vi
 - **Planet / strategic view** — settlements, armies, and battle logs
 - **Fleets** — compose and move fleets between systems along hyperlanes
 - **Territory** — faction ownership and influence blobs across the map
+- **Hotseat turns (Play mode)** — **Start campaign** in the top bar; only the active faction can move fleets/armies (one move each per turn). **Edit Galaxy** and free editing stay fully unrestricted. Building points: each owned manufactorum on a planet banks **10 BP/turn** on that world; spend **500** at a War Camp for a detachment, **1000** to build a manufactorum next to an owned city, or build ships at a Space Port (**50 BP** escort, other hulls scaled by class)
 - **Galactic chronicle** — in-game recorded timelapse of ownership and fleet history with event markers
-- **Editor** — toggle **Edit mode** on the galaxy map to drag stars; inspector for systems, planets, and factions
-- **Persistence** — `localStorage` auto-save; **Export** / **Import** JSON for backup and sharing
+- **Editor** — **Maps → Edit Galaxy** for factions, galaxy contents (stars, hyperlanes, planets, structures), and upcoming events; Details panel for selection-focused edits
+- **Persistence** — `localStorage` auto-save; **Save** / **Export** / **Import** JSON for backup and sharing
 
 ## Keyboard shortcuts
 
 | Key | Action |
 |-----|--------|
-| `E` | Toggle edit / navigate (galaxy view only) |
-| `Escape` | Go up one level (timeline/planet → system → galaxy) |
+| `Escape` | Close Edit Galaxy, or go up one level (timeline/planet → system → galaxy) |
 
 ## Development
 

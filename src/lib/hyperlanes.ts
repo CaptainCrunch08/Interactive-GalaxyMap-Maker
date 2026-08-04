@@ -1,11 +1,7 @@
-import type { StarSystem } from "../types/campaign";
+import type { Campaign, CampaignHyperlane, StarSystem } from "../types/campaign";
 import { CLAIM_RADIUS } from "./territory";
 
-export type Hyperlane = {
-  id: string;
-  a: string;
-  b: string;
-};
+export type Hyperlane = CampaignHyperlane;
 
 /**
  * Local lane reach only — long cross-map bridges look messy.
@@ -220,6 +216,19 @@ export function buildHyperlanes(systems: StarSystem[]): Hyperlane[] {
     a: e.a,
     b: e.b,
   }));
+}
+
+/** Prefer persisted manual lanes; otherwise auto-generate. */
+export function getCampaignHyperlanes(campaign: Campaign): Hyperlane[] {
+  if (campaign.hyperlanes) {
+    const ids = new Set(campaign.systems.map((s) => s.id));
+    return campaign.hyperlanes.filter((l) => ids.has(l.a) && ids.has(l.b));
+  }
+  return buildHyperlanes(campaign.systems);
+}
+
+export function laneKey(a: string, b: string): string {
+  return a < b ? `${a}__${b}` : `${b}__${a}`;
 }
 
 export function hyperlaneEndpoints(

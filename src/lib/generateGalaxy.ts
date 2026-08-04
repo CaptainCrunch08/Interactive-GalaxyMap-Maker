@@ -9,6 +9,7 @@ import { HYPERLANE_MAX_DIST } from "./hyperlanes";
 import { generatePlanetSurface, planetOwnerFromCities } from "./settlements";
 import { pickRandomStarClass } from "./stars";
 import { pickRandomClassification } from "./planetClass";
+import { pickPlanetVisualModel } from "./planetModels";
 
 export type GalaxySize = "small" | "medium" | "large";
 
@@ -411,6 +412,8 @@ export function generateGalaxyCampaign(
     for (let o = 0; o < planetCount; o++) {
       const type = pick(rng, PLANET_TYPES);
       const planetId = crypto.randomUUID();
+      const classification =
+        type === "asteroid_belt" ? "barren" : pickRandomClassification(rng);
       const { cities, structures } = generatePlanetSurface(planetId, type, {});
       planets.push({
         id: planetId,
@@ -418,8 +421,11 @@ export function generateGalaxyCampaign(
         name: `${pick(rng, WORLD_NAMES)}${planetCount > 1 ? ` ${o + 1}` : ""}`,
         orbitIndex: o,
         type,
-        classification:
-          type === "asteroid_belt" ? "barren" : pickRandomClassification(rng),
+        classification,
+        visualModelId:
+          type === "asteroid_belt"
+            ? undefined
+            : pickPlanetVisualModel(classification, rng),
         controllingFactionId: planetOwnerFromCities(
           cities,
           undefined,
@@ -443,6 +449,7 @@ export function generateGalaxyCampaign(
     systems,
     planets,
     fleets: [],
+    characters: [],
     timeline: { frames: [], events: [] },
     mapSize,
   };

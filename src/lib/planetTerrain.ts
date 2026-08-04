@@ -716,6 +716,49 @@ export function legendSwatch(
   return colorFor(kind, palette, 0.55).fill;
 }
 
+export const TERRAIN_KIND_LABELS: Record<TerrainKind, string> = {
+  wasteland: "Wasteland",
+  crater: "Crater",
+  urban: "Urban",
+  hive: "Hive",
+  forge: "Forge",
+  agri: "Agri",
+  forest: "Forest",
+  ocean: "Ocean",
+  toxic: "Toxic",
+  ash: "Ash",
+  shrine: "Shrine",
+  ruins: "Ruins",
+  ice: "Ice",
+  cloud: "Cloud",
+  desert: "Desert",
+  swamp: "Swamp",
+  lava: "Lava",
+};
+
+export const TERRAIN_KIND_ORDER: TerrainKind[] = [
+  "wasteland",
+  "crater",
+  "desert",
+  "ocean",
+  "ice",
+  "forest",
+  "swamp",
+  "agri",
+  "urban",
+  "hive",
+  "forge",
+  "ash",
+  "lava",
+  "toxic",
+  "shrine",
+  "ruins",
+  "cloud",
+];
+
+/** Clear a painted biome override (restore procedural). */
+export const TERRAIN_KIND_ERASE = "__erase_terrain__";
+
 /**
  * Sample procedural terrain at a unit-sphere direction (for 3D hex tiles).
  * Stable per planet id; biome mix driven primarily by classification.
@@ -727,6 +770,7 @@ export function sampleTerrainAtDirection(
   planetId: string,
   classification: PlanetClassification,
   type: PlanetType,
+  overrideKind?: TerrainKind | null,
 ): { kind: TerrainKind; fill: string; height: number } {
   const seed = seedFromId(planetId);
   const cls = normalizePlanetClassification(classification);
@@ -738,7 +782,8 @@ export function sampleTerrainAtDirection(
   const moist = fbm(x * 1.9 + 4, z * 1.9 - 2, seed + 5);
   const urban = fbm(x * 3.4, y * 3.4, seed + 12);
   const detail = hash2(x * 17 + seed, z * 17 - seed, seed + 21);
-  const kind = resolveKind(cls, type, elev, moist, urban, detail);
+  const kind =
+    overrideKind ?? resolveKind(cls, type, elev, moist, urban, detail);
   const { fill } = colorFor(kind, palette, elev);
   return { kind, fill, height: elev };
 }

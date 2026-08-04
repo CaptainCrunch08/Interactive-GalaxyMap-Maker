@@ -62,11 +62,11 @@ export function createDemoCampaign(): Campaign {
         createShip("battleship", 1),
         createShip("cruiser", 1),
         createShip("cruiser", 2),
-        createShip("destroyer", 1),
-        createShip("destroyer", 2),
-        createShip("corvette", 1),
-        createShip("corvette", 2),
-        createShip("corvette", 3),
+        createShip("light_cruiser", 1),
+        createShip("light_cruiser", 2),
+        createShip("escort", 1),
+        createShip("escort", 2),
+        createShip("escort", 3),
       ],
       location: { kind: "orbit", systemId: cadianSystemId, planetId: cadiaId },
       notes: "Gate patrol squadron.",
@@ -78,8 +78,8 @@ export function createDemoCampaign(): Campaign {
       ships: [
         createShip("battleship", 1),
         createShip("cruiser", 1),
-        createShip("destroyer", 1),
-        createShip("corvette", 1),
+        createShip("light_cruiser", 1),
+        createShip("escort", 1),
         createShip("transport", 1),
       ],
       location: { kind: "system", systemId: eyeSystemId },
@@ -91,8 +91,8 @@ export function createDemoCampaign(): Campaign {
     version: 1,
     name: "Segmentum Obscurus",
     factions: [
-      { id: imperiumId, name: "Imperium", color: "#c9a227" },
-      { id: chaosId, name: "Forces of Chaos", color: "#8b1538" },
+      { id: imperiumId, name: "Imperium", color: "#c9a227", armyType: "infantry" },
+      { id: chaosId, name: "Forces of Chaos", color: "#8b1538", armyType: "elite" },
     ],
     symbols: [],
     systems: [
@@ -211,6 +211,7 @@ export function createDemoCampaign(): Campaign {
       }),
     ],
     fleets,
+    characters: [],
     mapSize: GALAXY_SIZE,
   };
 
@@ -312,6 +313,7 @@ export function createEmptyCampaign(): Campaign {
     systems: [],
     planets: [],
     fleets: [],
+    characters: [],
     timeline: { frames: [], events: [] },
     mapSize: GALAXY_SIZE,
   };

@@ -1,5 +1,6 @@
 import type { Faction, StarSystem } from "../../types/campaign";
 import { STAR_CLASS_LABELS } from "../../types/campaign";
+import { useRef } from "react";
 import {
   normalizeStarClass,
   starAppearance,
@@ -16,7 +17,10 @@ interface StarNodeProps {
   selected: boolean;
   onSelect: () => void;
   onNavigate: () => void;
+  /** When true, click selects; double-click enters. When false, click enters. */
   editMode: boolean;
+  /** When false, star cannot be dragged (defaults to editMode). */
+  canDrag?: boolean;
   mapScale: number;
   onDrag: (x: number, y: number) => void;
 }
@@ -30,6 +34,7 @@ export function StarNode({
   onSelect,
   onNavigate,
   editMode,
+  canDrag,
   mapScale,
   onDrag,
 }: StarNodeProps) {
@@ -38,10 +43,13 @@ export function StarNode({
   const isPulsar = starClass === "pulsar";
   /** Labels only when zoomed in enough (map starts ~0.45). */
   const showLabel = mapScale >= 0.55 || selected;
+  const dragMoved = useRef(false);
+  const allowDrag = canDrag ?? editMode;
 
   const handlePointerDown = (e: React.PointerEvent) => {
-    if (!editMode) return;
+    if (!allowDrag) return;
     e.stopPropagation();
+    dragMoved.current = false;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
     const startX = e.clientX;
     const startY = e.clientY;
@@ -51,6 +59,7 @@ export function StarNode({
     const onMove = (ev: PointerEvent) => {
       const dx = (ev.clientX - startX) / mapScale;
       const dy = (ev.clientY - startY) / mapScale;
+      if (Math.abs(dx) + Math.abs(dy) > 2) dragMoved.current = true;
       onDrag(origX + dx, origY + dy);
     };
     const onUp = () => {
@@ -64,10 +73,17 @@ export function StarNode({
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (editMode) {
+      if (dragMoved.current) return;
       onSelect();
     } else {
       onNavigate();
     }
+  };
+
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    onNavigate();
   };
 
   const ownerBit = contested
@@ -83,7 +99,8 @@ export function StarNode({
       style={{ left: system.x, top: system.y }}
       onPointerDown={handlePointerDown}
       onClick={handleClick}
-      title={`${system.name} · ${STAR_CLASS_LABELS[starClass]}`}
+      onDoubleClick={handleDoubleClick}
+      title={`${system.name} · ${STAR_CLASS_LABELS[starClass]}${editMode ? " · double-click to enter" : ""}`}
     >
       <span
         className="relative block transition-transform group-hover:scale-110"

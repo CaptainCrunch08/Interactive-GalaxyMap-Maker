@@ -1,17 +1,27 @@
+import { useEffect } from "react";
 import {
   PLANET_CLASSIFICATION_LABELS,
   PLANET_TYPE_LABELS,
 } from "../types/campaign";
 import { useCampaignStore } from "../store/useCampaignStore";
 import { AsteroidBeltView } from "./AsteroidBeltView";
-import { classificationColor } from "../lib/planetClass";
+import { PlanetGlobe } from "../components/planet/PlanetGlobe";
+import { atmosphereColor } from "../lib/planetTexture";
+import { resolvePlanetVisualModelId } from "../lib/planetModels";
 
 export function PlanetView() {
   const campaign = useCampaignStore((s) => s.campaign);
   const focusedPlanetId = useCampaignStore((s) => s.focusedPlanetId);
+  const selectedPlanetId = useCampaignStore((s) => s.selectedPlanetId);
+  const focusedSystemId = useCampaignStore((s) => s.focusedSystemId);
   const enterStrategic = useCampaignStore((s) => s.enterStrategic);
+  const enterSystem = useCampaignStore((s) => s.enterSystem);
+  const setViewLevel = useCampaignStore((s) => s.setViewLevel);
 
-  const planet = campaign.planets.find((p) => p.id === focusedPlanetId);
+  const planetId = focusedPlanetId ?? selectedPlanetId;
+  const planet = planetId
+    ? campaign.planets.find((p) => p.id === planetId)
+    : undefined;
   const system = planet
     ? campaign.systems.find((s) => s.id === planet.systemId)
     : undefined;
@@ -19,10 +29,31 @@ export function PlanetView() {
     ? campaign.factions.find((f) => f.id === planet.controllingFactionId)
     : undefined;
 
+  // Recover if focus was lost (HMR, map switch, deleted planet, etc.)
+  useEffect(() => {
+    if (planet) return;
+    const systemId =
+      focusedSystemId ??
+      campaign.planets.find((p) => p.id === planetId)?.systemId;
+    if (systemId && campaign.systems.some((s) => s.id === systemId)) {
+      enterSystem(systemId);
+    } else {
+      setViewLevel("galaxy");
+    }
+  }, [
+    planet,
+    planetId,
+    focusedSystemId,
+    campaign.planets,
+    campaign.systems,
+    enterSystem,
+    setViewLevel,
+  ]);
+
   if (!planet) {
     return (
       <div className="h-full flex items-center justify-center text-muted">
-        Planet not found.
+        Returning to map…
       </div>
     );
   }
@@ -31,11 +62,15 @@ export function PlanetView() {
     return <AsteroidBeltView />;
   }
 
-  const base = classificationColor(planet.classification);
-  const accent = faction?.color ?? base;
+  const accent = faction?.color ?? atmosphereColor(planet.classification);
   const classLabel =
     PLANET_CLASSIFICATION_LABELS[planet.classification] ??
     PLANET_CLASSIFICATION_LABELS.earthlike;
+  const visualModelId = resolvePlanetVisualModelId(
+    planet.classification,
+    planet.visualModelId,
+    planet.id,
+  );
 
   return (
     <div className="relative h-full w-full galaxy-bg overflow-hidden flex items-center justify-center">
@@ -52,38 +87,19 @@ export function PlanetView() {
       />
 
       <div className="relative z-[1] flex flex-col items-center gap-6 px-6">
-        <button
-          type="button"
-          className="relative rounded-full cursor-pointer border-0 p-0 group transition-transform hover:scale-[1.03] focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan"
-          style={{
-            width: "min(52vmin, 380px)",
-            height: "min(52vmin, 380px)",
-            background: `
-              radial-gradient(circle at 32% 28%, #ffffffaa 0%, transparent 18%),
-              radial-gradient(circle at 40% 40%, ${base}ee 0%, ${base} 42%, #0a1018 100%)
-            `,
-            boxShadow: `
-              inset -18px -12px 40px #00000088,
-              0 0 40px ${accent}55,
-              0 0 120px ${accent}22
-            `,
-            border: `2px solid ${accent}66`,
-          }}
-          onClick={() => enterStrategic(planet.id)}
-          title="Enter strategic map"
-          aria-label={`Enter strategic map for ${planet.name}`}
-        >
-          <div
-            className="absolute inset-0 rounded-full pointer-events-none"
-            style={{
-              background:
-                "linear-gradient(115deg, transparent 40%, #00000055 78%, #00000099 100%)",
-            }}
+        <div className="relative group">
+          <PlanetGlobe
+            planetId={planet.id}
+            classification={planet.classification}
+            visualModelId={visualModelId}
+            accentColor={accent}
+            className="w-[min(52vmin,380px)] h-[min(52vmin,380px)] rounded-full overflow-hidden shadow-[0_0_60px_rgba(0,0,0,0.45)] transition-transform hover:scale-[1.03] focus-within:ring-2 focus-within:ring-cyan"
+            onClick={() => enterStrategic(planet.id)}
           />
-          <span className="absolute inset-x-0 bottom-6 text-center text-[10px] font-display uppercase tracking-[0.18em] text-cyan/80 opacity-0 group-hover:opacity-100 transition-opacity">
+          <span className="absolute inset-x-0 bottom-6 text-center text-[10px] font-display uppercase tracking-[0.18em] text-cyan/80 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
             Strategic map
           </span>
-        </button>
+        </div>
 
         <div className="text-center max-w-md pointer-events-none">
           <p className="text-[10px] font-display uppercase tracking-[0.2em] text-muted mb-1">

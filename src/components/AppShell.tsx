@@ -1,6 +1,10 @@
+import { BattleResolveModal } from "./BattleResolveModal";
 import { Breadcrumbs } from "./Breadcrumbs";
+import { EditGalaxyOverlay } from "./editGalaxy/EditGalaxyOverlay";
+import { GalacticOverviewOverlay } from "./overview/GalacticOverviewOverlay";
 import { GalaxyMapsSidebar } from "./GalaxyMapsSidebar";
 import { InspectorPanel } from "./InspectorPanel";
+import { PlayTurnHud } from "./PlayTurnHud";
 import { SiteTitle } from "./SiteTitle";
 import { useCampaignStore } from "../store/useCampaignStore";
 import { GalaxyView } from "../views/GalaxyView";
@@ -16,6 +20,10 @@ export function AppShell() {
   const sideMenuOpen = useCampaignStore((s) => s.sideMenuOpen);
   const inspectorOpen = useCampaignStore((s) => s.inspectorOpen);
   const toggleInspector = useCampaignStore((s) => s.toggleInspector);
+  const playActive = useCampaignStore(
+    (s) => Boolean(s.campaign.play?.active),
+  );
+  const playMoveHint = useCampaignStore((s) => s.playMoveHint);
 
   return (
     <div
@@ -24,6 +32,9 @@ export function AppShell() {
       }`}
     >
       <GalaxyMapsSidebar />
+      <EditGalaxyOverlay />
+      <GalacticOverviewOverlay />
+      <BattleResolveModal />
       <header className="shrink-0 hud-topbar flex items-center gap-3 px-3 py-2.5">
         <button
           type="button"
@@ -39,6 +50,7 @@ export function AppShell() {
         <span className="text-panel-border/80 hidden sm:inline text-xs">│</span>
         <Breadcrumbs />
         <div className="flex-1" />
+        <PlayTurnHud />
         {viewLevel !== "galaxy" && (
           <button
             type="button"
@@ -60,6 +72,20 @@ export function AppShell() {
           Details
         </button>
       </header>
+
+      {playActive && (
+        <div className="shrink-0 px-3 py-1 text-[11px] text-muted border-b border-panel-border/60 bg-panel/40 flex items-center gap-3">
+          <span>
+            Play mode — only this faction&apos;s fleets and armies can move (one
+            move each per turn). Select a detachment to see fightable hexes,
+            then click a red hex (or rival there) to battle. Edit Galaxy stays
+            free for GM edits.
+          </span>
+          {playMoveHint && (
+            <span className="text-brass md:hidden truncate">{playMoveHint}</span>
+          )}
+        </div>
+      )}
 
       <div className="flex-1 flex min-h-0">
         <main className="flex-1 min-w-0 relative">

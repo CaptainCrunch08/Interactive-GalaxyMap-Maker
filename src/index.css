@@ -202,3 +202,368 @@ body {
     filter: brightness(1.25);
   }
 }
+
+/* Animated relativistic jets (system view pulsars) */
+.pulsar-jets--animated {
+  animation: pulsar-jet-axis-wobble 1.1s ease-in-out infinite;
+  transform-origin: center center;
+}
+
+.pulsar-jets--animated .pulsar-jet-beam {
+  animation:
+    pulsar-jet-stream 0.45s linear infinite,
+    pulsar-jet-flicker 0.55s ease-in-out infinite;
+}
+
+.pulsar-jets--animated .pulsar-jet-beam--core {
+  animation:
+    pulsar-jet-stream 0.28s linear infinite,
+    pulsar-jet-flicker 0.4s ease-in-out infinite;
+  animation-delay: 0s, 0.12s;
+}
+
+@keyframes pulsar-jet-axis-wobble {
+  0%,
+  100% {
+    transform: rotate(-2.5deg) scale(1);
+    filter: brightness(1);
+  }
+  50% {
+    transform: rotate(2.5deg) scale(1.04);
+    filter: brightness(1.35);
+  }
+}
+
+@keyframes pulsar-jet-stream {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 120px 0;
+  }
+}
+
+@keyframes pulsar-jet-flicker {
+  0%,
+  100% {
+    opacity: 0.7;
+    filter: drop-shadow(0 0 4px currentColor) brightness(0.95);
+  }
+  40% {
+    opacity: 1;
+    filter: drop-shadow(0 0 10px currentColor) brightness(1.4);
+  }
+  70% {
+    opacity: 0.85;
+    filter: drop-shadow(0 0 6px currentColor) brightness(1.15);
+  }
+}
+
+/* —— System-view living star —— */
+.system-star-halo {
+  animation: system-star-halo-pulse 2.8s ease-in-out infinite;
+  transform-origin: center center;
+}
+
+.system-star-halo--cool {
+  animation-duration: 2.2s;
+}
+
+.system-star-corona {
+  animation: system-star-corona-breathe 2.1s ease-in-out infinite;
+  transform-origin: center center;
+}
+
+.system-star-granules {
+  animation: system-star-granule-drift 5s linear infinite;
+  transform-origin: center center;
+}
+
+.system-star-flare {
+  animation: system-star-flare-spin 7s linear infinite;
+  transform-origin: center center;
+}
+
+.system-star-core {
+  animation: system-star-core-pulse 1.6s ease-in-out infinite;
+  transform-origin: center center;
+}
+
+.system-star-body {
+  transform-origin: center;
+  animation: system-star-glow-pulse 2.4s ease-in-out infinite;
+}
+
+.system-star-body--selected {
+  animation: none;
+}
+
+/* Normal stars — slower, calmer churn */
+.system-star--normal .system-star-halo {
+  animation-duration: 7.5s;
+}
+
+.system-star--normal .system-star-corona {
+  animation-duration: 6.2s;
+}
+
+.system-star--normal .system-star-granules {
+  animation-duration: 18s;
+}
+
+.system-star--normal .system-star-flare {
+  animation-duration: 22s;
+}
+
+.system-star--normal .system-star-core {
+  animation-duration: 4.8s;
+}
+
+.system-star--normal .system-star-body {
+  animation-duration: 5.5s;
+}
+
+/* Pulsars — faster surface + halo */
+.system-star--pulsar .system-star-halo {
+  animation-duration: 1.4s;
+}
+
+.system-star--pulsar .system-star-corona {
+  animation-duration: 1.1s;
+}
+
+.system-star--pulsar .system-star-granules {
+  animation-duration: 2.2s;
+}
+
+.system-star--pulsar .system-star-flare {
+  animation-duration: 2.8s;
+}
+
+.system-star--pulsar .system-star-core {
+  animation-duration: 0.7s;
+}
+
+.system-star--pulsar .system-star-body {
+  animation-duration: 1s;
+}
+
+/* Neutron stars — fast, violent spin (no jets) */
+.system-star--neutron .system-star-halo {
+  animation-duration: 1.15s;
+}
+
+.system-star--neutron .system-star-corona {
+  animation-duration: 0.9s;
+}
+
+.system-star--neutron .system-star-granules {
+  animation: system-star-neutron-spin 1.4s linear infinite;
+}
+
+.system-star--neutron .system-star-flare {
+  animation-duration: 1.6s;
+}
+
+.system-star--neutron .system-star-core {
+  animation-duration: 0.55s;
+}
+
+.system-star--neutron .system-star-body {
+  animation: system-star-neutron-glow 0.75s ease-in-out infinite;
+}
+
+@keyframes system-star-neutron-spin {
+  0% {
+    transform: rotate(0deg) scale(1.05);
+    opacity: 0.75;
+  }
+  50% {
+    transform: rotate(180deg) scale(1.2);
+    opacity: 1;
+  }
+  100% {
+    transform: rotate(360deg) scale(1.05);
+    opacity: 0.75;
+  }
+}
+
+@keyframes system-star-neutron-glow {
+  0%,
+  100% {
+    filter: brightness(0.85) saturate(1.1) contrast(1.05);
+  }
+  35% {
+    filter: brightness(1.45) saturate(1.45) contrast(1.15);
+  }
+  60% {
+    filter: brightness(1.1) saturate(1.2) contrast(1.08);
+  }
+}
+
+/* Black hole accretion — violent multi-layer spin */
+.system-bh-glow {
+  animation: system-bh-glow-pulse 1.4s ease-in-out infinite;
+  transform-origin: center center;
+}
+
+.system-bh-disc--outer {
+  animation: system-bh-spin 2.1s linear infinite;
+  transform-origin: center center;
+}
+
+.system-bh-disc--mid {
+  animation: system-bh-spin-rev 1.35s linear infinite;
+  transform-origin: center center;
+}
+
+.system-bh-disc--inner {
+  animation: system-bh-spin 0.85s linear infinite;
+  transform-origin: center center;
+}
+
+.system-bh-spiral {
+  animation: system-bh-spin 1.55s linear infinite;
+  transform-origin: center center;
+  filter: drop-shadow(0 0 4px #f97316) drop-shadow(0 0 10px #fb923c88);
+}
+
+.system-bh-spaghetti--a {
+  animation: system-bh-spin 1.1s linear infinite;
+  transform-origin: center center;
+  filter: drop-shadow(0 0 2px #fdba74);
+}
+
+.system-bh-spaghetti--b {
+  animation: system-bh-spin-rev 0.7s linear infinite;
+  transform-origin: center center;
+  opacity: 0.9;
+}
+
+.system-bh-horizon {
+  animation: system-bh-horizon-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes system-star-halo-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+}
+
+@keyframes system-star-corona-breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(0.94);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+@keyframes system-star-granule-drift {
+  0% {
+    transform: rotate(0deg) scale(1);
+    opacity: 0.7;
+  }
+  50% {
+    transform: rotate(180deg) scale(1.12);
+    opacity: 1;
+  }
+  100% {
+    transform: rotate(360deg) scale(1);
+    opacity: 0.7;
+  }
+}
+
+@keyframes system-star-flare-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes system-star-core-pulse {
+  0%,
+  100% {
+    opacity: 0.65;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+@keyframes system-star-glow-pulse {
+  0%,
+  100% {
+    filter: brightness(0.92) saturate(1);
+  }
+  50% {
+    filter: brightness(1.28) saturate(1.25);
+  }
+}
+
+@keyframes system-bh-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes system-bh-spin-rev {
+  from {
+    transform: rotate(360deg);
+  }
+  to {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes system-bh-glow-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(0.96);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+}
+
+@keyframes system-bh-horizon-pulse {
+  0%,
+  100% {
+    filter: brightness(0.95);
+  }
+  50% {
+    filter: brightness(1.15);
+  }
+}
+
+.fleet-ship-bob {
+  animation: fleet-ship-bob 3.2s ease-in-out infinite;
+}
+
+@keyframes fleet-ship-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}

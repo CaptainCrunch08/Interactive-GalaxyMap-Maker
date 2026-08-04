@@ -7,7 +7,24 @@ import type {
   StarSystem,
 } from "../types/campaign";
 import { SHIP_CHASSIS_LABELS } from "../types/campaign";
-import { buildHyperlanes } from "./hyperlanes";
+import { buildHyperlanes, getCampaignHyperlanes } from "./hyperlanes";
+
+const VALID_CHASSIS = new Set<string>(Object.keys(SHIP_CHASSIS_LABELS));
+
+/** Map legacy hull ids onto the current chassis set. */
+export function normalizeShipChassis(chassis: string): ShipChassis {
+  const legacy: Record<string, ShipChassis> = {
+    corvette: "escort",
+    destroyer: "light_cruiser",
+    titan: "battlecruiser",
+    colossus: "grand_cruiser",
+    science: "escort",
+    construction: "transport",
+  };
+  if (legacy[chassis]) return legacy[chassis]!;
+  if (VALID_CHASSIS.has(chassis)) return chassis as ShipChassis;
+  return "escort";
+}
 
 export function fleetSystemId(fleet: Fleet): string {
   return fleet.location.systemId;
@@ -79,10 +96,11 @@ export function createShip(chassis: ShipChassis, index: number): Ship {
 export function adjacentSystemIds(
   systems: StarSystem[],
   systemId: string,
+  lanes?: ReturnType<typeof buildHyperlanes>,
 ): Set<string> {
-  const lanes = buildHyperlanes(systems);
+  const graph = lanes ?? buildHyperlanes(systems);
   const next = new Set<string>();
-  for (const lane of lanes) {
+  for (const lane of graph) {
     if (lane.a === systemId) next.add(lane.b);
     else if (lane.b === systemId) next.add(lane.a);
   }
@@ -93,9 +111,10 @@ export function canMoveFleetInterSystem(
   systems: StarSystem[],
   fromSystemId: string,
   toSystemId: string,
+  lanes?: ReturnType<typeof buildHyperlanes>,
 ): boolean {
   if (fromSystemId === toSystemId) return false;
-  return adjacentSystemIds(systems, fromSystemId).has(toSystemId);
+  return adjacentSystemIds(systems, fromSystemId, lanes).has(toSystemId);
 }
 
 export function canMoveFleetIntraSystem(
@@ -129,6 +148,7 @@ export function isValidFleetMove(
     campaign.systems,
     fromId,
     destination.systemId,
+    getCampaignHyperlanes(campaign),
   );
 }
 

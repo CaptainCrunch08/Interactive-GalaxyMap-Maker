@@ -1,27 +1,71 @@
 import { z } from "zod";
 import type { Campaign } from "../types/campaign";
+import { normalizeCampaignPlay } from "../types/campaign";
 import { ensurePlanetCities } from "./settlements";
 import { normalizeStarClass } from "./stars";
 import { normalizePlanetClassification } from "./planetClass";
-
-const battleEntrySchema = z.object({
-  id: z.string(),
-  date: z.string(),
-  summary: z.string(),
-  outcome: z.string(),
-});
+import { resolvePlanetVisualModelId } from "./planetModels";
+import { enforceUniqueSymbolOwnership } from "./factionSymbols";
+import { armyStrength, pruneDestroyedArmies } from "./battleResolve";
 
 const factionSchema = z.object({
   id: z.string(),
   name: z.string(),
   color: z.string(),
+  leader: z.string().optional(),
+  armyType: z
+    .enum([
+      "infantry",
+      "armored",
+      "mechanized",
+      "artillery",
+      "airborne",
+      "elite",
+      "irregular",
+    ])
+    .default("infantry"),
   defaultSymbolId: z.string().optional(),
+  symbolIds: z.array(z.string()).optional().default([]),
+});
+
+const hyperlaneSchema = z.object({
+  id: z.string(),
+  a: z.string(),
+  b: z.string(),
 });
 
 const armySymbolSchema = z.object({
   id: z.string(),
   name: z.string(),
   imageDataUrl: z.string(),
+});
+
+const characterPlacementSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("unknown") }),
+  z.object({ kind: z.literal("system"), systemId: z.string() }),
+  z.object({
+    kind: z.literal("planet"),
+    systemId: z.string(),
+    planetId: z.string(),
+  }),
+  z.object({ kind: z.literal("fleet"), fleetId: z.string() }),
+  z.object({
+    kind: z.literal("army"),
+    planetId: z.string(),
+    armyId: z.string(),
+  }),
+]);
+
+const characterSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  title: z.string().default(""),
+  factionId: z.string().optional(),
+  affiliation: z.string().optional(),
+  status: z.enum(["alive", "lost", "deceased"]).default("alive"),
+  placement: characterPlacementSchema.optional(),
+  location: z.string().default(""),
+  notes: z.string().optional(),
 });
 
 const starSystemSchema = z.object({
@@ -136,19 +180,77 @@ const armySchema = z.object({
   symbolId: z.string().optional(),
   dir: sphereDirSchema,
   notes: z.string(),
+  strengthPercent: z.number().min(0).max(100).optional().default(100),
 });
 
-const shipChassisSchema = z.enum([
-  "corvette",
-  "destroyer",
-  "cruiser",
-  "battleship",
-  "titan",
-  "colossus",
-  "construction",
-  "science",
+const battleEntrySchema = z.object({
+  id: z.string(),
+  date: z.string(),
+  summary: z.string(),
+  outcome: z.string(),
+  attackerFactionId: z.string().optional(),
+  defenderFactionId: z.string().optional(),
+  attackerArmyId: z.string().optional(),
+  defenderArmyId: z.string().optional(),
+  attackerSupportArmyIds: z.array(z.string()).optional(),
+  defenderSupportArmyIds: z.array(z.string()).optional(),
+  attackerVp: z.number().optional(),
+  defenderVp: z.number().optional(),
+  attackerCasualties: z.number().optional(),
+  defenderCasualties: z.number().optional(),
+  attackerStrengthLostPct: z.number().optional(),
+  defenderStrengthLostPct: z.number().optional(),
+  victoryKind: z
+    .enum([
+      "decisive",
+      "major",
+      "minor",
+      "pyrrhic",
+      "draw",
+      "heroic",
+      "epochal",
+    ])
+    .optional(),
+  victorFactionId: z.string().nullable().optional(),
+});
+
+const famousBattleSiteSchema = z.object({
+  id: z.string(),
+  battleId: z.string(),
+  tileIndex: z.number().int().nonnegative(),
+  dir: sphereDirSchema,
+  tier: z.enum(["heroic", "epochal"]),
+  date: z.string(),
+  attackerCommander: z.string(),
+  defenderCommander: z.string(),
+  attackerForceStrength: z.number(),
+  defenderForceStrength: z.number(),
+  attackerVp: z.number(),
+  defenderVp: z.number(),
+  victorFactionId: z.string(),
+  victorLabel: z.string(),
+});
+
+const shipChassisSchema = z.preprocess((v) => {
+  if (typeof v !== "string") return v;
+  const legacy: Record<string, string> = {
+    corvette: "escort",
+    destroyer: "light_cruiser",
+    titan: "battlecruiser",
+    colossus: "grand_cruiser",
+    science: "escort",
+    construction: "transport",
+  };
+  return legacy[v] ?? v;
+}, z.enum([
+  "escort",
   "transport",
-]);
+  "light_cruiser",
+  "cruiser",
+  "battlecruiser",
+  "grand_cruiser",
+  "battleship",
+]));
 
 const shipSchema = z.object({
   id: z.string(),
@@ -173,6 +275,7 @@ const fleetSchema = z.object({
   id: z.string(),
   name: z.string(),
   factionId: z.string(),
+  symbolId: z.string().optional(),
   ships: z.array(shipSchema).default([]),
   location: fleetLocationSchema,
   notes: z.string().default(""),
@@ -248,13 +351,27 @@ const planetSchema = z.object({
       "tidally_locked",
     ])
     .default("earthlike"),
+  visualModelId: z.string().optional(),
   controllingFactionId: z.string().optional(),
   notes: z.string(),
   battles: z.array(battleEntrySchema),
   cities: z.array(citySchema).default([]),
   structures: z.array(structureSchema).default([]),
   tileClaims: z.record(z.string(), z.string()).optional().default({}),
+  tileTerrain: z.record(z.string(), z.string()).optional().default({}),
   armies: z.array(armySchema).default([]),
+  famousBattleSites: z.array(famousBattleSiteSchema).optional().default([]),
+  buildingPoints: z.record(z.string(), z.number()).optional().default({}),
+});
+
+const campaignPlaySchema = z.object({
+  active: z.boolean(),
+  round: z.number().int().positive().default(1),
+  turnOrder: z.array(z.string()).default([]),
+  activeFactionId: z.string().nullable().default(null),
+  movedFleetIds: z.array(z.string()).default([]),
+  movedArmyIds: z.array(z.string()).default([]),
+  armyMovementUsed: z.record(z.string(), z.number()).optional().default({}),
 });
 
 const campaignSchema = z.object({
@@ -265,8 +382,11 @@ const campaignSchema = z.object({
   systems: z.array(starSystemSchema),
   planets: z.array(planetSchema),
   fleets: z.array(fleetSchema).default([]),
+  characters: z.array(characterSchema).default([]),
+  hyperlanes: z.array(hyperlaneSchema).optional(),
   timeline: campaignTimelineSchema.optional(),
   mapSize: z.number().positive().optional(),
+  play: campaignPlaySchema.optional(),
 });
 
 export function parseCampaignJson(json: string): Campaign {
@@ -276,19 +396,34 @@ export function parseCampaignJson(json: string): Campaign {
     ...campaign,
     symbols: campaign.symbols ?? [],
     fleets: campaign.fleets ?? [],
+    characters: campaign.characters ?? [],
+    hyperlanes: campaign.hyperlanes,
+    factions: enforceUniqueSymbolOwnership(
+      campaign.factions.map((f) => ({
+        ...f,
+        armyType: f.armyType ?? "infantry",
+      })),
+    ),
     timeline: {
       frames: campaign.timeline?.frames ?? [],
       events: campaign.timeline?.events ?? [],
     },
     mapSize: campaign.mapSize,
+    play: normalizeCampaignPlay(campaign.play),
     systems: campaign.systems.map((s) => ({
       ...s,
       starClass: normalizeStarClass(s.starClass),
     })),
     planets: campaign.planets.map((p) => {
+      const classification = normalizePlanetClassification(p.classification);
       const ensured = ensurePlanetCities({
         ...p,
-        classification: normalizePlanetClassification(p.classification),
+        classification,
+        visualModelId: resolvePlanetVisualModelId(
+          classification,
+          p.visualModelId,
+          p.id,
+        ),
         structures: p.structures ?? [],
         cities: p.cities ?? [],
         armies: p.armies ?? [],
@@ -296,8 +431,16 @@ export function parseCampaignJson(json: string): Campaign {
       return {
         ...ensured,
         tileClaims: ensured.tileClaims ?? {},
-        armies: ensured.armies ?? [],
+        tileTerrain: p.tileTerrain ?? ensured.tileTerrain ?? {},
+        armies: pruneDestroyedArmies(
+          (ensured.armies ?? []).map((a) => ({
+            ...a,
+            strengthPercent: armyStrength(a),
+          })),
+        ),
+        famousBattleSites: p.famousBattleSites ?? [],
         structures: ensured.structures ?? [],
+        buildingPoints: p.buildingPoints ?? {},
       };
     }),
   };

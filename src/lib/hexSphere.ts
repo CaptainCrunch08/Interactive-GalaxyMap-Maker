@@ -237,6 +237,28 @@ export function buildHexSphere(frequency = 5): HexSphere {
   return { tiles, neighbors };
 }
 
+/** Graph distance (BFS) between two tiles on the hex sphere. */
+export function hexTileDistance(
+  sphere: HexSphere,
+  start: number,
+  goal: number,
+): number {
+  if (start === goal) return 0;
+  const q = [start];
+  const dist = new Map<number, number>([[start, 0]]);
+  while (q.length) {
+    const cur = q.shift()!;
+    const d = dist.get(cur)!;
+    for (const n of sphere.neighbors[cur] ?? []) {
+      if (dist.has(n)) continue;
+      if (n === goal) return d + 1;
+      dist.set(n, d + 1);
+      q.push(n);
+    }
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
 /** Closest tile center to a direction on the unit sphere. */
 export function nearestTileIndex(sphere: HexSphere, dir: Vec3): number {
   const d = normalize(dir);
