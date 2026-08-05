@@ -7,6 +7,7 @@ export type PlanetType =
   | "death"
   | "shrine"
   | "asteroid_belt"
+  | "warp_gate"
   | "custom";
 
 /**
@@ -75,6 +76,7 @@ export type StructureKind =
   | "pilgrim_station"
   | "mining_claim"
   | "relay"
+  | "relay_crown"
   | "outpost"
   | "ruins_site";
 
@@ -281,8 +283,16 @@ export interface StarSystem {
   x: number;
   y: number;
   notes: string;
-  /** Spectral / exotic star classification (visual only; not faction). */
+  /**
+   * Spectral / exotic core classification (visual).
+   * When `dysonSphere` is set, this is the star (or black hole) inside the shell.
+   */
   starClass: StarClass;
+  /**
+   * Megastructure shell around the core star. Required for systems that host
+   * a warp gate — the sphere feeds the gate via a power tether.
+   */
+  dysonSphere?: boolean;
   /** Primary system owner; planets may diverge (contested). */
   controllingFactionId?: string;
 }
@@ -343,6 +353,11 @@ export interface Planet {
    */
   visualModelId?: string;
   controllingFactionId?: string;
+  /**
+   * Linked warp-gate planet id (bidirectional). Only for `type === "warp_gate"`.
+   * Missing / broken link → transit dumps the fleet at a random system.
+   */
+  linkedGateId?: string;
   notes: string;
   battles: BattleEntry[];
   /** Cities and districts factions contest on the surface. */
@@ -468,6 +483,7 @@ export const PLANET_TYPE_LABELS: Record<PlanetType, string> = {
   death: "Death World",
   shrine: "Shrine World",
   asteroid_belt: "Asteroid Belt",
+  warp_gate: "Warp Gate",
   custom: "Custom",
 };
 
@@ -601,6 +617,7 @@ export const STRUCTURE_KIND_LABELS: Record<StructureKind, string> = {
   pilgrim_station: "Pilgrim Station",
   mining_claim: "Mining Claim",
   relay: "Relay",
+  relay_crown: "Relay Crown",
   outpost: "Outpost",
   ruins_site: "Ruins Site",
 };
@@ -624,6 +641,7 @@ export const STRUCTURE_KIND_ORDER: StructureKind[] = [
   "pilgrim_station",
   "mining_claim",
   "relay",
+  "relay_crown",
   "outpost",
   "ruins_site",
 ];

@@ -88,6 +88,7 @@ const starSystemSchema = z.object({
       "black_hole",
     ])
     .default("G"),
+  dysonSphere: z.boolean().optional().default(false),
   controllingFactionId: z.string().optional(),
 });
 
@@ -163,6 +164,7 @@ const structureSchema = z.object({
         "pilgrim_station",
         "mining_claim",
         "relay",
+        "relay_crown",
         "outpost",
         "ruins_site",
       ]),
@@ -328,6 +330,7 @@ const planetSchema = z.object({
     "death",
     "shrine",
     "asteroid_belt",
+    "warp_gate",
     "custom",
   ]),
   classification: z
@@ -353,6 +356,7 @@ const planetSchema = z.object({
     .default("earthlike"),
   visualModelId: z.string().optional(),
   controllingFactionId: z.string().optional(),
+  linkedGateId: z.string().optional(),
   notes: z.string(),
   battles: z.array(battleEntrySchema),
   cities: z.array(citySchema).default([]),
@@ -410,10 +414,16 @@ export function parseCampaignJson(json: string): Campaign {
     },
     mapSize: campaign.mapSize,
     play: normalizeCampaignPlay(campaign.play),
-    systems: campaign.systems.map((s) => ({
-      ...s,
-      starClass: normalizeStarClass(s.starClass),
-    })),
+    systems: campaign.systems.map((s) => {
+      const hasGate = campaign.planets.some(
+        (p) => p.systemId === s.id && p.type === "warp_gate",
+      );
+      return {
+        ...s,
+        starClass: normalizeStarClass(s.starClass),
+        dysonSphere: Boolean(s.dysonSphere) || hasGate,
+      };
+    }),
     planets: campaign.planets.map((p) => {
       const classification = normalizePlanetClassification(p.classification);
       const ensured = ensurePlanetCities({

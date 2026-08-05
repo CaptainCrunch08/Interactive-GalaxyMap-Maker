@@ -13,6 +13,7 @@ import {
   STRUCTURE_KIND_LABELS,
 } from "../types/campaign";
 import { buildHexSphere, type HexSphere } from "./hexSphere";
+import { generateWarpGateSurface, ensureWarpGateSurface } from "./warpGateSurface";
 
 /** Must match HexPlanet FREQUENCY so tile indices stay valid. */
 export const SETTLEMENT_HEX_FREQUENCY = 5;
@@ -63,6 +64,7 @@ const CITY_PREFIX: Record<PlanetType, string[]> = {
   death: ["Fortress", "Outpost", "Hold", "Redoubt"],
   shrine: ["Shrine", "Basilica", "Sanctum", "Pilgrim"],
   asteroid_belt: ["Station", "Mining", "Claim", "Relay"],
+  warp_gate: ["Gate", "Station", "Crown", "Relay"],
   custom: ["City", "Settlement", "Colony", "Station"],
 };
 
@@ -73,6 +75,7 @@ const DISTRICT_KINDS: Record<PlanetType, DistrictKind[]> = {
   death: ["fortress", "camp", "bastion", "outpost", "ruins", "quarter", "manufactorum"],
   shrine: ["cathedral", "reliquary", "cloister", "quarter", "bastion", "ruins", "manufactorum"],
   asteroid_belt: ["outpost", "docks", "camp", "ruins", "bastion", "quarter"],
+  warp_gate: ["docks", "bastion", "outpost", "camp", "quarter"],
   custom: ["quarter", "bastion", "docks", "outpost", "ruins", "camp", "manufactorum"],
 };
 
@@ -84,6 +87,7 @@ const MANUFACTORUMS_PER_CITY: Record<PlanetType, [number, number]> = {
   death: [0, 1],
   shrine: [0, 1],
   asteroid_belt: [0, 0],
+  warp_gate: [0, 0],
   custom: [0, 1],
 };
 
@@ -94,6 +98,7 @@ const CITY_COUNT: Record<PlanetType, [number, number]> = {
   death: [2, 3],
   shrine: [2, 3],
   asteroid_belt: [0, 1],
+  warp_gate: [0, 0],
   custom: [2, 3],
 };
 
@@ -104,6 +109,7 @@ const DISTRICTS_PER_CITY: Record<PlanetType, [number, number]> = {
   death: [2, 3],
   shrine: [2, 3],
   asteroid_belt: [1, 2],
+  warp_gate: [0, 0],
   custom: [2, 3],
 };
 
@@ -126,6 +132,7 @@ const STRUCTURE_POOL: Record<PlanetType, StructureKind[]> = {
     "ruins_site",
   ],
   asteroid_belt: ["mining_claim", "relay", "outpost"],
+  warp_gate: ["relay_crown", "space_port", "outpost", "relay", "reactor"],
   custom: ["outpost", "relay", "ruins_site", "mining_claim"],
 };
 
@@ -136,6 +143,7 @@ const STRUCTURE_COUNT: Record<PlanetType, [number, number]> = {
   death: [4, 6],
   shrine: [3, 5],
   asteroid_belt: [2, 4],
+  warp_gate: [1, 1],
   custom: [2, 4],
 };
 
@@ -158,6 +166,7 @@ const STRUCTURE_NAME_PREFIX: Record<StructureKind, string[]> = {
   pilgrim_station: ["Pilgrim Station", "Wayshrine", "Processional"],
   mining_claim: ["Mining Claim", "Asteroid Pit", "Claim Marker"],
   relay: ["Relay", "Vox Array", "Beacon"],
+  relay_crown: ["Relay Crown", "Gate Crown", "Warp Spire"],
   outpost: ["Outpost", "Watch Post", "Frontier Post"],
   ruins_site: ["Ruins", "Dead Site", "Collapsed Works"],
 };
@@ -372,6 +381,11 @@ export function generatePlanetSurface(
   type: PlanetType,
   options: SettlementGenOptions = {},
 ): { cities: City[]; structures: PlanetStructure[] } {
+  if (type === "warp_gate") {
+    return generateWarpGateSurface(planetId, {
+      controllingFactionId: options.defaultFactionId,
+    });
+  }
   const cities = generatePlanetCities(planetId, type, options);
   const occupied = settlementTileSet(cities, []);
   const structures = generatePlanetStructures(
@@ -620,6 +634,9 @@ export function ensurePlanetCities(
   planet: Planet,
   options?: SettlementGenOptions,
 ): Planet {
+  if (planet.type === "warp_gate") {
+    return ensureWarpGateSurface(planet);
+  }
   const hasCities =
     planet.cities &&
     planet.cities.length > 0 &&

@@ -1,5 +1,5 @@
 import type { StarClass } from "../types/campaign";
-import { STAR_CLASS_ORDER } from "../types/campaign";
+import { STAR_CLASS_LABELS, STAR_CLASS_ORDER } from "../types/campaign";
 
 export type StarAppearance = {
   /** Core / mid glow color for the star body. */
@@ -136,6 +136,44 @@ export function pickRandomStarClass(rng: () => number = Math.random): StarClass 
     if (roll <= 0) return c;
   }
   return "G";
+}
+
+/** Core stars preferred inside a Dyson Sphere megastructure (includes black holes). */
+const DYSON_CORE_WEIGHTS: Partial<Record<StarClass, number>> = {
+  O: 8,
+  B: 10,
+  A: 8,
+  F: 10,
+  G: 14,
+  K: 10,
+  M: 6,
+  neutron: 8,
+  pulsar: 8,
+  black_hole: 18,
+};
+
+export function pickDysonCoreStarClass(
+  rng: () => number = Math.random,
+): StarClass {
+  const entries = Object.entries(DYSON_CORE_WEIGHTS) as [StarClass, number][];
+  let total = 0;
+  for (const [, w] of entries) total += w;
+  let roll = rng() * total;
+  for (const [c, w] of entries) {
+    roll -= w;
+    if (roll <= 0) return c;
+  }
+  return "G";
+}
+
+/** Display label for a system star, including Dyson shell when present. */
+export function starSystemLabel(system: {
+  starClass?: StarClass;
+  dysonSphere?: boolean;
+}): string {
+  const core = STAR_CLASS_LABELS[normalizeStarClass(system.starClass)];
+  if (system.dysonSphere) return `Dyson Sphere · ${core}`;
+  return core;
 }
 
 export function starBodyGradient(starClass: StarClass | undefined): string {

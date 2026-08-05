@@ -555,7 +555,13 @@ export function InspectorPanel() {
                   </option>
                 ))}
               </select>
-              {planet.type !== "asteroid_belt" && (
+              {planet.type === "warp_gate" && (
+                <p className="text-[10px] text-brass mb-2 leading-snug">
+                  Requires a Dyson Sphere in this system (enabled automatically).
+                </p>
+              )}
+              {planet.type !== "asteroid_belt" &&
+                planet.type !== "warp_gate" && (
                 <>
                   <label className="block text-xs text-muted mb-1">
                     Classification
@@ -1458,7 +1464,7 @@ export function InspectorPanel() {
               />
 
               <label className="block text-xs text-muted mb-1">
-                Star class
+                Star class (core)
               </label>
               <select
                 className={inputClass + " mb-2"}
@@ -1475,6 +1481,28 @@ export function InspectorPanel() {
                   </option>
                 ))}
               </select>
+
+              <label className="flex items-center gap-2 text-xs text-muted mb-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={Boolean(system.dysonSphere)}
+                  onChange={(e) =>
+                    updateSystem(system.id, {
+                      dysonSphere: e.target.checked,
+                    })
+                  }
+                />
+                <span>
+                  Dyson Sphere megastructure
+                  {system.dysonSphere ? " (wraps the core star)" : ""}
+                </span>
+              </label>
+              {system.dysonSphere && (
+                <p className="text-[10px] text-brass mb-2 leading-snug">
+                  Required to host a warp gate. Feeds the gate through a power
+                  tether in system view.
+                </p>
+              )}
 
               <label className="block text-xs text-muted mb-1">
                 System owner

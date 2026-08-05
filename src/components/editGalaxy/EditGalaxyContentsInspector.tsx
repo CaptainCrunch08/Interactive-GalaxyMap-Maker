@@ -117,7 +117,7 @@ export function EditGalaxyContentsInspector({
               />
             </label>
             <label className="block text-[10px] uppercase tracking-wider text-muted">
-              Star class
+              Star class (core)
               <select
                 className={inputClass + " mt-1"}
                 value={system.starClass}
@@ -133,6 +133,18 @@ export function EditGalaxyContentsInspector({
                   </option>
                 ))}
               </select>
+            </label>
+            <label className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-muted cursor-pointer">
+              <input
+                type="checkbox"
+                checked={Boolean(system.dysonSphere)}
+                onChange={(e) =>
+                  updateSystem(system.id, {
+                    dysonSphere: e.target.checked,
+                  })
+                }
+              />
+              Dyson Sphere megastructure
             </label>
             <label className="block text-[10px] uppercase tracking-wider text-muted">
               Notes

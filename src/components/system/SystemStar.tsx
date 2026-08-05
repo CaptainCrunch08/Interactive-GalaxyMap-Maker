@@ -13,6 +13,8 @@ type SystemStarProps = {
   seed?: string;
   selected?: boolean;
   title?: string;
+  /** Megastructure shell around the core star / black hole. */
+  dysonSphere?: boolean;
   onClick?: (e: MouseEvent) => void;
 };
 
@@ -233,6 +235,7 @@ export function SystemStar({
   seed = "star",
   selected = false,
   title,
+  dysonSphere = false,
   onClick,
 }: SystemStarProps) {
   const cls = normalizeStarClass(starClass);
@@ -255,15 +258,36 @@ export function SystemStar({
     "--star-glow": look.color,
   } as CSSProperties;
 
+  const shellSize = dysonSphere ? size * 1.85 : size;
+
   return (
     <div
       className={`relative pointer-events-none system-star ${tempo}`}
       style={{
-        width: size,
-        height: size,
+        width: shellSize,
+        height: shellSize,
         ...cssVars,
       }}
     >
+      {dysonSphere && (
+        <DysonSphereShell
+          size={shellSize}
+          coreColor={look.color}
+          accent={look.highlight}
+          selected={selected}
+        />
+      )}
+
+      <div
+        className="absolute pointer-events-none"
+        style={{
+          left: "50%",
+          top: "50%",
+          width: size,
+          height: size,
+          transform: "translate(-50%, -50%)",
+        }}
+      >
       {!isBlackHole && (
         <span
           className={`absolute rounded-full pointer-events-none system-star-halo ${
@@ -370,6 +394,101 @@ export function SystemStar({
           aria-label={title ?? STAR_CLASS_LABELS[cls]}
         />
       )}
+      </div>
     </div>
+  );
+}
+
+/** Lattice / ring megastructure that wraps any core star class. */
+function DysonSphereShell({
+  size,
+  coreColor,
+  accent,
+  selected,
+}: {
+  size: number;
+  coreColor: string;
+  accent: string;
+  selected: boolean;
+}) {
+  const uid = useId().replace(/:/g, "");
+  return (
+    <svg
+      className="absolute inset-0 pointer-events-none dyson-sphere-shell"
+      viewBox="0 0 100 100"
+      width={size}
+      height={size}
+      aria-hidden
+    >
+      <defs>
+        <radialGradient id={`dyson-glow-${uid}`} cx="50%" cy="50%" r="50%">
+          <stop offset="55%" stopColor={`${coreColor}00`} />
+          <stop offset="78%" stopColor={`${accent}55`} />
+          <stop offset="100%" stopColor={`${coreColor}22`} />
+        </radialGradient>
+      </defs>
+      <circle
+        cx="50"
+        cy="50"
+        r="48"
+        fill={`url(#dyson-glow-${uid})`}
+        className="dyson-sphere-pulse"
+      />
+      {/* Outer structural ring */}
+      <circle
+        cx="50"
+        cy="50"
+        r="44"
+        fill="none"
+        stroke={selected ? "#4fd2ff" : accent}
+        strokeWidth="1.4"
+        strokeOpacity="0.85"
+        strokeDasharray="6 4 2 4"
+        className="dyson-sphere-spin-slow"
+      />
+      <circle
+        cx="50"
+        cy="50"
+        r="38"
+        fill="none"
+        stroke={coreColor}
+        strokeWidth="0.9"
+        strokeOpacity="0.7"
+        strokeDasharray="3 5"
+        className="dyson-sphere-spin"
+      />
+      {/* Lattice struts */}
+      {[0, 30, 60, 90, 120, 150].map((deg) => (
+        <line
+          key={deg}
+          x1="50"
+          y1="50"
+          x2={50 + Math.cos((deg * Math.PI) / 180) * 44}
+          y2={50 + Math.sin((deg * Math.PI) / 180) * 44}
+          stroke={accent}
+          strokeWidth="0.55"
+          strokeOpacity="0.45"
+        />
+      ))}
+      {/* Hab panels */}
+      {[15, 75, 135, 195, 255, 315].map((deg) => {
+        const rad = (deg * Math.PI) / 180;
+        const x = 50 + Math.cos(rad) * 41;
+        const y = 50 + Math.sin(rad) * 41;
+        return (
+          <rect
+            key={deg}
+            x={x - 2.2}
+            y={y - 1.1}
+            width="4.4"
+            height="2.2"
+            rx="0.4"
+            fill={accent}
+            fillOpacity="0.55"
+            transform={`rotate(${deg} ${x} ${y})`}
+          />
+        );
+      })}
+    </svg>
   );
 }

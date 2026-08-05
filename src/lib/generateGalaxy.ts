@@ -7,7 +7,9 @@ import type {
 import { GALAXY_EDGE_PADDING } from "../types/campaign";
 import { HYPERLANE_MAX_DIST } from "./hyperlanes";
 import { generatePlanetSurface, planetOwnerFromCities } from "./settlements";
-import { pickRandomStarClass } from "./stars";
+import { generateWarpGateSurface } from "./warpGateSurface";
+import { applyWarpGateOwnership } from "./warpGates";
+import { pickDysonCoreStarClass, pickRandomStarClass } from "./stars";
 import { pickRandomClassification } from "./planetClass";
 import { pickPlanetVisualModel } from "./planetModels";
 
@@ -423,7 +425,7 @@ export function generateGalaxyCampaign(
         type,
         classification,
         visualModelId:
-          type === "asteroid_belt"
+          type === "asteroid_belt" || type === "warp_gate"
             ? undefined
             : pickPlanetVisualModel(classification, rng),
         controllingFactionId: planetOwnerFromCities(
@@ -441,6 +443,9 @@ export function generateGalaxyCampaign(
     }
   }
 
+  // Rare paired warp gates on distant systems (not in the normal planet pool).
+  spawnWarpGatePairs(rng, systems, planets, mapSize);
+
   return {
     version: 1,
     name,
@@ -453,6 +458,92 @@ export function generateGalaxyCampaign(
     timeline: { frames: [], events: [] },
     mapSize,
   };
+}
+
+/**
+ * Place a small number of bidirectional warp-gate pairs on distant stars.
+ * Chance scales gently with galaxy size (~1 pair per ~28 systems, rng gated).
+ */
+function spawnWarpGatePairs(
+  rng: () => number,
+  systems: StarSystem[],
+  planets: Planet[],
+  mapSize: number,
+) {
+  if (systems.length < 8) return;
+  const maxPairs = Math.max(1, Math.floor(systems.length / 28));
+  const minDist = mapSize * 0.35;
+  const usedSystems = new Set<string>();
+  let placed = 0;
+
+  for (let attempt = 0; attempt < maxPairs * 4 && placed < maxPairs; attempt++) {
+    if (rng() > 0.62) continue;
+
+    const available = systems.filter((s) => !usedSystems.has(s.id));
+    if (available.length < 2) break;
+
+    let bestA: StarSystem | null = null;
+    let bestB: StarSystem | null = null;
+    let bestD = 0;
+    // Sample random pairs; keep the farthest that clears minDist.
+    for (let s = 0; s < 40; s++) {
+      const a = pick(rng, available);
+      const b = pick(rng, available);
+      if (a.id === b.id) continue;
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (d >= minDist && d > bestD) {
+        bestD = d;
+        bestA = a;
+        bestB = b;
+      }
+    }
+    if (!bestA || !bestB) continue;
+
+    // Warp gates require a Dyson Sphere megastructure around the system core.
+    for (const sys of [bestA, bestB]) {
+      const idx = systems.findIndex((s) => s.id === sys.id);
+      if (idx < 0) continue;
+      systems[idx] = {
+        ...systems[idx]!,
+        dysonSphere: true,
+        starClass: pickDysonCoreStarClass(rng),
+      };
+    }
+
+    const gateA = makeWarpGatePlanet(rng, bestA, planets);
+    const gateB = makeWarpGatePlanet(rng, bestB, planets);
+    gateA.linkedGateId = gateB.id;
+    gateB.linkedGateId = gateA.id;
+    planets.push(gateA, gateB);
+    usedSystems.add(bestA.id);
+    usedSystems.add(bestB.id);
+    placed += 1;
+  }
+}
+
+function makeWarpGatePlanet(
+  rng: () => number,
+  system: StarSystem,
+  planets: Planet[],
+): Planet {
+  const orbitIndex = planets.filter((p) => p.systemId === system.id).length;
+  const planetId = crypto.randomUUID();
+  const { cities, structures } = generateWarpGateSurface(planetId);
+  const gate: Planet = {
+    id: planetId,
+    systemId: system.id,
+    name: `Warp Gate ${pick(rng, ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"])}`,
+    orbitIndex,
+    type: "warp_gate",
+    classification: "barren",
+    notes: "Paired transit terminus. Control the relay crown to lock the gate.",
+    battles: [],
+    cities,
+    structures,
+    tileClaims: {},
+    armies: [],
+  };
+  return applyWarpGateOwnership(gate);
 }
 
 export { parseGalaxySize };

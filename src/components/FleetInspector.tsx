@@ -41,6 +41,7 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
   const updateShip = useCampaignStore((s) => s.updateShip);
   const deleteShip = useCampaignStore((s) => s.deleteShip);
   const setFleetMoveMode = useCampaignStore((s) => s.setFleetMoveMode);
+  const travelThroughWarpGate = useCampaignStore((s) => s.travelThroughWarpGate);
   const enterSystem = useCampaignStore((s) => s.enterSystem);
   const goBack = useCampaignStore((s) => s.goBack);
   const toggleInspector = useCampaignStore((s) => s.toggleInspector);
@@ -179,6 +180,25 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
                 : "Click star or planet…"
               : "Move fleet"}
           </button>
+          {fleet.location.kind === "orbit" &&
+            (() => {
+              const gate = campaign.planets.find(
+                (p) =>
+                  p.id === fleet.location.planetId && p.type === "warp_gate",
+              );
+              if (!gate) return null;
+              return (
+                <button
+                  type="button"
+                  className="hud-btn w-full mt-2"
+                  disabled={!!moveBlock}
+                  title={moveBlock ?? undefined}
+                  onClick={() => travelThroughWarpGate(fleet.id)}
+                >
+                  Travel through warp gate
+                </button>
+              );
+            })()}
           {moveBlock && !moving && (
             <p className="text-[10px] text-brass mt-1.5 leading-snug">
               {moveBlock}

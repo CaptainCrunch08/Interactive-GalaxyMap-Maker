@@ -7,6 +7,7 @@ import {
 import { OrbitRing } from "../components/system/OrbitRing";
 import { PlanetNode } from "../components/system/PlanetNode";
 import { AsteroidBeltRing } from "../components/system/AsteroidBeltRing";
+import { WarpGateNode } from "../components/system/WarpGateNode";
 import { SystemStar } from "../components/system/SystemStar";
 import { FleetMarker } from "../components/fleet/FleetMarker";
 import { resolveFleetSymbolUrl } from "../lib/fleetSymbols";
@@ -22,8 +23,7 @@ import {
   fleetsInOrbit,
   fleetsInSystem,
 } from "../lib/fleets";
-import { normalizeStarClass, starAppearance } from "../lib/stars";
-import { STAR_CLASS_LABELS } from "../types/campaign";
+import { normalizeStarClass, starAppearance, starSystemLabel } from "../lib/stars";
 import { useCampaignStore } from "../store/useCampaignStore";
 
 const INITIAL_SCALE = 0.85;
@@ -70,7 +70,10 @@ export function SystemView() {
   const outermost = maxOrbitRadius(planets.length);
   const starClass = normalizeStarClass(system.starClass);
   const starSize = starAppearance(starClass).systemSize;
+  const hasDyson = Boolean(system.dysonSphere);
+  const displayStarSize = hasDyson ? starSize * 1.85 : starSize;
   const starFleets = fleetsAtSystemStar(fleets, system.id);
+  const warpGates = planets.filter((p) => p.type === "warp_gate");
 
   return (
     <div className="relative h-full w-full galaxy-bg overflow-hidden">
@@ -127,13 +130,80 @@ export function SystemView() {
               <OrbitRing radius={outermost} center={center} />
             )}
 
+            {/* Power tethers from Dyson Sphere core to warp gates */}
+            {hasDyson && warpGates.length > 0 && (
+              <svg
+                className="absolute inset-0 z-[9] pointer-events-none overflow-visible"
+                width={SYSTEM_VIEW_SIZE}
+                height={SYSTEM_VIEW_SIZE}
+                aria-hidden
+              >
+                <defs>
+                  <linearGradient
+                    id="warp-power-beam"
+                    x1="0%"
+                    y1="0%"
+                    x2="100%"
+                    y2="0%"
+                  >
+                    <stop offset="0%" stopColor="#e8c547" stopOpacity="0.15" />
+                    <stop offset="45%" stopColor="#4fd2ff" stopOpacity="0.95" />
+                    <stop offset="100%" stopColor="#e8c547" stopOpacity="0.85" />
+                  </linearGradient>
+                </defs>
+                {warpGates.map((gate, index) => {
+                  const orbitIndex =
+                    typeof gate.orbitIndex === "number"
+                      ? gate.orbitIndex
+                      : planets.findIndex((p) => p.id === gate.id);
+                  const pos = orbitPosition(
+                    orbitIndex >= 0 ? orbitIndex : index,
+                  );
+                  const x2 = center + pos.x;
+                  const y2 = center + pos.y;
+                  return (
+                    <g key={`beam-${gate.id}`}>
+                      <line
+                        x1={center}
+                        y1={center}
+                        x2={x2}
+                        y2={y2}
+                        stroke="rgba(232, 197, 71, 0.25)"
+                        strokeWidth={6}
+                        strokeLinecap="round"
+                      />
+                      <line
+                        x1={center}
+                        y1={center}
+                        x2={x2}
+                        y2={y2}
+                        stroke="url(#warp-power-beam)"
+                        strokeWidth={2.5}
+                        strokeLinecap="round"
+                        className="dyson-power-beam"
+                        strokeDasharray="14 10"
+                      />
+                      <circle
+                        cx={x2}
+                        cy={y2}
+                        r={5}
+                        fill="#e8c547"
+                        fillOpacity="0.7"
+                        className="dyson-power-node"
+                      />
+                    </g>
+                  );
+                })}
+              </svg>
+            )}
+
             <div
               className="absolute z-10"
               style={{
                 left: center,
                 top: center,
-                width: starSize,
-                height: starSize,
+                width: displayStarSize,
+                height: displayStarSize,
                 transform: "translate(-50%, -50%)",
               }}
             >
@@ -141,9 +211,11 @@ export function SystemView() {
                 starClass={starClass}
                 size={starSize}
                 seed={system.id}
+                dysonSphere={hasDyson}
                 selected={
                   canIntraMove && movingFleet?.location.kind !== "system"
                 }
+                title={starSystemLabel(system)}
                 onClick={(e) => {
                   e.stopPropagation();
                   if (canIntraMove && fleetMoveModeId) {
@@ -167,7 +239,7 @@ export function SystemView() {
             >
               {system.name}
               <span className="block text-[11px] text-muted font-body tracking-wider uppercase mt-1">
-                {STAR_CLASS_LABELS[starClass]}
+                {starSystemLabel(system)}
               </span>
             </h2>
 
@@ -222,6 +294,16 @@ export function SystemView() {
                       planet={planet}
                       radius={orbitRadiusForIndex(orbitIndex)}
                       center={center}
+                      faction={faction}
+                      selected={selected}
+                      mapScale={mapScale}
+                      onNavigate={onNavigate}
+                    />
+                  ) : planet.type === "warp_gate" ? (
+                    <WarpGateNode
+                      planet={planet}
+                      x={px}
+                      y={py}
                       faction={faction}
                       selected={selected}
                       mapScale={mapScale}

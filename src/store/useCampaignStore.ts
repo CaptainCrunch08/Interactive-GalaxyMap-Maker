@@ -114,6 +114,20 @@ import {
   hexTileDistance,
   nearestTileIndex,
 } from "../lib/hexSphere";
+import {
+  nearestStationTile,
+  stationTileDistance,
+} from "../lib/stationHex";
+import {
+  applyWarpGateOwnership,
+  fleetAtWarpGate,
+  linkedWarpGate,
+  placeArmyOnStationTile,
+  randomOtherSystemId,
+  RELAY_CROWN_KIND,
+  stationDockTiles,
+  warpTravelBlockedReason,
+} from "../lib/warpGates";
 
 function createInitialMaps() {
   const id = crypto.randomUUID();
@@ -500,6 +514,12 @@ interface CampaignState {
   ) => void;
   deleteShip: (fleetId: string, shipId: string) => void;
   moveFleet: (fleetId: string, location: FleetLocation) => boolean;
+  /** Transit a warp gate the fleet is orbiting (linked or random). */
+  travelThroughWarpGate: (fleetId: string) => boolean;
+  /** Seize the relay crown with a detachment standing on it. */
+  seizeRelayCrown: (planetId: string, armyId: string) => boolean;
+  /** Deploy a boarding detachment onto a warp-gate station from orbit. */
+  boardWarpGate: (planetId: string) => string | null;
   selectFleet: (fleetId: string | null) => void;
   setFleetMoveMode: (fleetId: string | null) => void;
 
@@ -832,13 +852,16 @@ export const useCampaignStore = create<CampaignState>()(
         const planet = get().campaign.planets.find((p) => p.id === planetId);
         if (!planet || planet.type === "asteroid_belt") return;
         set((s) => {
-          const ensured = ensurePlanetCities(planet, {
-            defaultFactionId: planet.controllingFactionId,
-            rivalFactionId: s.campaign.factions.find(
-              (f) => f.id !== planet.controllingFactionId,
-            )?.id,
-            contestedRate: 0.3,
-          });
+          const ensured =
+            planet.type === "warp_gate"
+              ? ensurePlanetCities(planet)
+              : ensurePlanetCities(planet, {
+                  defaultFactionId: planet.controllingFactionId,
+                  rivalFactionId: s.campaign.factions.find(
+                    (f) => f.id !== planet.controllingFactionId,
+                  )?.id,
+                  contestedRate: 0.3,
+                });
           const planets = s.campaign.planets.map((p) =>
             p.id === planetId ? ensured : p,
           );
@@ -1107,7 +1130,20 @@ export const useCampaignStore = create<CampaignState>()(
         return id;
       },
 
-      updateSystem: (id, patch) =>
+      updateSystem: (id, patch) => {
+        const state = get();
+        if (patch.dysonSphere === false) {
+          const hasGate = state.campaign.planets.some(
+            (p) => p.systemId === id && p.type === "warp_gate",
+          );
+          if (hasGate) {
+            set({
+              playMoveHint:
+                "Cannot remove the Dyson Sphere while a warp gate remains in this system",
+            });
+            return;
+          }
+        }
         set((s) =>
           withCampaign(
             s,
@@ -1119,7 +1155,8 @@ export const useCampaignStore = create<CampaignState>()(
             },
             { coalesceKey: `sys:${id}` },
           ),
-        ),
+        );
+      },
 
       moveSystem: (id, x, y) => {
         const size = campaignMapSize(get().campaign);
@@ -1289,6 +1326,12 @@ export const useCampaignStore = create<CampaignState>()(
                       ids.size === 1 ? [...ids][0] : undefined,
                   }
                 : sys,
+            );
+          }
+          // Warp gates require a Dyson Sphere megastructure in their system.
+          if (planet && patch.type === "warp_gate") {
+            systems = systems.map((sys) =>
+              sys.id === planet.systemId ? { ...sys, dysonSphere: true } : sys,
             );
           }
           return withCampaign(
@@ -2014,15 +2057,27 @@ export const useCampaignStore = create<CampaignState>()(
           return false;
         }
         const play = normalizeCampaignPlay(state.campaign.play);
-        const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
-        const fromTile = nearestTileIndex(sphere, army.dir);
-        const toTile = nearestTileIndex(sphere, dir);
-        const distance = hexTileDistance(sphere, fromTile, toTile);
+        const isGate = planet.type === "warp_gate";
+        let distance: number;
+        if (isGate) {
+          const fromTile = nearestStationTile(army.dir);
+          const toTile = nearestStationTile(dir);
+          distance = stationTileDistance(fromTile, toTile);
+        } else {
+          const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
+          const fromTile = nearestTileIndex(sphere, army.dir);
+          const toTile = nearestTileIndex(sphere, dir);
+          distance = hexTileDistance(sphere, fromTile, toTile);
+        }
 
         // Accidental same-hex drop — keep remaining movement.
-        if (distance === 0) {
-          set({ playMoveHint: null });
-          return true;
+        if (distance === 0 || !Number.isFinite(distance)) {
+          if (distance === 0) {
+            set({ playMoveHint: null });
+            return true;
+          }
+          set({ playMoveHint: "Invalid destination" });
+          return false;
         }
 
         if (play.active) {
@@ -2646,6 +2701,230 @@ export const useCampaignStore = create<CampaignState>()(
           };
         });
         return true;
+      },
+
+      travelThroughWarpGate: (fleetId) => {
+        const state = get();
+        const fleet = (state.campaign.fleets ?? []).find((f) => f.id === fleetId);
+        if (!fleet) return false;
+        const block = playMoveBlockReason(
+          state.campaign,
+          fleet.factionId,
+          fleetId,
+          "fleet",
+        );
+        if (block) {
+          set({ playMoveHint: block });
+          return false;
+        }
+        const gate = fleetAtWarpGate(state.campaign, fleet);
+        if (!gate) {
+          set({
+            playMoveHint: "Move into orbit of a warp gate to transit",
+          });
+          return false;
+        }
+        const denied = warpTravelBlockedReason(fleet, gate);
+        if (denied) {
+          set({ playMoveHint: denied });
+          return false;
+        }
+
+        const linked = linkedWarpGate(state.campaign, gate);
+        let nextLocation: FleetLocation;
+        let hint: string;
+        if (linked) {
+          nextLocation = {
+            kind: "orbit",
+            systemId: linked.systemId,
+            planetId: linked.id,
+          };
+          const sysName =
+            state.campaign.systems.find((s) => s.id === linked.systemId)?.name ??
+            "destination";
+          hint = `Warped to ${linked.name} · ${sysName}`;
+        } else {
+          const destSystemId = randomOtherSystemId(
+            state.campaign,
+            gate.systemId,
+          );
+          if (!destSystemId) {
+            set({ playMoveHint: "No destination systems available" });
+            return false;
+          }
+          nextLocation = { kind: "system", systemId: destSystemId };
+          const sysName =
+            state.campaign.systems.find((s) => s.id === destSystemId)?.name ??
+            "unknown system";
+          hint = `Unstable transit dumped the fleet at ${sysName}`;
+        }
+
+        const play = normalizeCampaignPlay(state.campaign.play);
+        set((s) => {
+          let campaign = {
+            ...s.campaign,
+            fleets: (s.campaign.fleets ?? []).map((f) =>
+              f.id === fleetId ? { ...f, location: nextLocation } : f,
+            ),
+          };
+          if (play.active) {
+            campaign = withPlay(campaign, {
+              movedFleetIds: play.movedFleetIds.includes(fleetId)
+                ? play.movedFleetIds
+                : [...play.movedFleetIds, fleetId],
+            });
+          }
+          return {
+            ...withCampaign(s, withHistoryCapture(campaign)),
+            fleetMoveModeId: null,
+            selectedFleetId: fleetId,
+            playMoveHint: hint,
+            focusedSystemId: nextLocation.systemId,
+            viewLevel:
+              nextLocation.kind === "orbit" ? "system" : s.viewLevel === "galaxy"
+                ? "galaxy"
+                : "system",
+          };
+        });
+        return true;
+      },
+
+      seizeRelayCrown: (planetId, armyId) => {
+        const state = get();
+        const planet = state.campaign.planets.find((p) => p.id === planetId);
+        if (!planet || planet.type !== "warp_gate") {
+          set({ playMoveHint: "Not a warp gate station" });
+          return false;
+        }
+        const army = planet.armies?.find((a) => a.id === armyId);
+        if (!army) return false;
+        const play = normalizeCampaignPlay(state.campaign.play);
+        if (play.active && play.activeFactionId !== army.factionId) {
+          set({ playMoveHint: "Only the active faction can seize the crown" });
+          return false;
+        }
+        const armyTile = nearestStationTile(army.dir);
+        const crown = (planet.structures ?? []).find(
+          (s) => s.kind === RELAY_CROWN_KIND,
+        );
+        if (!crown || crown.tileIndex !== armyTile) {
+          set({
+            playMoveHint: "Move a detachment onto the Relay Crown hex to seize it",
+          });
+          return false;
+        }
+        if (crown.controllingFactionId === army.factionId) {
+          set({ playMoveHint: "Your faction already holds the relay crown" });
+          return false;
+        }
+
+        set((s) => {
+          const planets = s.campaign.planets.map((p) => {
+            if (p.id !== planetId) return p;
+            const structures = (p.structures ?? []).map((st) =>
+              st.kind === RELAY_CROWN_KIND
+                ? { ...st, controllingFactionId: army.factionId }
+                : st,
+            );
+            return applyWarpGateOwnership({ ...p, structures });
+          });
+          return {
+            ...withCampaign(s, withHistoryCapture({ ...s.campaign, planets })),
+            playMoveHint: "Relay crown seized — this faction now controls the gate",
+          };
+        });
+        return true;
+      },
+
+      boardWarpGate: (planetId) => {
+        const state = get();
+        const play = normalizeCampaignPlay(state.campaign.play);
+        const factionId = play.active
+          ? play.activeFactionId
+          : state.campaign.factions[0]?.id ?? null;
+        if (!factionId) {
+          set({ playMoveHint: "No faction available to board" });
+          return null;
+        }
+        const planet = state.campaign.planets.find((p) => p.id === planetId);
+        if (!planet || planet.type !== "warp_gate") {
+          set({ playMoveHint: "Not a warp gate" });
+          return null;
+        }
+        const orbiting = (state.campaign.fleets ?? []).some(
+          (f) =>
+            f.factionId === factionId &&
+            f.location.kind === "orbit" &&
+            f.location.planetId === planetId,
+        );
+        if (!orbiting) {
+          set({
+            playMoveHint:
+              "Orbit this warp gate with a fleet before boarding the station",
+          });
+          return null;
+        }
+
+        const docks = stationDockTiles();
+        const occupied = new Set(
+          (planet.armies ?? []).map((a) => nearestStationTile(a.dir)),
+        );
+        const tile =
+          docks.find((t) => !occupied.has(t)) ??
+          docks[0] ??
+          1;
+        const faction = state.campaign.factions.find((f) => f.id === factionId);
+        const id = crypto.randomUUID();
+        const army = {
+          id,
+          name: `${faction?.name ?? "Boarding"} Detachment`,
+          factionId,
+          symbolId: faction?.defaultSymbolId,
+          dir: placeArmyOnStationTile(tile),
+          notes: "Boarded from orbit",
+          strengthPercent: 100,
+        };
+
+        // Spend BP from any planet this faction holds if in play
+        let spendPlanetId: string | null = null;
+        if (play.active) {
+          for (const p of state.campaign.planets) {
+            const bp = (p.buildingPoints ?? {})[factionId] ?? 0;
+            if (bp >= DETACHMENT_BP_COST) {
+              spendPlanetId = p.id;
+              break;
+            }
+          }
+          if (!spendPlanetId) {
+            set({
+              playMoveHint: `Need ${DETACHMENT_BP_COST} BP to board the station`,
+            });
+            return null;
+          }
+        }
+
+        set((s) => {
+          const planets = s.campaign.planets.map((p) => {
+            let next = p;
+            if (spendPlanetId && p.id === spendPlanetId) {
+              next = spendBuildingPoints(next, factionId, DETACHMENT_BP_COST);
+            }
+            if (p.id === planetId) {
+              return {
+                ...next,
+                armies: [...(next.armies ?? []), army],
+              };
+            }
+            return next;
+          });
+          return {
+            ...withCampaign(s, withHistoryCapture({ ...s.campaign, planets })),
+            selectedArmyId: id,
+            playMoveHint: "Boarding detachment deployed to the station docks",
+            inspectorOpen: true,
+          };
+        });
+        return id;
       },
 
       selectFleet: (fleetId) =>

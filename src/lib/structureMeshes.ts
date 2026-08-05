@@ -67,6 +67,8 @@ function buildStructureGeometry(kind: StructureKind): THREE.BufferGeometry {
       return finalize(buildMiningClaim());
     case "relay":
       return finalize(buildRelay());
+    case "relay_crown":
+      return finalize(buildRelayCrown());
     case "outpost":
       return finalize(buildOutpost());
     case "ruins_site":
@@ -874,6 +876,21 @@ function buildRelay(): Parts {
   addBox(p, 0.028, 0.022, 0.025, -0.045, 0.022, 0.04);
   addBox(p, 0.02, 0.018, 0.02, -0.04, 0.02, -0.04);
   addPipeRun(p, -0.04, 0.04, 0.04, 0.04, -0.03, 0.005);
+  return p;
+}
+
+/** Larger ceremonial crown / gate spire controlling warp transit. */
+function buildRelayCrown(): Parts {
+  const p: Parts = [];
+  addCyl(p, 0.14, 0.14, 0.02, 12, 0, 0.01, 0);
+  addCyl(p, 0.1, 0.1, 0.04, 10, 0, 0.04, 0);
+  addBox(p, 0.04, 0.28, 0.04, 0, 0.2, 0);
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    addBox(p, 0.025, 0.08, 0.025, Math.cos(a) * 0.08, 0.28, Math.sin(a) * 0.08);
+  }
+  addCyl(p, 0.06, 0.02, 0.05, 10, 0, 0.36, 0);
+  addCyl(p, 0.045, 0.045, 0.012, 12, 0, 0.4, 0, Math.PI / 2, 0);
   return p;
 }
 

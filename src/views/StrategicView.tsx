@@ -23,6 +23,7 @@ import { useCampaignStore } from "../store/useCampaignStore";
 import { playMoveBlockReason } from "../lib/play";
 import { normalizeCampaignPlay } from "../types/campaign";
 import { VICTORY_KIND_LABELS } from "../lib/battleResolve";
+import { StationMapView } from "./StationMapView";
 
 export function StrategicView() {
   const campaign = useCampaignStore((s) => s.campaign);
@@ -108,6 +109,10 @@ export function StrategicView() {
         Returning to map…
       </div>
     );
+  }
+
+  if (planet.type === "warp_gate") {
+    return <StationMapView />;
   }
 
   const accent = faction?.color ?? "#4fd2ff";

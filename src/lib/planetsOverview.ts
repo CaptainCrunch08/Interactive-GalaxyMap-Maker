@@ -65,6 +65,17 @@ function presentFactionIds(planet: Planet): Set<string> {
  */
 export function computePlanetStrength(planet: Planet): number {
   if (planet.type === "asteroid_belt") return 5;
+  if (planet.type === "warp_gate") {
+    let score = 45;
+    for (const army of planet.armies ?? []) {
+      score += 14 * (armyStrength(army) / 100);
+    }
+    for (const st of planet.structures ?? []) {
+      if (st.kind === "relay_crown") score += 20;
+      else score += 6;
+    }
+    return Math.max(0, Math.min(100, Math.round(score)));
+  }
 
   let score = 18;
   const typeBonus: Partial<Record<PlanetType, number>> = {

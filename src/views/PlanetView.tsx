@@ -5,7 +5,7 @@ import {
 } from "../types/campaign";
 import { useCampaignStore } from "../store/useCampaignStore";
 import { AsteroidBeltView } from "./AsteroidBeltView";
-import { PlanetGlobe } from "../components/planet/PlanetGlobe";
+import { WarpGateGlobe } from "../components/warpGate/WarpGateGlobe";
 import { atmosphereColor } from "../lib/planetTexture";
 import { resolvePlanetVisualModelId } from "../lib/planetModels";
 
@@ -60,6 +60,67 @@ export function PlanetView() {
 
   if (planet.type === "asteroid_belt") {
     return <AsteroidBeltView />;
+  }
+
+  if (planet.type === "warp_gate") {
+    const owner = faction;
+    const linkedId = planet.linkedGateId;
+    const linked = linkedId
+      ? campaign.planets.find((p) => p.id === linkedId)
+      : undefined;
+    const linkedSys = linked
+      ? campaign.systems.find((s) => s.id === linked.systemId)
+      : undefined;
+    const accent = owner?.color ?? "#4fd2ff";
+    return (
+      <div className="relative h-full w-full galaxy-bg overflow-hidden flex flex-col items-center justify-center">
+        <div className="galaxy-nebula pointer-events-none absolute inset-0 opacity-70" />
+        <div
+          className="pointer-events-none absolute rounded-full"
+          style={{
+            width: "min(70vmin, 520px)",
+            height: "min(70vmin, 520px)",
+            background: `radial-gradient(circle, ${accent}33 0%, transparent 68%)`,
+            filter: "blur(10px)",
+          }}
+        />
+        <div className="relative z-[1] flex flex-col items-center gap-5 px-6 w-full max-w-xl">
+          <div
+            className="relative w-full"
+            style={{ height: "min(52vh, 420px)" }}
+          >
+            <WarpGateGlobe
+              accentColor={accent}
+              onClick={() => enterStrategic(planet.id)}
+            />
+          </div>
+          <div className="text-center space-y-2 max-w-lg">
+            <p className="text-[10px] font-display uppercase tracking-[0.2em] text-muted">
+              Warp terminus
+            </p>
+            <h1 className="font-display text-3xl text-star">{planet.name}</h1>
+            <p className="text-sm text-brass">
+              {owner
+                ? `Controlled by ${owner.name}`
+                : "Unclaimed — open transit"}
+            </p>
+            <p className="text-xs text-muted leading-relaxed">
+              {linked
+                ? `Paired with ${linked.name}${linkedSys ? ` in ${linkedSys.name}` : ""}.`
+                : "No stable pair — transit will dump fleets at a random system."}{" "}
+              Ownership is decided solely by the Relay Crown on the station deck.
+            </p>
+            <button
+              type="button"
+              className="hud-btn hud-btn-active mt-2"
+              onClick={() => enterStrategic(planet.id)}
+            >
+              Enter station deck
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   const accent = faction?.color ?? atmosphereColor(planet.classification);

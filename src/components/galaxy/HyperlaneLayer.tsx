@@ -4,6 +4,7 @@ import {
   getCampaignHyperlanes,
   hyperlaneEndpoints,
 } from "../../lib/hyperlanes";
+import { warpLaneSystemPairs } from "../../lib/warpGates";
 
 interface HyperlaneLayerProps {
   systems: StarSystem[];
@@ -41,7 +42,12 @@ export function HyperlaneLayer({
     });
   }, [campaign, systems]);
 
-  if (lanes.length === 0) return null;
+  const warpLanes = useMemo(() => {
+    if (!campaign) return [];
+    return warpLaneSystemPairs(campaign);
+  }, [campaign]);
+
+  if (lanes.length === 0 && warpLanes.length === 0) return null;
 
   return (
     <svg
@@ -52,6 +58,26 @@ export function HyperlaneLayer({
       aria-hidden={!interactive}
       style={{ width: mapSize, height: mapSize, overflow: "visible" }}
     >
+      {warpLanes.map((lane) => {
+        const a = systems.find((s) => s.id === lane.a);
+        const b = systems.find((s) => s.id === lane.b);
+        if (!a || !b) return null;
+        return (
+          <g key={`${lane.gateA}-${lane.gateB}`}>
+            <line
+              x1={a.x}
+              y1={a.y}
+              x2={b.x}
+              y2={b.y}
+              stroke="rgba(232, 197, 71, 0.55)"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeDasharray="10 8"
+              className="pointer-events-none"
+            />
+          </g>
+        );
+      })}
       {lanes.map((lane) => {
         const ends = hyperlaneEndpoints(lane, systems);
         if (!ends) return null;

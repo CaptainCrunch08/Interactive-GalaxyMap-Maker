@@ -1,11 +1,11 @@
 import type { Faction, StarSystem } from "../../types/campaign";
-import { STAR_CLASS_LABELS } from "../../types/campaign";
 import { useRef } from "react";
 import {
   normalizeStarClass,
   starAppearance,
   starBodyGradient,
   starGlowShadow,
+  starSystemLabel,
 } from "../../lib/stars";
 import { PulsarJets, pulsarJetAngle } from "./PulsarJets";
 
@@ -41,10 +41,12 @@ export function StarNode({
   const starClass = normalizeStarClass(system.starClass);
   const look = starAppearance(starClass);
   const isPulsar = starClass === "pulsar";
+  const hasDyson = Boolean(system.dysonSphere);
   /** Labels only when zoomed in enough (map starts ~0.45). */
   const showLabel = mapScale >= 0.55 || selected;
   const dragMoved = useRef(false);
   const allowDrag = canDrag ?? editMode;
+  const bodySize = hasDyson ? look.galaxySize * 1.35 : look.galaxySize;
 
   const handlePointerDown = (e: React.PointerEvent) => {
     if (!allowDrag) return;
@@ -100,15 +102,25 @@ export function StarNode({
       onPointerDown={handlePointerDown}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
-      title={`${system.name} · ${STAR_CLASS_LABELS[starClass]}${editMode ? " · double-click to enter" : ""}`}
+      title={`${system.name} · ${starSystemLabel(system)}${editMode ? " · double-click to enter" : ""}`}
     >
       <span
         className="relative block transition-transform group-hover:scale-110"
         style={{
-          width: look.galaxySize,
-          height: look.galaxySize,
+          width: bodySize,
+          height: bodySize,
         }}
       >
+        {hasDyson && (
+          <span
+            className="absolute rounded-full pointer-events-none"
+            style={{
+              inset: "-18%",
+              border: `1.5px dashed ${look.highlight}99`,
+              boxShadow: `0 0 10px ${look.corona}66, inset 0 0 8px ${look.color}44`,
+            }}
+          />
+        )}
         {isPulsar && (
           <PulsarJets
             length={look.galaxySize * 2.4}
@@ -119,8 +131,13 @@ export function StarNode({
           />
         )}
         <span
-          className="absolute inset-0 rounded-full"
+          className="absolute rounded-full"
           style={{
+            left: "50%",
+            top: "50%",
+            width: look.galaxySize,
+            height: look.galaxySize,
+            transform: "translate(-50%, -50%)",
             background: starBodyGradient(starClass),
             boxShadow: starGlowShadow(starClass, selected),
             outline: selected ? `2px solid ${look.corona}` : undefined,
@@ -129,7 +146,7 @@ export function StarNode({
       </span>
       {showLabel && (
         <span
-          className="text-[11px] font-medium whitespace-nowrap px-1.5 py-0.5 text-star max-w-[150px] truncate"
+          className="text-[11px] font-medium whitespace-nowrap px-1.5 py-0.5 text-star max-w-[170px] truncate"
           style={{
             fontFamily: "var(--font-display)",
             letterSpacing: "0.04em",
@@ -140,7 +157,10 @@ export function StarNode({
           }}
         >
           {system.name}
-          <span className="text-muted"> · {look.shortLabel}</span>
+          <span className="text-muted">
+            {" "}
+            · {hasDyson ? "DS" : look.shortLabel}
+          </span>
           {ownerBit}
         </span>
       )}

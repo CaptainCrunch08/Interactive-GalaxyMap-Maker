@@ -367,6 +367,9 @@ function applyTypeBias(
     case "asteroid_belt":
       if (detail > 0.55) return "crater";
       return "wasteland";
+    case "warp_gate":
+      if (urban > 0.5) return "urban";
+      return "wasteland";
     default:
       if (urban > 0.75) return "urban";
       if (detail > 0.85) return "crater";

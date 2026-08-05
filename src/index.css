@@ -567,3 +567,54 @@ body {
     transform: translateY(-3px);
   }
 }
+
+/* Dyson Sphere megastructure */
+.dyson-sphere-spin {
+  transform-origin: 50px 50px;
+  animation: dyson-spin 28s linear infinite;
+}
+
+.dyson-sphere-spin-slow {
+  transform-origin: 50px 50px;
+  animation: dyson-spin-rev 48s linear infinite;
+}
+
+.dyson-sphere-pulse {
+  animation: dyson-glow-pulse 3.6s ease-in-out infinite;
+}
+
+@keyframes dyson-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes dyson-spin-rev {
+  to {
+    transform: rotate(-360deg);
+  }
+}
+
+@keyframes dyson-glow-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.dyson-power-beam {
+  animation: dyson-beam-flow 1.4s linear infinite;
+}
+
+.dyson-power-node {
+  animation: dyson-glow-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes dyson-beam-flow {
+  to {
+    stroke-dashoffset: -48;
+  }
+}
