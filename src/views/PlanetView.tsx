@@ -5,9 +5,11 @@ import {
 } from "../types/campaign";
 import { useCampaignStore } from "../store/useCampaignStore";
 import { AsteroidBeltView } from "./AsteroidBeltView";
+import { PlanetGlobe } from "../components/planet/PlanetGlobe";
 import { WarpGateGlobe } from "../components/warpGate/WarpGateGlobe";
 import { atmosphereColor } from "../lib/planetTexture";
 import { resolvePlanetVisualModelId } from "../lib/planetModels";
+import { supportsStrategicSurface } from "../lib/planetClass";
 
 export function PlanetView() {
   const campaign = useCampaignStore((s) => s.campaign);
@@ -108,7 +110,8 @@ export function PlanetView() {
               {linked
                 ? `Paired with ${linked.name}${linkedSys ? ` in ${linkedSys.name}` : ""}.`
                 : "No stable pair — transit will dump fleets at a random system."}{" "}
-              Ownership is decided solely by the Relay Crown on the station deck.
+              Ownership is decided solely by the Relay Crown at the far end of the
+              station maze — board from orbit and fight your way up.
             </p>
             <button
               type="button"
@@ -154,12 +157,22 @@ export function PlanetView() {
             classification={planet.classification}
             visualModelId={visualModelId}
             accentColor={accent}
-            className="w-[min(52vmin,380px)] h-[min(52vmin,380px)] rounded-full overflow-hidden shadow-[0_0_60px_rgba(0,0,0,0.45)] transition-transform hover:scale-[1.03] focus-within:ring-2 focus-within:ring-cyan"
-            onClick={() => enterStrategic(planet.id)}
+            className={`w-[min(52vmin,380px)] h-[min(52vmin,380px)] rounded-full overflow-hidden shadow-[0_0_60px_rgba(0,0,0,0.45)] transition-transform ${
+              supportsStrategicSurface(planet)
+                ? "hover:scale-[1.03] focus-within:ring-2 focus-within:ring-cyan cursor-pointer"
+                : ""
+            }`}
+            onClick={
+              supportsStrategicSurface(planet)
+                ? () => enterStrategic(planet.id)
+                : undefined
+            }
           />
-          <span className="absolute inset-x-0 bottom-6 text-center text-[10px] font-display uppercase tracking-[0.18em] text-cyan/80 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-            Strategic map
-          </span>
+          {supportsStrategicSurface(planet) && (
+            <span className="absolute inset-x-0 bottom-6 text-center text-[10px] font-display uppercase tracking-[0.18em] text-cyan/80 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+              Strategic map
+            </span>
+          )}
         </div>
 
         <div className="text-center max-w-md pointer-events-none">
@@ -177,7 +190,9 @@ export function PlanetView() {
             {faction ? ` · ${faction.name}` : " · Unclaimed"}
           </p>
           <p className="text-[11px] text-muted mt-3">
-            Click the planet to open the strategic hex map
+            {supportsStrategicSurface(planet)
+              ? "Click the planet to open the strategic hex map"
+              : "Gas giants have no strategic surface map"}
           </p>
         </div>
       </div>

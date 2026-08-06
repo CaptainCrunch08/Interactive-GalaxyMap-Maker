@@ -9,6 +9,11 @@ import {
   type HexSphere,
   type Vec3,
 } from "./hexSphere";
+import {
+  buildStationGrid,
+  nearestStationTile,
+} from "./stationHex";
+import { buildStationMaze } from "./stationMaze";
 
 export type BattleResolveInput = {
   planetId: string;
@@ -320,6 +325,20 @@ export function armiesAreAdjacent(
   return sphere.neighbors[ta]?.includes(tb) ?? false;
 }
 
+/** True if both detachments share a station tile or sit on orthogonal neighbors. */
+export function stationArmiesAreAdjacent(
+  a: Pick<Army, "dir">,
+  b: Pick<Army, "dir">,
+  planetId: string,
+): boolean {
+  const maze = buildStationMaze(planetId);
+  const grid = buildStationGrid();
+  const ta = nearestStationTile(a.dir, undefined, maze.walkable);
+  const tb = nearestStationTile(b.dir, undefined, maze.walkable);
+  if (ta === tb) return true;
+  return grid.neighbors[ta]?.includes(tb) ?? false;
+}
+
 /**
  * Hex tiles the attacker can fight on → rival army ids on that tile
  * (same hex or neighboring hexes that hold enemies).
@@ -348,14 +367,47 @@ export function engageTargetsForArmy(
 }
 
 /**
+ * Station tiles the attacker can fight on → rival army ids on that tile
+ * (same tile or orthogonal neighbors along walkable corridors).
+ */
+export function engageTargetsForStationArmy(
+  armies: Army[] | undefined,
+  attackerId: string,
+  planetId: string,
+): Map<number, string[]> {
+  const out = new Map<number, string[]>();
+  const attacker = (armies ?? []).find((a) => a.id === attackerId);
+  if (!attacker) return out;
+  const maze = buildStationMaze(planetId);
+  const grid = buildStationGrid();
+  const atkTile = nearestStationTile(attacker.dir, undefined, maze.walkable);
+  const fightTiles = new Set<number>([atkTile]);
+  for (const n of grid.neighbors[atkTile] ?? []) {
+    if (maze.walkable.has(n)) fightTiles.add(n);
+  }
+
+  for (const army of armies ?? []) {
+    if (army.id === attackerId) continue;
+    if (army.factionId === attacker.factionId) continue;
+    const tile = nearestStationTile(army.dir, undefined, maze.walkable);
+    if (!fightTiles.has(tile)) continue;
+    const list = out.get(tile) ?? [];
+    list.push(army.id);
+    out.set(tile, list);
+  }
+  return out;
+}
+
+/**
  * Same-faction detachments adjacent to a primary that can join as supports.
  * Excludes the primary, the opposing primary, and optionally armies that already acted.
+ * Pass a HexSphere for planet surfaces, or a warp-gate planetId string for stations.
  */
 export function eligibleSupportArmies(
   armies: Army[] | undefined,
   primary: Army,
   opposingPrimaryId: string,
-  sphere: HexSphere,
+  sphereOrStationPlanetId: HexSphere | string,
   alreadyActedIds?: ReadonlySet<string> | string[],
 ): Army[] {
   const acted = alreadyActedIds
@@ -363,11 +415,20 @@ export function eligibleSupportArmies(
       ? alreadyActedIds
       : new Set(alreadyActedIds)
     : null;
+  const stationId =
+    typeof sphereOrStationPlanetId === "string"
+      ? sphereOrStationPlanetId
+      : null;
+  const sphere =
+    typeof sphereOrStationPlanetId === "string"
+      ? null
+      : sphereOrStationPlanetId;
   return (armies ?? []).filter((a) => {
     if (a.id === primary.id || a.id === opposingPrimaryId) return false;
     if (a.factionId !== primary.factionId) return false;
     if (acted?.has(a.id)) return false;
-    return armiesAreAdjacent(primary, a, sphere);
+    if (stationId) return stationArmiesAreAdjacent(primary, a, stationId);
+    return armiesAreAdjacent(primary, a, sphere!);
   });
 }
 

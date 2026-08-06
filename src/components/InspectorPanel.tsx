@@ -14,6 +14,7 @@ import type {
   StarClass,
 } from "../types/campaign";
 import { useCampaignStore } from "../store/useCampaignStore";
+import { megastructureName } from "../lib/stars";
 import {
   getFactionById,
   getSystemOwnership,
@@ -26,13 +27,35 @@ import {
   canRecruitDetachment,
   canRecruitShip,
   canUseSpacePort,
+  canDeployFromTransport,
+  canLoadTransportCargo,
   DETACHMENT_BP_COST,
   getBuildingPoints,
   incomeForFaction,
   MANUFACTORUM_BP_COST,
   ownedCities,
   shipBpCost,
+  fleetCargoBp,
+  fleetCargoCapacity,
 } from "../lib/buildingPoints";
+import { fleetsInOrbit } from "../lib/fleets";
+import {
+  connectedSupplyStations,
+  networksLinkedToNetwork,
+  networksLinkedToStation,
+  stationsInNetworkComponent,
+  stationsLinkedToNetwork,
+  SUPPLY_LINK_RANGE,
+} from "../lib/supplyNetwork";
+import {
+  linkedWarpGate,
+  warpGateLinkCandidates,
+} from "../lib/warpGates";
+import {
+  campHealEnteredRound,
+  isOnFriendlyWarCamp,
+  mergeTargetsForArmy,
+} from "../lib/armyActions";
 import {
   ARMY_MOVE_RANGE,
   armyMovementRemaining,
@@ -78,6 +101,8 @@ export function InspectorPanel() {
   const deleteSystem = useCampaignStore((s) => s.deleteSystem);
   const addPlanet = useCampaignStore((s) => s.addPlanet);
   const updatePlanet = useCampaignStore((s) => s.updatePlanet);
+  const linkWarpGates = useCampaignStore((s) => s.linkWarpGates);
+  const unlinkWarpGate = useCampaignStore((s) => s.unlinkWarpGate);
   const deletePlanet = useCampaignStore((s) => s.deletePlanet);
   const setSystemOwner = useCampaignStore((s) => s.setSystemOwner);
   const setPlanetOwner = useCampaignStore((s) => s.setPlanetOwner);
@@ -92,10 +117,13 @@ export function InspectorPanel() {
   const addArmy = useCampaignStore((s) => s.addArmy);
   const recruitDetachment = useCampaignStore((s) => s.recruitDetachment);
   const recruitShip = useCampaignStore((s) => s.recruitShip);
+  const loadTransportCargo = useCampaignStore((s) => s.loadTransportCargo);
+  const deployFromTransport = useCampaignStore((s) => s.deployFromTransport);
   const playBuildMode = useCampaignStore((s) => s.playBuildMode);
   const setPlayBuildMode = useCampaignStore((s) => s.setPlayBuildMode);
   const updateArmy = useCampaignStore((s) => s.updateArmy);
   const deleteArmy = useCampaignStore((s) => s.deleteArmy);
+  const mergeArmies = useCampaignStore((s) => s.mergeArmies);
   const selectArmy = useCampaignStore((s) => s.selectArmy);
   const setPlacingArmy = useCampaignStore((s) => s.setPlacingArmy);
   const selectSystem = useCampaignStore((s) => s.selectSystem);
@@ -556,9 +584,80 @@ export function InspectorPanel() {
                 ))}
               </select>
               {planet.type === "warp_gate" && (
-                <p className="text-[10px] text-brass mb-2 leading-snug">
-                  Requires a Dyson Sphere in this system (enabled automatically).
-                </p>
+                <div className="mb-2 space-y-1.5">
+                  <p className="text-[10px] text-brass leading-snug">
+                    Requires a power megastructure in this system (Dyson Sphere, or
+                    a Black Hole Bomb around a black hole). Enabled automatically.
+                  </p>
+                  {(() => {
+                    const linked = linkedWarpGate(campaign, planet);
+                    const candidates = warpGateLinkCandidates(
+                      campaign,
+                      planet.id,
+                    );
+                    const linkedSystem = linked
+                      ? campaign.systems.find((s) => s.id === linked.systemId)
+                      : undefined;
+                    return (
+                      <div className="rounded border border-panel-border/60 p-2 space-y-1.5">
+                        <p className="text-[10px] uppercase tracking-wider text-muted">
+                          Gate link
+                        </p>
+                        <p className="text-[11px] text-star leading-snug">
+                          {linked
+                            ? `Linked to ${linked.name}${linkedSystem ? ` (${linkedSystem.name})` : ""}`
+                            : "Unlinked — transit picks a random system"}
+                        </p>
+                        {candidates.length === 0 ? (
+                          <p className="text-[10px] text-brass leading-snug">
+                            No other warp gates to connect to
+                          </p>
+                        ) : (
+                          <label className="flex flex-col gap-0.5 text-[10px] text-muted">
+                            Connect to
+                            <select
+                              className="hud-btn w-full text-left"
+                              defaultValue=""
+                              key={planet.linkedGateId ?? "unlinked"}
+                              onChange={(e) => {
+                                const targetId = e.target.value;
+                                if (!targetId) return;
+                                linkWarpGates(planet.id, targetId);
+                              }}
+                            >
+                              <option value="">
+                                {linked ? "Change partner…" : "Select gate…"}
+                              </option>
+                              {candidates.map((g) => {
+                                const sys = campaign.systems.find(
+                                  (s) => s.id === g.systemId,
+                                );
+                                return (
+                                  <option key={g.id} value={g.id}>
+                                    {g.name}
+                                    {sys ? ` · ${sys.name}` : ""}
+                                    {g.linkedGateId && g.linkedGateId !== planet.id
+                                      ? " (relink)"
+                                      : ""}
+                                  </option>
+                                );
+                              })}
+                            </select>
+                          </label>
+                        )}
+                        {linked && (
+                          <button
+                            type="button"
+                            className="hud-btn w-full"
+                            onClick={() => unlinkWarpGate(planet.id)}
+                          >
+                            Disconnect
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
               )}
               {planet.type !== "asteroid_belt" &&
                 planet.type !== "warp_gate" && (
@@ -777,6 +876,27 @@ export function InspectorPanel() {
                                         </option>
                                       ))}
                                     </select>
+                                    {d.kind === "supply_station" && (
+                                      <p className="text-[10px] text-muted leading-snug pl-0.5">
+                                        {(() => {
+                                          const nets = networksLinkedToStation(
+                                            planet,
+                                            d.id,
+                                          );
+                                          const peers = connectedSupplyStations(
+                                            planet,
+                                            d.id,
+                                          );
+                                          if (
+                                            nets.length === 0 &&
+                                            peers.length === 0
+                                          ) {
+                                            return `No supply link within ${SUPPLY_LINK_RANGE} hexes`;
+                                          }
+                                          return `${peers.length} other station${peers.length === 1 ? "" : "s"} in chain · ${nets.length} network${nets.length === 1 ? "" : "s"} nearby`;
+                                        })()}
+                                      </p>
+                                    )}
                                   </li>
                                 );
                               })}
@@ -842,6 +962,45 @@ export function InspectorPanel() {
                                     </option>
                                   ))}
                                 </select>
+                                {st.kind === "supply_network" && (
+                                  <p className="text-[10px] text-muted leading-snug">
+                                    {(() => {
+                                      const linked = stationsLinkedToNetwork(
+                                        planet,
+                                        st.id,
+                                      );
+                                      const peers = networksLinkedToNetwork(
+                                        planet,
+                                        st.id,
+                                      );
+                                      const chain = stationsInNetworkComponent(
+                                        planet,
+                                        st.id,
+                                      );
+                                      if (
+                                        linked.length === 0 &&
+                                        peers.length === 0
+                                      ) {
+                                        return `No station or network within ${SUPPLY_LINK_RANGE} hexes`;
+                                      }
+                                      const bits: string[] = [];
+                                      if (linked.length > 0) {
+                                        bits.push(
+                                          `${linked.length} station${linked.length === 1 ? "" : "s"} nearby`,
+                                        );
+                                      }
+                                      if (peers.length > 0) {
+                                        bits.push(
+                                          `${peers.length} network bridge${peers.length === 1 ? "" : "s"}`,
+                                        );
+                                      }
+                                      bits.push(
+                                        `${chain.length} station${chain.length === 1 ? "" : "s"} in chain`,
+                                      );
+                                      return bits.join(" · ");
+                                    })()}
+                                  </p>
+                                )}
                               </li>
                             );
                           })}
@@ -989,6 +1148,84 @@ export function InspectorPanel() {
                         {detCheck.message}
                       </p>
                     )}
+
+                    {(() => {
+                      const orbitFleets = fleetsInOrbit(
+                        campaign.fleets ?? [],
+                        planet.systemId,
+                        planet.id,
+                      ).filter((f) => f.factionId === factionId);
+                      const withCargo = orbitFleets.filter(
+                        (f) => fleetCargoCapacity(f) > 0,
+                      );
+                      if (withCargo.length === 0) return null;
+                      return (
+                        <div className="pt-1 space-y-1.5">
+                          <p className="text-[10px] uppercase tracking-wider text-muted">
+                            Transport holds (no camp needed)
+                          </p>
+                          {withCargo.map((f) => {
+                            const loadCheck = canLoadTransportCargo(
+                              campaign,
+                              f,
+                              planet,
+                            );
+                            const deployCheck = canDeployFromTransport(
+                              campaign,
+                              f,
+                              planet,
+                            );
+                            return (
+                              <div
+                                key={f.id}
+                                className="rounded border border-panel-border/60 p-2 space-y-1"
+                              >
+                                <p className="text-[10px] text-star truncate">
+                                  {f.name}{" "}
+                                  <span className="text-cyan">
+                                    {fleetCargoBp(f)}/{fleetCargoCapacity(f)} BP
+                                  </span>
+                                </p>
+                                <div className="flex flex-wrap gap-1">
+                                  <button
+                                    type="button"
+                                    className="hud-btn"
+                                    disabled={!loadCheck.ok}
+                                    title={
+                                      loadCheck.ok
+                                        ? undefined
+                                        : loadCheck.message
+                                    }
+                                    onClick={() => {
+                                      selectFleet(f.id);
+                                      loadTransportCargo(f.id);
+                                    }}
+                                  >
+                                    Load BP
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="hud-btn"
+                                    disabled={!deployCheck.ok}
+                                    title={
+                                      deployCheck.ok
+                                        ? undefined
+                                        : deployCheck.message
+                                    }
+                                    onClick={() => {
+                                      selectFleet(f.id);
+                                      deployFromTransport(f.id);
+                                    }}
+                                  >
+                                    Deploy ({DETACHMENT_BP_COST})
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
 
                     <p className="text-[10px] uppercase tracking-wider text-muted pt-1">
                       Build manufactorum
@@ -1306,6 +1543,64 @@ export function InspectorPanel() {
                             {armyMoveBlock}
                           </p>
                         )}
+                        {play.active &&
+                          isOnFriendlyWarCamp(planet, army) &&
+                          str < 100 && (
+                            <p className="text-[10px] text-cyan leading-snug">
+                              {(() => {
+                                const entered = campHealEnteredRound(
+                                  play,
+                                  army.id,
+                                );
+                                if (entered == null) {
+                                  return "On War Camp — rest here a full round to restore to 100%";
+                                }
+                                if (entered >= play.round) {
+                                  return `Resting at War Camp · restores next round (R${entered + 1})`;
+                                }
+                                return "War Camp rest complete next turn advance";
+                              })()}
+                            </p>
+                          )}
+                        {play.active &&
+                          isOnFriendlyWarCamp(planet, army) &&
+                          str >= 100 && (
+                            <p className="text-[10px] text-muted leading-snug">
+                              At War Camp · full strength
+                            </p>
+                          )}
+                        {(() => {
+                          const targets = mergeTargetsForArmy(
+                            campaign,
+                            planet,
+                            army.id,
+                          );
+                          if (targets.length === 0) return null;
+                          return (
+                            <select
+                              className={inputClass}
+                              style={{ fontSize: "0.7rem" }}
+                              value=""
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={(e) => {
+                                const tid = e.target.value;
+                                e.target.value = "";
+                                if (!tid) return;
+                                mergeArmies(planet.id, army.id, tid);
+                              }}
+                            >
+                              <option value="">
+                                Merge into… (1 movement)
+                              </option>
+                              {targets.map((t) => (
+                                <option key={t.id} value={t.id}>
+                                  {t.name} ({armyStrength(t)}%) →{" "}
+                                  {armyStrength(army) + armyStrength(t)}%
+                                </option>
+                              ))}
+                            </select>
+                          );
+                        })()}
                       </li>
                     );
                   })}
@@ -1493,14 +1788,19 @@ export function InspectorPanel() {
                   }
                 />
                 <span>
-                  Dyson Sphere megastructure
-                  {system.dysonSphere ? " (wraps the core star)" : ""}
+                  {megastructureName(system)} megastructure
+                  {system.dysonSphere
+                    ? system.starClass === "black_hole"
+                      ? " (superradiant mirrors)"
+                      : " (wraps the core star)"
+                    : ""}
                 </span>
               </label>
               {system.dysonSphere && (
                 <p className="text-[10px] text-brass mb-2 leading-snug">
-                  Required to host a warp gate. Feeds the gate through a power
-                  tether in system view.
+                  {system.starClass === "black_hole"
+                    ? "Black Hole Bomb: nested mirrors amplify waves via superradiance and feed warp gates through power tethers."
+                    : "Required to host a warp gate. Feeds the gate through a power tether in system view."}
                 </p>
               )}
 

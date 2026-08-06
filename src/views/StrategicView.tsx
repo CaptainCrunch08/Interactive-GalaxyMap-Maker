@@ -19,11 +19,14 @@ import {
   HexPlanet,
   TERRAIN_PAINT_ERASE,
 } from "../components/strategic/HexPlanet";
+import { RegenerateTilesDialog } from "../components/strategic/RegenerateTilesDialog";
+import { SelectAllTilesDialog } from "../components/strategic/SelectAllTilesDialog";
 import { useCampaignStore } from "../store/useCampaignStore";
 import { playMoveBlockReason } from "../lib/play";
 import { normalizeCampaignPlay } from "../types/campaign";
 import { VICTORY_KIND_LABELS } from "../lib/battleResolve";
 import { StationMapView } from "./StationMapView";
+import { supportsStrategicSurface } from "../lib/planetClass";
 
 export function StrategicView() {
   const campaign = useCampaignStore((s) => s.campaign);
@@ -52,6 +55,7 @@ export function StrategicView() {
   const setPlacingArmy = useCampaignStore((s) => s.setPlacingArmy);
   const setTileClaims = useCampaignStore((s) => s.setTileClaims);
   const setTileTerrain = useCampaignStore((s) => s.setTileTerrain);
+  const replaceTileTerrain = useCampaignStore((s) => s.replaceTileTerrain);
   const clearTileTerrain = useCampaignStore((s) => s.clearTileTerrain);
   const setTerrainPaintKind = useCampaignStore((s) => s.setTerrainPaintKind);
   const setTerrainPaintFaction = useCampaignStore(
@@ -61,14 +65,18 @@ export function StrategicView() {
   const addCityAtTile = useCampaignStore((s) => s.addCityAtTile);
   const addDistrictAtTile = useCampaignStore((s) => s.addDistrictAtTile);
   const addStructureAtTile = useCampaignStore((s) => s.addStructureAtTile);
+  const removeSurfaceAtTile = useCampaignStore((s) => s.removeSurfaceAtTile);
   const buildManufactorumAtTile = useCampaignStore(
     (s) => s.buildManufactorumAtTile,
   );
   const enterSystem = useCampaignStore((s) => s.enterSystem);
+  const enterPlanet = useCampaignStore((s) => s.enterPlanet);
   const setViewLevel = useCampaignStore((s) => s.setViewLevel);
   const [selectedFamousBattleId, setSelectedFamousBattleId] = useState<
     string | null
   >(null);
+  const [regenTilesOpen, setRegenTilesOpen] = useState(false);
+  const [selectAllTilesOpen, setSelectAllTilesOpen] = useState(false);
 
   const editTerrain =
     galaxyEditorOpen && galaxyEditorTab === "contents";
@@ -103,10 +111,26 @@ export function StrategicView() {
     setViewLevel,
   ]);
 
+  useEffect(() => {
+    if (!planet) return;
+    if (planet.type === "warp_gate") return;
+    if (!supportsStrategicSurface(planet)) {
+      enterPlanet(planet.id);
+    }
+  }, [planet, enterPlanet]);
+
   if (!planet) {
     return (
       <div className="h-full flex items-center justify-center text-muted">
         Returning to map…
+      </div>
+    );
+  }
+
+  if (planet.type !== "warp_gate" && !supportsStrategicSurface(planet)) {
+    return (
+      <div className="h-full flex items-center justify-center text-muted">
+        Returning to planet…
       </div>
     );
   }
@@ -159,8 +183,10 @@ export function StrategicView() {
   else if (engageArmyId) {
     hint =
       "Red hexes are valid fights — click a highlighted hex or rival to open the battle report · Detachments move up to 3 hexes per turn";
-  } else if (surfacePlaceMode?.kind === "city")
+  }   else if (surfacePlaceMode?.kind === "city")
     hint = "Click a free hex to place a city";
+  else if (surfacePlaceMode?.kind === "erase")
+    hint = "Click a city, district, or structure hex to delete it";
   else if (surfacePlaceMode?.kind === "district") {
     hint = districtParent
       ? `Click a free hex to place ${DISTRICT_KIND_LABELS[surfacePlaceMode.districtKind]} for ${districtParent.name}`
@@ -237,6 +263,7 @@ export function StrategicView() {
           surfacePlaceActive={
             surfacePlaceMode != null || playBuildMode != null
           }
+          surfaceEraseActive={surfacePlaceMode?.kind === "erase"}
           onSelectSettlement={(cityId, districtId) => {
             setSelectedFamousBattleId(null);
             selectSettlement(cityId, districtId);
@@ -278,6 +305,10 @@ export function StrategicView() {
               return;
             }
             if (!surfacePlaceMode) return;
+            if (surfacePlaceMode.kind === "erase") {
+              removeSurfaceAtTile(planet.id, tileIndex);
+              return;
+            }
             if (surfacePlaceMode.kind === "city") {
               addCityAtTile(planet.id, tileIndex);
               return;
@@ -381,6 +412,16 @@ export function StrategicView() {
                 onClick={() => setSurfacePlaceMode(null)}
               >
                 Off
+              </button>
+              <button
+                type="button"
+                className={`hud-btn ${
+                  surfacePlaceMode?.kind === "erase" ? "hud-btn-active" : ""
+                }`}
+                onClick={() => setSurfacePlaceMode({ kind: "erase" })}
+                title="Click cities, districts, or structures to delete them"
+              >
+                Erase
               </button>
               <button
                 type="button"
@@ -501,6 +542,27 @@ export function StrategicView() {
               >
                 Erase
               </button>
+              <button
+                type="button"
+                className="hud-btn"
+                onClick={() => {
+                  setTerrainPaintKind(null);
+                  setSurfacePlaceMode(null);
+                  setRegenTilesOpen(true);
+                }}
+              >
+                Regenerate tiles
+              </button>
+              <button
+                type="button"
+                className="hud-btn"
+                onClick={() => {
+                  setSurfacePlaceMode(null);
+                  setSelectAllTilesOpen(true);
+                }}
+              >
+                Select all
+              </button>
               {Object.keys(tileTerrain).length > 0 && (
                 <button
                   type="button"
@@ -561,6 +623,31 @@ export function StrategicView() {
           {hint}
         </div>
       </div>
+
+      <RegenerateTilesDialog
+        open={regenTilesOpen}
+        classification={planet.classification}
+        onCancel={() => setRegenTilesOpen(false)}
+        onConfirm={(next) => {
+          replaceTileTerrain(planet.id, next);
+          setRegenTilesOpen(false);
+        }}
+      />
+      <SelectAllTilesDialog
+        open={selectAllTilesOpen}
+        classification={planet.classification}
+        initialKind={
+          terrainPaintKind &&
+          (TERRAIN_KIND_ORDER as string[]).includes(terrainPaintKind)
+            ? (terrainPaintKind as TerrainKind)
+            : null
+        }
+        onCancel={() => setSelectAllTilesOpen(false)}
+        onConfirm={(next) => {
+          replaceTileTerrain(planet.id, next);
+          setSelectAllTilesOpen(false);
+        }}
+      />
     </div>
   );
 }

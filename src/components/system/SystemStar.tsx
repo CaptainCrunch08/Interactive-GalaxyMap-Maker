@@ -13,7 +13,7 @@ type SystemStarProps = {
   seed?: string;
   selected?: boolean;
   title?: string;
-  /** Megastructure shell around the core star / black hole. */
+  /** Power megastructure: Dyson Sphere, or Black Hole Bomb around a BH core. */
   dysonSphere?: boolean;
   onClick?: (e: MouseEvent) => void;
 };
@@ -42,10 +42,13 @@ function BlackHoleDisc({
   color,
   highlight,
   selected,
+  /** Tighten glow so a surrounding megastructure stays readable. */
+  contained = false,
 }: {
   color: string;
   highlight: string;
   selected: boolean;
+  contained?: boolean;
 }) {
   const gradId = useId().replace(/:/g, "");
   const arms = [
@@ -62,17 +65,29 @@ function BlackHoleDisc({
     spiralPath(3.6, 44, 11.5, 4.5),
   ];
 
+  const glowExtent = contained ? "-28%" : "-55%";
+  const glowSize = contained ? "156%" : "210%";
+  const outerLeft = contained ? "-22%" : "-38%";
+  const outerSize = contained ? "144%" : "176%";
+  const midLeft = contained ? "-14%" : "-26%";
+  const midSize = contained ? "128%" : "152%";
+  const spaghettiLeft = contained ? "-24%" : "-45%";
+  const spaghettiSize = contained ? "148%" : "190%";
+
   return (
     <>
       {/* Soft outer disc wash */}
       <span
         className="absolute rounded-full pointer-events-none system-bh-glow"
         style={{
-          left: "-55%",
-          top: "-55%",
-          width: "210%",
-          height: "210%",
-          background: `radial-gradient(circle, ${color}00 38%, ${color}55 52%, ${highlight}33 62%, transparent 74%)`,
+          left: glowExtent,
+          top: glowExtent,
+          width: glowSize,
+          height: glowSize,
+          background: contained
+            ? `radial-gradient(circle, ${color}00 42%, ${color}44 58%, transparent 72%)`
+            : `radial-gradient(circle, ${color}00 38%, ${color}55 52%, ${highlight}33 62%, transparent 74%)`,
+          opacity: contained ? 0.7 : 1,
         }}
       />
 
@@ -80,10 +95,10 @@ function BlackHoleDisc({
       <span
         className="absolute rounded-full pointer-events-none system-bh-disc system-bh-disc--outer"
         style={{
-          left: "-38%",
-          top: "-38%",
-          width: "176%",
-          height: "176%",
+          left: outerLeft,
+          top: outerLeft,
+          width: outerSize,
+          height: outerSize,
           background: `conic-gradient(from 20deg, transparent 0%, ${color}99 8%, ${highlight} 14%, ${color}66 24%, transparent 36%, ${color}88 48%, ${highlight}cc 56%, transparent 70%, ${color}77 82%, transparent 100%)`,
           maskImage:
             "radial-gradient(circle, transparent 40%, #000 46%, #000 68%, transparent 76%)",
@@ -96,10 +111,10 @@ function BlackHoleDisc({
       <span
         className="absolute rounded-full pointer-events-none system-bh-disc system-bh-disc--mid"
         style={{
-          left: "-26%",
-          top: "-26%",
-          width: "152%",
-          height: "152%",
+          left: midLeft,
+          top: midLeft,
+          width: midSize,
+          height: midSize,
           background: `conic-gradient(from 200deg, ${highlight}00 0%, ${highlight}bb 6%, ${color} 12%, transparent 22%, ${highlight}99 40%, ${color}aa 48%, transparent 60%, ${highlight}88 78%, transparent 100%)`,
           maskImage:
             "radial-gradient(circle, transparent 36%, #000 42%, #000 58%, transparent 66%)",
@@ -113,11 +128,12 @@ function BlackHoleDisc({
         className="absolute pointer-events-none system-bh-spaghetti system-bh-spaghetti--a"
         viewBox="0 0 100 100"
         style={{
-          left: "-45%",
-          top: "-45%",
-          width: "190%",
-          height: "190%",
+          left: spaghettiLeft,
+          top: spaghettiLeft,
+          width: spaghettiSize,
+          height: spaghettiSize,
           overflow: "visible",
+          opacity: contained ? 0.55 : 1,
         }}
         aria-hidden
       >
@@ -137,11 +153,12 @@ function BlackHoleDisc({
         className="absolute pointer-events-none system-bh-spaghetti system-bh-spaghetti--b"
         viewBox="0 0 100 100"
         style={{
-          left: "-40%",
-          top: "-40%",
-          width: "180%",
-          height: "180%",
+          left: contained ? "-20%" : "-40%",
+          top: contained ? "-20%" : "-40%",
+          width: contained ? "140%" : "180%",
+          height: contained ? "140%" : "180%",
           overflow: "visible",
+          opacity: contained ? 0.45 : 1,
         }}
         aria-hidden
       >
@@ -167,11 +184,12 @@ function BlackHoleDisc({
         className="absolute pointer-events-none system-bh-spiral"
         viewBox="0 0 100 100"
         style={{
-          left: "-42%",
-          top: "-42%",
-          width: "184%",
-          height: "184%",
+          left: contained ? "-22%" : "-42%",
+          top: contained ? "-22%" : "-42%",
+          width: contained ? "144%" : "184%",
+          height: contained ? "144%" : "184%",
           overflow: "visible",
+          opacity: contained ? 0.65 : 1,
         }}
         aria-hidden
       >
@@ -258,7 +276,13 @@ export function SystemStar({
     "--star-glow": look.color,
   } as CSSProperties;
 
-  const shellSize = dysonSphere ? size * 1.85 : size;
+  const isBomb = dysonSphere && isBlackHole;
+  const coreSize = isBomb ? size * 0.62 : size;
+  const shellSize = isBomb
+    ? size * 2.75
+    : dysonSphere
+      ? size * 1.85
+      : size;
 
   return (
     <div
@@ -269,7 +293,7 @@ export function SystemStar({
         ...cssVars,
       }}
     >
-      {dysonSphere && (
+      {dysonSphere && !isBlackHole && (
         <DysonSphereShell
           size={shellSize}
           coreColor={look.color}
@@ -283,8 +307,8 @@ export function SystemStar({
         style={{
           left: "50%",
           top: "50%",
-          width: size,
-          height: size,
+          width: coreSize,
+          height: coreSize,
           transform: "translate(-50%, -50%)",
         }}
       >
@@ -320,8 +344,8 @@ export function SystemStar({
 
       {isPulsar && (
         <PulsarJets
-          length={size * 2.8}
-          baseWidth={Math.max(10, size * 0.55)}
+          length={coreSize * 2.8}
+          baseWidth={Math.max(10, coreSize * 0.55)}
           color={look.color}
           highlight={look.highlight}
           angleDeg={pulsarJetAngle(seed)}
@@ -334,6 +358,7 @@ export function SystemStar({
           color={look.corona}
           highlight="#ffedd5"
           selected={selected}
+          contained={isBomb}
         />
       )}
 
@@ -395,11 +420,16 @@ export function SystemStar({
         />
       )}
       </div>
+
+      {/* Bomb cage drawn on top so mirrors aren't drowned by the disc glow */}
+      {isBomb && (
+        <BlackHoleBombShell size={shellSize} selected={selected} />
+      )}
     </div>
   );
 }
 
-/** Lattice / ring megastructure that wraps any core star class. */
+/** Lattice / ring megastructure that wraps luminous stars (solar collectors). */
 function DysonSphereShell({
   size,
   coreColor,
@@ -487,6 +517,210 @@ function DysonSphereShell({
             fillOpacity="0.55"
             transform={`rotate(${deg} ${x} ${y})`}
           />
+        );
+      })}
+    </svg>
+  );
+}
+
+/**
+ * Press–Teukolsky black hole bomb: chunky nested mirror facets that trap
+ * bosonic waves for superradiant amplification (not solar collectors).
+ */
+function BlackHoleBombShell({
+  size,
+  selected,
+}: {
+  size: number;
+  selected: boolean;
+}) {
+  const uid = useId().replace(/:/g, "");
+  const rim = selected ? "#e9d5ff" : "#ddd6fe";
+  const plate = selected ? "#c4b5fd" : "#a78bfa";
+  const energy = "#22d3ee";
+  const hot = "#f0abfc";
+
+  /** Annular mirror facet path between r0–r1 spanning start→end degrees. */
+  function facet(
+    r0: number,
+    r1: number,
+    startDeg: number,
+    endDeg: number,
+  ): string {
+    const toRad = (d: number) => (d * Math.PI) / 180;
+    const p = (r: number, d: number) => {
+      const a = toRad(d);
+      return [50 + Math.cos(a) * r, 50 + Math.sin(a) * r] as const;
+    };
+    const [x0, y0] = p(r1, startDeg);
+    const [x1, y1] = p(r1, endDeg);
+    const [x2, y2] = p(r0, endDeg);
+    const [x3, y3] = p(r0, startDeg);
+    const large = endDeg - startDeg > 180 ? 1 : 0;
+    return [
+      `M ${x0} ${y0}`,
+      `A ${r1} ${r1} 0 ${large} 1 ${x1} ${y1}`,
+      `L ${x2} ${y2}`,
+      `A ${r0} ${r0} 0 ${large} 0 ${x3} ${y3}`,
+      "Z",
+    ].join(" ");
+  }
+
+  const outerFacets = Array.from({ length: 10 }, (_, i) => {
+    const span = 28;
+    const gap = 8;
+    const start = i * (span + gap) - 90;
+    return facet(40, 47.5, start, start + span);
+  });
+
+  const midFacets = Array.from({ length: 8 }, (_, i) => {
+    const span = 32;
+    const gap = 13;
+    const start = i * (span + gap) - 70;
+    return facet(30, 36.5, start, start + span);
+  });
+
+  return (
+    <svg
+      className="absolute inset-0 pointer-events-none black-hole-bomb-shell z-[2]"
+      viewBox="0 0 100 100"
+      width={size}
+      height={size}
+      aria-hidden
+    >
+      <defs>
+        <radialGradient id={`bhb-cavity-${uid}`} cx="50%" cy="50%" r="50%">
+          <stop offset="28%" stopColor="#22d3ee00" />
+          <stop offset="52%" stopColor="#22d3ee33" />
+          <stop offset="72%" stopColor="#a78bfa55" />
+          <stop offset="100%" stopColor="#f0abfc44" />
+        </radialGradient>
+        <linearGradient id={`bhb-plate-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#f5f3ff" stopOpacity="0.95" />
+          <stop offset="40%" stopColor={plate} stopOpacity="0.92" />
+          <stop offset="100%" stopColor="#4c1d95" stopOpacity="0.88" />
+        </linearGradient>
+        <filter id={`bhb-glow-${uid}`} x="-20%" y="-20%" width="140%" height="140%">
+          <feGaussianBlur stdDeviation="1.2" result="blur" />
+          <feMerge>
+            <feMergeNode in="blur" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+      </defs>
+
+      {/* Cavity volume between mirrors */}
+      <circle
+        cx="50"
+        cy="50"
+        r="48"
+        fill={`url(#bhb-cavity-${uid})`}
+        className="bhb-cavity-pulse"
+      />
+
+      {/* Outer structural rail */}
+      <circle
+        cx="50"
+        cy="50"
+        r="48.5"
+        fill="none"
+        stroke={rim}
+        strokeWidth="1.8"
+        strokeOpacity="0.95"
+      />
+      <circle
+        cx="50"
+        cy="50"
+        r="39"
+        fill="none"
+        stroke={energy}
+        strokeWidth="1.2"
+        strokeOpacity="0.75"
+        strokeDasharray="3 5"
+        className="bhb-wave-spin"
+      />
+
+      {/* Outer mirror facets — thick metallic plates */}
+      <g className="bhb-mirror-spin-slow" filter={`url(#bhb-glow-${uid})`}>
+        {outerFacets.map((d, i) => (
+          <path
+            key={`o-${i}`}
+            d={d}
+            fill={`url(#bhb-plate-${uid})`}
+            stroke={rim}
+            strokeWidth="0.7"
+            strokeOpacity="0.95"
+          />
+        ))}
+      </g>
+
+      {/* Mid counter-rotating mirror ring */}
+      <g className="bhb-mirror-spin-rev">
+        {midFacets.map((d, i) => (
+          <path
+            key={`m-${i}`}
+            d={d}
+            fill={plate}
+            fillOpacity="0.8"
+            stroke={energy}
+            strokeWidth="0.55"
+            strokeOpacity="0.9"
+          />
+        ))}
+      </g>
+
+      {/* Inner mirror hoop near ergosphere */}
+      <circle
+        cx="50"
+        cy="50"
+        r="26"
+        fill="none"
+        stroke={hot}
+        strokeWidth="2.4"
+        strokeOpacity="0.85"
+        className="bhb-mirror-spin"
+      />
+      <circle
+        cx="50"
+        cy="50"
+        r="23.5"
+        fill="none"
+        stroke={rim}
+        strokeWidth="1"
+        strokeOpacity="0.7"
+        strokeDasharray="6 3"
+        className="bhb-mirror-spin-rev"
+      />
+
+      {/* Radial extractor spars + collector nodes */}
+      {Array.from({ length: 8 }, (_, i) => {
+        const deg = i * 45;
+        const rad = (deg * Math.PI) / 180;
+        const x1 = 50 + Math.cos(rad) * 26;
+        const y1 = 50 + Math.sin(rad) * 26;
+        const x2 = 50 + Math.cos(rad) * 47;
+        const y2 = 50 + Math.sin(rad) * 47;
+        return (
+          <g key={`x-${i}`}>
+            <line
+              x1={x1}
+              y1={y1}
+              x2={x2}
+              y2={y2}
+              stroke={hot}
+              strokeWidth="1.4"
+              strokeOpacity="0.8"
+            />
+            <circle
+              cx={x2}
+              cy={y2}
+              r="2.6"
+              fill={energy}
+              stroke={rim}
+              strokeWidth="0.7"
+              className="bhb-extractor-pulse"
+            />
+          </g>
         );
       })}
     </svg>

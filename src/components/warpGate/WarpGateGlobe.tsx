@@ -5,18 +5,22 @@ import { createWarpGateMesh } from "../../lib/warpGateMesh";
 type WarpGateGlobeProps = {
   accentColor?: string;
   className?: string;
-  /** Compact orbit-map icon vs full portrait. */
+  /** Compact framing for smaller mounts. */
   compact?: boolean;
+  /** Freeze pose (no spin / pulse). Used when a still shot is preferred. */
+  static?: boolean;
   onClick?: () => void;
 };
 
 /**
- * Animated 3D warp-gate station — crescent hull, spiked hub, cyan portal.
+ * 3D warp-gate station — crescent hull, spiked hub, cyan portal.
+ * Planet-view hero; system map uses a static SVG instead.
  */
 export function WarpGateGlobe({
   accentColor = "#4fd2ff",
   className = "",
   compact = false,
+  static: isStatic = false,
   onClick,
 }: WarpGateGlobeProps) {
   const mountRef = useRef<HTMLDivElement>(null);
@@ -78,23 +82,27 @@ export function WarpGateGlobe({
     scene.add(bundle.root);
 
     let raf = 0;
-    const t0 = performance.now();
-    const tick = (now: number) => {
-      const t = (now - t0) / 1000;
-      bundle.root.rotation.y = -0.35 + t * 0.12;
-      bundle.glow.scale.setScalar(1 + Math.sin(t * 2.4) * 0.08);
-      const portalMat = bundle.portal.material as THREE.MeshBasicMaterial;
-      portalMat.opacity = 0.82 + Math.sin(t * 3.1) * 0.12;
-      portalLight.intensity = 2.1 + Math.sin(t * 2.8) * 0.5;
-      for (let i = 0; i < bundle.rays.children.length; i++) {
-        const ray = bundle.rays.children[i] as THREE.Mesh;
-        const mat = ray.material as THREE.MeshBasicMaterial;
-        mat.opacity = 0.25 + ((Math.sin(t * 2.2 + i * 0.4) + 1) / 2) * 0.4;
-      }
+    if (isStatic) {
       renderer.render(scene, camera);
+    } else {
+      const t0 = performance.now();
+      const tick = (now: number) => {
+        const t = (now - t0) / 1000;
+        bundle.root.rotation.y = -0.35 + t * 0.12;
+        bundle.glow.scale.setScalar(1 + Math.sin(t * 2.4) * 0.08);
+        const portalMat = bundle.portal.material as THREE.MeshBasicMaterial;
+        portalMat.opacity = 0.82 + Math.sin(t * 3.1) * 0.12;
+        portalLight.intensity = 2.1 + Math.sin(t * 2.8) * 0.5;
+        for (let i = 0; i < bundle.rays.children.length; i++) {
+          const ray = bundle.rays.children[i] as THREE.Mesh;
+          const mat = ray.material as THREE.MeshBasicMaterial;
+          mat.opacity = 0.25 + ((Math.sin(t * 2.2 + i * 0.4) + 1) / 2) * 0.4;
+        }
+        renderer.render(scene, camera);
+        raf = requestAnimationFrame(tick);
+      };
       raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
+    }
 
     const onResize = () => {
       if (!mount) return;
@@ -103,6 +111,7 @@ export function WarpGateGlobe({
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h, false);
+      if (isStatic) renderer.render(scene, camera);
     };
     const ro = new ResizeObserver(onResize);
     ro.observe(mount);
@@ -117,7 +126,7 @@ export function WarpGateGlobe({
         mount.removeChild(renderer.domElement);
       }
     };
-  }, [accentColor, compact]);
+  }, [accentColor, compact, isStatic]);
 
   return (
     <div

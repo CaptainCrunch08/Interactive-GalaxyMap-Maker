@@ -8,6 +8,15 @@ import {
   locationLabel,
   shipCount,
 } from "../lib/fleets";
+import {
+  canDeployFromTransport,
+  canLoadTransportCargo,
+  DETACHMENT_BP_COST,
+  fleetCargoBp,
+  fleetCargoCapacity,
+  shipCargoBp,
+  TRANSPORT_BP_CAPACITY,
+} from "../lib/buildingPoints";
 import { playMoveBlockReason } from "../lib/play";
 import { factionSymbolIds } from "../lib/factionSymbols";
 import { getFactionById } from "../lib/territory";
@@ -42,6 +51,8 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
   const deleteShip = useCampaignStore((s) => s.deleteShip);
   const setFleetMoveMode = useCampaignStore((s) => s.setFleetMoveMode);
   const travelThroughWarpGate = useCampaignStore((s) => s.travelThroughWarpGate);
+  const loadTransportCargo = useCampaignStore((s) => s.loadTransportCargo);
+  const deployFromTransport = useCampaignStore((s) => s.deployFromTransport);
   const enterSystem = useCampaignStore((s) => s.enterSystem);
   const goBack = useCampaignStore((s) => s.goBack);
   const toggleInspector = useCampaignStore((s) => s.toggleInspector);
@@ -54,6 +65,21 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
     fleet.id,
     "fleet",
   );
+  const play = normalizeCampaignPlay(campaign.play);
+  const orbitPlanet =
+    fleet.location.kind === "orbit"
+      ? campaign.planets.find((p) => p.id === fleet.location.planetId)
+      : undefined;
+  const cargo = fleetCargoBp(fleet);
+  const cargoCap = fleetCargoCapacity(fleet);
+  const loadCheck =
+    orbitPlanet && play.active
+      ? canLoadTransportCargo(campaign, fleet, orbitPlanet)
+      : null;
+  const deployCheck =
+    orbitPlanet && play.active
+      ? canDeployFromTransport(campaign, fleet, orbitPlanet)
+      : null;
 
   return (
     <>
@@ -288,11 +314,76 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
                       </option>
                     ))}
                   </select>
+                  {ship.chassis === "transport" && (
+                    <p className="text-[10px] text-muted">
+                      Hold {shipCargoBp(ship)}/{TRANSPORT_BP_CAPACITY} BP
+                    </p>
+                  )}
                 </li>
               ))}
             </ul>
           )}
         </section>
+
+        {cargoCap > 0 && (
+          <section className="space-y-2">
+            <h3 className="text-xs uppercase text-muted tracking-wide">
+              Transport cargo
+            </h3>
+            <p className="text-xs text-star">
+              <span className="text-cyan font-medium">{cargo}</span>
+              <span className="text-muted"> / {cargoCap} BP in holds</span>
+            </p>
+            <p className="text-[10px] text-muted leading-snug">
+              Load BP from an orbit world, then deploy detachments onto planets
+              or warp gates without a War Camp ({DETACHMENT_BP_COST} BP each).
+            </p>
+            {play.active && orbitPlanet ? (
+              <div className="flex flex-col gap-1.5">
+                <button
+                  type="button"
+                  className="hud-btn w-full"
+                  disabled={!loadCheck?.ok}
+                  title={
+                    loadCheck && !loadCheck.ok ? loadCheck.message : undefined
+                  }
+                  onClick={() => loadTransportCargo(fleet.id)}
+                >
+                  Load BP from {orbitPlanet.name}
+                </button>
+                {!loadCheck?.ok && loadCheck && (
+                  <p className="text-[10px] text-brass leading-snug">
+                    {loadCheck.message}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  className="hud-btn w-full"
+                  disabled={!deployCheck?.ok}
+                  title={
+                    deployCheck && !deployCheck.ok
+                      ? deployCheck.message
+                      : undefined
+                  }
+                  onClick={() => deployFromTransport(fleet.id)}
+                >
+                  Deploy detachment ({DETACHMENT_BP_COST} cargo BP)
+                </button>
+                {!deployCheck?.ok && deployCheck && (
+                  <p className="text-[10px] text-brass leading-snug">
+                    {deployCheck.message}
+                  </p>
+                )}
+              </div>
+            ) : cargoCap > 0 ? (
+              <p className="text-[10px] text-brass leading-snug">
+                {play.active
+                  ? "Move into orbit to load or deploy cargo BP"
+                  : "Start Play to load and deploy from transport holds"}
+              </p>
+            ) : null}
+          </section>
+        )}
 
         <section>
           <label className="block text-xs text-muted mb-1">Notes</label>

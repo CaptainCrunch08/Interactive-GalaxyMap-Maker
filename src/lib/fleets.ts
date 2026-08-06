@@ -11,6 +11,9 @@ import { buildHyperlanes, getCampaignHyperlanes } from "./hyperlanes";
 
 const VALID_CHASSIS = new Set<string>(Object.keys(SHIP_CHASSIS_LABELS));
 
+/** Max BP a single transport hull can carry in its hold. */
+export const TRANSPORT_BP_CAPACITY = 1000;
+
 /** Map legacy hull ids onto the current chassis set. */
 export function normalizeShipChassis(chassis: string): ShipChassis {
   const legacy: Record<string, ShipChassis> = {
@@ -89,7 +92,22 @@ export function createShip(chassis: ShipChassis, index: number): Ship {
     name: defaultShipName(chassis, index),
     chassis,
     notes: "",
+    ...(chassis === "transport" ? { cargoBp: 0 } : {}),
   };
+}
+
+/** Clamp / strip cargo when chassis changes. */
+export function normalizeShipCargo(ship: Ship): Ship {
+  if (ship.chassis !== "transport") {
+    if (ship.cargoBp == null) return ship;
+    const { cargoBp: _drop, ...rest } = ship;
+    return rest;
+  }
+  const n =
+    typeof ship.cargoBp === "number" && Number.isFinite(ship.cargoBp)
+      ? Math.max(0, Math.min(TRANSPORT_BP_CAPACITY, Math.floor(ship.cargoBp)))
+      : 0;
+  return { ...ship, cargoBp: n };
 }
 
 /** Adjacent system ids via hyperlanes. */

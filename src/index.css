@@ -618,3 +618,52 @@ body {
     stroke-dashoffset: -48;
   }
 }
+
+/* Black hole bomb — nested mirrors + superradiant cavity */
+.bhb-mirror-spin {
+  transform-origin: 50px 50px;
+  animation: dyson-spin 22s linear infinite;
+}
+
+.bhb-mirror-spin-slow {
+  transform-origin: 50px 50px;
+  animation: dyson-spin 40s linear infinite;
+}
+
+.bhb-mirror-spin-rev {
+  transform-origin: 50px 50px;
+  animation: dyson-spin-rev 16s linear infinite;
+}
+
+.bhb-wave-spin {
+  transform-origin: 50px 50px;
+  animation: dyson-spin 9s linear infinite;
+}
+
+.bhb-cavity-pulse {
+  animation: bhb-cavity-glow 2.4s ease-in-out infinite;
+}
+
+.bhb-extractor-pulse {
+  animation: bhb-extractor-glow 1.6s ease-in-out infinite;
+}
+
+@keyframes bhb-cavity-glow {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes bhb-extractor-glow {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}

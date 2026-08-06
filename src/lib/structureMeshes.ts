@@ -73,6 +73,8 @@ function buildStructureGeometry(kind: StructureKind): THREE.BufferGeometry {
       return finalize(buildOutpost());
     case "ruins_site":
       return finalize(buildRuinsSite());
+    case "supply_network":
+      return finalize(buildSupplyNetwork());
     default:
       return finalize(buildOutpost());
   }
@@ -948,5 +950,33 @@ function buildRuinsSite(): Parts {
   addBox(p, 0.02, 0.012, 0.018, 0.03, 0.016, 0.05);
   addBox(p, 0.015, 0.01, 0.014, -0.06, 0.015, 0.02);
   addBox(p, 0.03, 0.02, 0.012, 0.0, 0.02, -0.01, 0.3, 0.5, 0);
+  return p;
+}
+
+/** Logistics hub: pad, conduit arms, and a central stack. */
+function buildSupplyNetwork(): Parts {
+  const p: Parts = [];
+  addBox(p, 0.14, 0.01, 0.14, 0, 0.005, 0);
+  addBox(p, 0.1, 0.012, 0.1, 0, 0.014, 0);
+  // Central depot
+  addBox(p, 0.055, 0.05, 0.055, 0, 0.045, 0);
+  addBox(p, 0.04, 0.02, 0.04, 0, 0.08, 0);
+  addCyl(p, 0.012, 0.014, 0.06, 6, 0, 0.1, 0);
+  addOcta(p, 0.018, 0, 0.14, 0, 1, 0.9, 1);
+  // Cardinal conduit arms
+  addBox(p, 0.12, 0.014, 0.02, 0, 0.03, 0.05);
+  addBox(p, 0.12, 0.014, 0.02, 0, 0.03, -0.05);
+  addBox(p, 0.02, 0.014, 0.12, 0.05, 0.03, 0);
+  addBox(p, 0.02, 0.014, 0.12, -0.05, 0.03, 0);
+  // Junction boxes
+  addBox(p, 0.03, 0.025, 0.03, 0.055, 0.03, 0.055);
+  addBox(p, 0.03, 0.025, 0.03, -0.055, 0.03, 0.055);
+  addBox(p, 0.03, 0.025, 0.03, 0.055, 0.03, -0.055);
+  addBox(p, 0.03, 0.025, 0.03, -0.055, 0.03, -0.055);
+  // Pipe runs
+  addPipeRun(p, -0.06, 0.04, 0, 0.06, 0.015, 0);
+  addPipeRun(p, 0, 0.04, -0.06, 0.015, 0, 0.06);
+  addCyl(p, 0.006, 0.006, 0.05, 4, 0.04, 0.055, 0.02);
+  addCyl(p, 0.006, 0.006, 0.045, 4, -0.04, 0.05, -0.02);
   return p;
 }

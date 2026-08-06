@@ -10,7 +10,9 @@ import type {
 } from "../types/campaign";
 import {
   DISTRICT_KIND_LABELS,
+  DISTRICT_KIND_ORDER,
   STRUCTURE_KIND_LABELS,
+  STRUCTURE_KIND_ORDER,
 } from "../types/campaign";
 import { buildHexSphere, type HexSphere } from "./hexSphere";
 import { generateWarpGateSurface, ensureWarpGateSurface } from "./warpGateSurface";
@@ -63,20 +65,26 @@ const CITY_PREFIX: Record<PlanetType, string[]> = {
   agri: ["Agri-Hub", "Silo", "Granary", "Harvest"],
   death: ["Fortress", "Outpost", "Hold", "Redoubt"],
   shrine: ["Shrine", "Basilica", "Sanctum", "Pilgrim"],
+  feudal: ["Keep", "Fief", "Manor", "Stronghold"],
+  fortress: ["Citadel", "Bastion", "Kasr", "Redoubt"],
+  homeworld: ["Capital", "Throne", "Seat", "Primus"],
   asteroid_belt: ["Station", "Mining", "Claim", "Relay"],
   warp_gate: ["Gate", "Station", "Crown", "Relay"],
   custom: ["City", "Settlement", "Colony", "Station"],
 };
 
 const DISTRICT_KINDS: Record<PlanetType, DistrictKind[]> = {
-  hive: ["spire", "underhive", "docks", "bastion", "quarter", "manufactorum", "ruins"],
-  forge: ["manufactorum", "foundry", "refinery", "railhead", "bastion", "ruins"],
-  agri: ["agriplex", "silo", "reservoir", "outpost", "quarter", "bastion", "manufactorum"],
-  death: ["fortress", "camp", "bastion", "outpost", "ruins", "quarter", "manufactorum"],
-  shrine: ["cathedral", "reliquary", "cloister", "quarter", "bastion", "ruins", "manufactorum"],
-  asteroid_belt: ["outpost", "docks", "camp", "ruins", "bastion", "quarter"],
-  warp_gate: ["docks", "bastion", "outpost", "camp", "quarter"],
-  custom: ["quarter", "bastion", "docks", "outpost", "ruins", "camp", "manufactorum"],
+  hive: ["spire", "underhive", "docks", "bastion", "manufactorum", "ruins", "supply_station"],
+  forge: ["manufactorum", "bastion", "ruins", "docks", "outpost", "supply_station"],
+  agri: ["outpost", "bastion", "manufactorum", "docks", "camp", "supply_station"],
+  death: ["camp", "bastion", "outpost", "ruins", "manufactorum", "supply_station"],
+  shrine: ["cathedral", "bastion", "ruins", "manufactorum", "outpost", "supply_station"],
+  feudal: ["bastion", "cathedral", "outpost", "camp", "docks", "supply_station"],
+  fortress: ["bastion", "camp", "outpost", "manufactorum", "docks", "supply_station"],
+  homeworld: ["spire", "bastion", "docks", "manufactorum", "cathedral", "supply_station"],
+  asteroid_belt: ["outpost", "docks", "camp", "ruins", "bastion", "supply_station"],
+  warp_gate: ["docks", "bastion", "outpost", "camp"],
+  custom: ["bastion", "docks", "outpost", "ruins", "camp", "manufactorum", "supply_station"],
 };
 
 /** Guaranteed manufactorums per city (forge > hive > agri / others). */
@@ -86,6 +94,9 @@ const MANUFACTORUMS_PER_CITY: Record<PlanetType, [number, number]> = {
   agri: [0, 1],
   death: [0, 1],
   shrine: [0, 1],
+  feudal: [0, 1],
+  fortress: [1, 2],
+  homeworld: [1, 2],
   asteroid_belt: [0, 0],
   warp_gate: [0, 0],
   custom: [0, 1],
@@ -97,6 +108,9 @@ const CITY_COUNT: Record<PlanetType, [number, number]> = {
   agri: [2, 3],
   death: [2, 3],
   shrine: [2, 3],
+  feudal: [2, 4],
+  fortress: [2, 3],
+  homeworld: [3, 5],
   asteroid_belt: [0, 1],
   warp_gate: [0, 0],
   custom: [2, 3],
@@ -108,43 +122,40 @@ const DISTRICTS_PER_CITY: Record<PlanetType, [number, number]> = {
   agri: [2, 3],
   death: [2, 3],
   shrine: [2, 3],
+  feudal: [2, 3],
+  fortress: [3, 4],
+  homeworld: [3, 4],
   asteroid_belt: [1, 2],
   warp_gate: [0, 0],
   custom: [2, 3],
 };
 
 const STRUCTURE_POOL: Record<PlanetType, StructureKind[]> = {
-  hive: ["space_port", "spire_cluster", "underhive_gate", "outpost", "ruins_site"],
-  forge: [
-    "manufactorum_complex",
-    "ore_mine",
-    "slag_works",
-    "reactor",
-    "outpost",
-  ],
-  agri: ["agri_dome", "silo_complex", "reservoir_works", "outpost"],
-  death: ["fortress_bastion", "trench_line", "kill_zone", "outpost", "ruins_site"],
-  shrine: [
-    "cathedral_complex",
-    "reliquary_vault",
-    "pilgrim_station",
-    "outpost",
-    "ruins_site",
-  ],
-  asteroid_belt: ["mining_claim", "relay", "outpost"],
-  warp_gate: ["relay_crown", "space_port", "outpost", "relay", "reactor"],
-  custom: ["outpost", "relay", "ruins_site", "mining_claim"],
+  hive: ["ore_mine", "trench_line", "supply_network"],
+  forge: ["ore_mine", "supply_network"],
+  agri: ["ore_mine", "supply_network"],
+  death: ["trench_line", "ore_mine", "supply_network"],
+  shrine: ["ore_mine", "supply_network"],
+  feudal: ["ore_mine", "supply_network"],
+  fortress: ["trench_line", "ore_mine", "supply_network"],
+  homeworld: ["ore_mine", "trench_line", "supply_network"],
+  asteroid_belt: ["ore_mine", "supply_network"],
+  warp_gate: [],
+  custom: ["ore_mine", "trench_line", "supply_network"],
 };
 
 const STRUCTURE_COUNT: Record<PlanetType, [number, number]> = {
-  hive: [4, 7],
-  forge: [5, 8],
-  agri: [3, 5],
-  death: [4, 6],
-  shrine: [3, 5],
-  asteroid_belt: [2, 4],
-  warp_gate: [1, 1],
-  custom: [2, 4],
+  hive: [2, 4],
+  forge: [2, 4],
+  agri: [1, 3],
+  death: [1, 3],
+  shrine: [1, 2],
+  feudal: [1, 3],
+  fortress: [2, 4],
+  homeworld: [2, 4],
+  asteroid_belt: [1, 3],
+  warp_gate: [0, 0],
+  custom: [1, 3],
 };
 
 const STRUCTURE_NAME_PREFIX: Record<StructureKind, string[]> = {
@@ -169,6 +180,7 @@ const STRUCTURE_NAME_PREFIX: Record<StructureKind, string[]> = {
   relay_crown: ["Relay Crown", "Gate Crown", "Warp Spire"],
   outpost: ["Outpost", "Watch Post", "Frontier Post"],
   ruins_site: ["Ruins", "Dead Site", "Collapsed Works"],
+  supply_network: ["Supply Hub", "Logistics Nexus", "Conduit Yard"],
 };
 
 function cityName(type: PlanetType, index: number, rng: Rng): string {
@@ -352,6 +364,7 @@ export function generatePlanetStructures(
   if (count === 0) return [];
 
   const pool = STRUCTURE_POOL[type];
+  if (pool.length === 0) return [];
   const tiles = pickSpreadTiles(sphere, count, 2, rng, occupied);
   const {
     defaultFactionId,
@@ -437,6 +450,7 @@ export function createStructureAtTile(
   kind: StructureKind,
   options?: { name?: string; controllingFactionId?: string },
 ): PlanetStructure | null {
+  if (!(STRUCTURE_KIND_ORDER as readonly string[]).includes(kind)) return null;
   const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
   if (tileIndex < 0 || tileIndex >= sphere.tiles.length) return null;
   const occupied = settlementTileSet(planet.cities ?? [], planet.structures ?? []);
@@ -486,6 +500,7 @@ export function createDistrictAtTile(
   kind: DistrictKind,
   options?: { name?: string; controllingFactionId?: string },
 ): { cities: City[] } | null {
+  if (!(DISTRICT_KIND_ORDER as readonly string[]).includes(kind)) return null;
   const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
   if (tileIndex < 0 || tileIndex >= sphere.tiles.length) return null;
   const occupied = settlementTileSet(planet.cities ?? [], planet.structures ?? []);

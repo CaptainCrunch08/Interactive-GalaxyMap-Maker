@@ -120,19 +120,21 @@ export function BattleResolveModal() {
     const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
     const play = normalizeCampaignPlay(campaign.play);
     const acted = new Set(play.movedArmyIds);
+    const supportCtx =
+      planet.type === "warp_gate" ? planet.id : sphere;
     // Primaries are already committed to this fight; supports cannot have acted.
     const attackerSupports = eligibleSupportArmies(
       planet.armies,
       attacker,
       defender.id,
-      sphere,
+      supportCtx,
       acted,
     );
     const defenderSupports = eligibleSupportArmies(
       planet.armies,
       defender,
       attacker.id,
-      sphere,
+      supportCtx,
       acted,
     );
 

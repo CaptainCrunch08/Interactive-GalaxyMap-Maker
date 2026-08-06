@@ -84,6 +84,9 @@ export function computePlanetStrength(planet: Planet): number {
     shrine: 12,
     agri: 10,
     death: 16,
+    feudal: 12,
+    fortress: 24,
+    homeworld: 20,
     custom: 8,
   };
   score += typeBonus[planet.type] ?? 0;

@@ -107,48 +107,74 @@ export function PlanetGlobe({
       renderer,
     );
 
+    const isToxic = cls === "toxic";
+    const isTidal = cls === "tidally_locked";
+
     const planetMat = new THREE.MeshStandardMaterial({
       map: albedoMap,
-      roughness: 0.96,
-      metalness: 0,
+      roughness: isToxic ? 0.88 : isTidal ? 0.92 : 0.96,
+      metalness: isToxic ? 0.08 : 0,
       envMapIntensity: 0,
       emissive:
         cls === "magma" || cls === "volcanic"
           ? new THREE.Color("#2a0c06")
-          : cls === "toxic"
-            ? new THREE.Color("#121a06")
-            : new THREE.Color("#000000"),
+          : isToxic
+            ? new THREE.Color("#0a0e0c")
+            : isTidal
+              ? new THREE.Color("#1a0c04")
+              : new THREE.Color("#000000"),
       emissiveIntensity:
-        cls === "magma" ? 0.35 : cls === "volcanic" ? 0.18 : 0,
+        cls === "magma"
+          ? 0.35
+          : cls === "volcanic"
+            ? 0.18
+            : isToxic
+              ? 0.04
+              : isTidal
+                ? 0.1
+                : 0,
     });
 
     const globe = new THREE.Group();
-    globe.rotation.z = 0.22;
+    globe.rotation.z = isTidal ? 0.12 : 0.22;
     scene.add(globe);
 
     const planet = new THREE.Mesh(planetGeo(), planetMat);
+    // Present day/night edge-on: scorched left, frozen right.
+    if (isTidal) planet.rotation.y = -Math.PI * 0.5;
     globe.add(planet);
 
     const cloudMat = new THREE.MeshLambertMaterial({
       map: cloudMap,
       transparent: true,
       depthWrite: false,
-      opacity: cls === "barren" || cls === "magma" ? 0.28 : 0.72,
+      opacity:
+        cls === "barren" || cls === "magma"
+          ? 0.28
+          : isToxic
+            ? 0.82
+            : isTidal
+              ? 0.78
+              : 0.72,
     });
     const clouds = new THREE.Mesh(cloudGeo(), cloudMat);
+    if (isTidal) clouds.rotation.y = -Math.PI * 0.5;
     globe.add(clouds);
 
     const atmoHex = atmosphereColor(cls);
+    const atmoStrength = isToxic ? 0.42 : isTidal ? 0.34 : 0.28;
     const limb = new THREE.Mesh(
       limbGeo(),
       new THREE.ShaderMaterial({
         transparent: true,
         depthWrite: false,
-        blending: THREE.AdditiveBlending,
+        blending:
+          isToxic ? THREE.NormalBlending : THREE.AdditiveBlending,
         uniforms: {
           glowColor: {
             value: new THREE.Color(accentColor ?? atmoHex),
           },
+          atmoStrength: { value: atmoStrength },
         },
         vertexShader: `
           varying vec3 vNormal;
@@ -162,45 +188,76 @@ export function PlanetGlobe({
         `,
         fragmentShader: `
           uniform vec3 glowColor;
+          uniform float atmoStrength;
           varying vec3 vNormal;
           varying vec3 vView;
           void main() {
             float fresnel = pow(1.0 - max(dot(vView, vNormal), 0.0), 3.2);
-            float edge = smoothstep(0.15, 0.95, fresnel);
-            gl_FragColor = vec4(glowColor, edge * 0.28);
+            float edge = smoothstep(0.12, 0.95, fresnel);
+            gl_FragColor = vec4(glowColor, edge * atmoStrength);
           }
         `,
       }),
     );
     globe.add(limb);
 
-    const key = new THREE.DirectionalLight(0xfff2e0, 1.15);
-    key.position.set(-2.8, 1.4, 3.2);
+    const key = new THREE.DirectionalLight(
+      isToxic ? 0xe8e0c8 : isTidal ? 0xffd090 : 0xfff2e0,
+      isToxic ? 0.78 : isTidal ? 1.35 : 1.15,
+    );
+    // Hot side light (scorched hemisphere) vs cool night fill.
+    key.position.set(isTidal ? -3.2 : -2.8, 1.4, isTidal ? 0.8 : 3.2);
     scene.add(key);
-    const fill = new THREE.DirectionalLight(0x7a8cff, 0.28);
-    fill.position.set(2.5, -1.0, -1.2);
+    const fill = new THREE.DirectionalLight(
+      isToxic ? 0x6a7868 : isTidal ? 0x6080c8 : 0x7a8cff,
+      isToxic ? 0.22 : isTidal ? 0.38 : 0.28,
+    );
+    fill.position.set(isTidal ? 3.0 : 2.5, isTidal ? -0.4 : -1.0, isTidal ? -0.6 : -1.2);
     scene.add(fill);
-    const rimLight = new THREE.DirectionalLight(0xb0c4ff, 0.22);
-    rimLight.position.set(0.2, 0.4, -3.0);
+    const rimLight = new THREE.DirectionalLight(
+      isToxic ? 0x8a9080 : isTidal ? 0xa0c0ff : 0xb0c4ff,
+      isToxic ? 0.18 : isTidal ? 0.28 : 0.22,
+    );
+    rimLight.position.set(isTidal ? 1.5 : 0.2, 0.4, isTidal ? -2.8 : -3.0);
     scene.add(rimLight);
-    scene.add(new THREE.AmbientLight(0x5a6270, 0.55));
-    scene.add(new THREE.HemisphereLight(0xdde6ff, 0x1a1520, 0.35));
+    scene.add(
+      new THREE.AmbientLight(
+        isToxic ? 0x4a5048 : isTidal ? 0x3a4050 : 0x5a6270,
+        isTidal ? 0.4 : 0.55,
+      ),
+    );
+    scene.add(
+      new THREE.HemisphereLight(
+        isToxic ? 0xc8c4b0 : isTidal ? 0xffe0b0 : 0xdde6ff,
+        isToxic ? 0x1a1814 : isTidal ? 0x0a1020 : 0x1a1520,
+        isTidal ? 0.42 : 0.35,
+      ),
+    );
 
     let frame = 0;
     let raf = 0;
-    const spin = cls === "gas_giant" ? 0.0016 : 0.00095;
-    const cloudSpin = spin * 1.25;
+    const spin =
+      cls === "gas_giant" ? 0.0016 : isTidal ? 0 : 0.00095;
+    const cloudSpin = isTidal ? 0 : spin * 1.25;
 
     const tick = () => {
       frame += 1;
       planet.rotation.y += spin;
       clouds.rotation.y += cloudSpin;
       cloudMat.opacity =
-        (cls === "barren" || cls === "magma" ? 0.22 : 0.62) +
-        Math.sin(frame * 0.012) * 0.08;
+        (cls === "barren" || cls === "magma"
+          ? 0.22
+          : isToxic
+            ? 0.72
+            : isTidal
+              ? 0.68
+              : 0.62) + Math.sin(frame * 0.012) * 0.08;
       if (cls === "magma" || cls === "volcanic") {
         planetMat.emissiveIntensity =
           (cls === "magma" ? 0.32 : 0.16) + Math.sin(frame * 0.035) * 0.07;
+      }
+      if (isTidal) {
+        planetMat.emissiveIntensity = 0.08 + Math.sin(frame * 0.02) * 0.025;
       }
       renderer.render(scene, camera);
       raf = requestAnimationFrame(tick);

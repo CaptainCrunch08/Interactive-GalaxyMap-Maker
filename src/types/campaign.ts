@@ -6,6 +6,9 @@ export type PlanetType =
   | "agri"
   | "death"
   | "shrine"
+  | "feudal"
+  | "fortress"
+  | "homeworld"
   | "asteroid_belt"
   | "warp_gate"
   | "custom";
@@ -51,7 +54,8 @@ export type DistrictKind =
   | "reliquary"
   | "cloister"
   | "quarter"
-  | "ruins";
+  | "ruins"
+  | "supply_station";
 
 /**
  * Standalone surface structures (not nested under cities).
@@ -78,7 +82,8 @@ export type StructureKind =
   | "relay"
   | "relay_crown"
   | "outpost"
-  | "ruins_site";
+  | "ruins_site"
+  | "supply_network";
 
 export interface Faction {
   id: string;
@@ -245,6 +250,11 @@ export interface Ship {
   name: string;
   chassis: ShipChassis;
   notes: string;
+  /**
+   * Building points stored in the hold (transports only).
+   * Capped at TRANSPORT_BP_CAPACITY; ignored for other chassis.
+   */
+  cargoBp?: number;
 }
 
 /** At the system star, or parked in a planet's orbit. */
@@ -273,6 +283,7 @@ export type StarClass =
   | "G"
   | "K"
   | "M"
+  | "white_dwarf"
   | "neutron"
   | "pulsar"
   | "black_hole";
@@ -289,8 +300,9 @@ export interface StarSystem {
    */
   starClass: StarClass;
   /**
-   * Megastructure shell around the core star. Required for systems that host
-   * a warp gate — the sphere feeds the gate via a power tether.
+   * Power megastructure around the core. Required for warp gates.
+   * Around luminous stars this is a Dyson Sphere (starlight collectors);
+   * around a black hole it is a Black Hole Bomb (superradiant mirrors).
    */
   dysonSphere?: boolean;
   /** Primary system owner; planets may diverge (contested). */
@@ -446,6 +458,11 @@ export interface CampaignPlay {
   movedArmyIds: string[];
   /** Hexes each army has already spent this turn (cap = ARMY_MOVE_RANGE). */
   armyMovementUsed?: Record<string, number>;
+  /**
+   * Round when a detachment last entered a friendly War Camp to rest.
+   * Heals to 100% once a later round begins while still stationary there.
+   */
+  armyCampEnteredRound?: Record<string, number>;
 }
 
 export interface Campaign {
@@ -482,6 +499,9 @@ export const PLANET_TYPE_LABELS: Record<PlanetType, string> = {
   agri: "Agri World",
   death: "Death World",
   shrine: "Shrine World",
+  feudal: "Feudal World",
+  fortress: "Fortress World",
+  homeworld: "Homeworld",
   asteroid_belt: "Asteroid Belt",
   warp_gate: "Warp Gate",
   custom: "Custom",
@@ -502,7 +522,7 @@ export const PLANET_CLASSIFICATION_LABELS: Record<PlanetClassification, string> 
     swamp: "Swamp",
     volcanic: "Volcanic",
     magma: "Magma World",
-    toxic: "Toxic",
+    toxic: "Toxic World",
     barren: "Barren",
     gas_giant: "Gas Giant",
     tidally_locked: "Tidally Locked",
@@ -536,6 +556,7 @@ export const STAR_CLASS_LABELS: Record<StarClass, string> = {
   G: "G-type (Yellow)",
   K: "K-type (Orange)",
   M: "M-type (Red dwarf)",
+  white_dwarf: "White dwarf",
   neutron: "Neutron star",
   pulsar: "Pulsar",
   black_hole: "Black hole",
@@ -549,6 +570,7 @@ export const STAR_CLASS_ORDER: StarClass[] = [
   "G",
   "K",
   "M",
+  "white_dwarf",
   "neutron",
   "pulsar",
   "black_hole",
@@ -557,7 +579,7 @@ export const STAR_CLASS_ORDER: StarClass[] = [
 export const DISTRICT_KIND_LABELS: Record<DistrictKind, string> = {
   spire: "Hive Spire",
   underhive: "Underhive",
-  docks: "Space Docks",
+  docks: "Space Port",
   bastion: "Bastion",
   manufactorum: "Manufactorum",
   foundry: "Foundry",
@@ -574,6 +596,7 @@ export const DISTRICT_KIND_LABELS: Record<DistrictKind, string> = {
   cloister: "Cloister",
   quarter: "District",
   ruins: "Ruins",
+  supply_station: "Supply Station",
 };
 
 export const DISTRICT_KIND_ORDER: DistrictKind[] = [
@@ -582,20 +605,11 @@ export const DISTRICT_KIND_ORDER: DistrictKind[] = [
   "docks",
   "bastion",
   "manufactorum",
-  "foundry",
-  "refinery",
-  "railhead",
-  "agriplex",
-  "silo",
-  "reservoir",
   "outpost",
-  "fortress",
   "camp",
   "cathedral",
-  "reliquary",
-  "cloister",
-  "quarter",
   "ruins",
+  "supply_station",
 ];
 
 export const STRUCTURE_KIND_LABELS: Record<StructureKind, string> = {
@@ -620,30 +634,13 @@ export const STRUCTURE_KIND_LABELS: Record<StructureKind, string> = {
   relay_crown: "Relay Crown",
   outpost: "Outpost",
   ruins_site: "Ruins Site",
+  supply_network: "Supply Network",
 };
 
 export const STRUCTURE_KIND_ORDER: StructureKind[] = [
-  "space_port",
-  "spire_cluster",
-  "underhive_gate",
-  "manufactorum_complex",
   "ore_mine",
-  "slag_works",
-  "reactor",
-  "agri_dome",
-  "silo_complex",
-  "reservoir_works",
-  "fortress_bastion",
   "trench_line",
-  "kill_zone",
-  "cathedral_complex",
-  "reliquary_vault",
-  "pilgrim_station",
-  "mining_claim",
-  "relay",
-  "relay_crown",
-  "outpost",
-  "ruins_site",
+  "supply_network",
 ];
 
 export const FACTION_ARMY_TYPE_LABELS: Record<FactionArmyType, string> = {
@@ -711,6 +708,7 @@ export function inactivePlayState(): CampaignPlay {
     movedFleetIds: [],
     movedArmyIds: [],
     armyMovementUsed: {},
+    armyCampEnteredRound: {},
   };
 }
 
@@ -724,6 +722,17 @@ export function normalizeCampaignPlay(
     for (const [id, n] of Object.entries(play.armyMovementUsed)) {
       if (typeof n === "number" && Number.isFinite(n) && n > 0) {
         armyMovementUsed[id] = Math.max(0, Math.floor(n));
+      }
+    }
+  }
+  const armyCampEnteredRound: Record<string, number> = {};
+  if (
+    play.armyCampEnteredRound &&
+    typeof play.armyCampEnteredRound === "object"
+  ) {
+    for (const [id, n] of Object.entries(play.armyCampEnteredRound)) {
+      if (typeof n === "number" && Number.isFinite(n) && n >= 1) {
+        armyCampEnteredRound[id] = Math.floor(n);
       }
     }
   }
@@ -745,5 +754,6 @@ export function normalizeCampaignPlay(
       ? play.movedArmyIds.filter((id): id is string => typeof id === "string")
       : [],
     armyMovementUsed,
+    armyCampEnteredRound,
   };
 }

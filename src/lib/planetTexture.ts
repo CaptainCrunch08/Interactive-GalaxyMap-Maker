@@ -298,19 +298,20 @@ const BASE_PALETTES: Record<PlanetClassification, Palette> = {
     accent: [255, 150, 45],
     barren: [40, 22, 18],
   },
+  // Overindustrialized: chem spills, soot, rust — not neon radiation green.
   toxic: {
-    ocean: [48, 95, 32],
-    oceanDeep: [22, 50, 14],
-    coast: [70, 120, 45],
-    landLow: [85, 125, 40],
-    landMid: [110, 145, 48],
-    landHigh: [145, 165, 55],
-    forest: [60, 100, 30],
-    rock: [75, 85, 40],
-    ice: [180, 200, 160],
-    cloud: [165, 210, 85],
-    accent: [210, 255, 70],
-    barren: [70, 80, 35],
+    ocean: [26, 36, 33],
+    oceanDeep: [10, 14, 18],
+    coast: [55, 68, 58],
+    landLow: [105, 130, 120],
+    landMid: [145, 170, 158],
+    landHigh: [168, 185, 172],
+    forest: [78, 95, 78],
+    rock: [68, 62, 55],
+    ice: [175, 172, 162],
+    cloud: [188, 182, 160],
+    accent: [160, 106, 66],
+    barren: [72, 68, 56],
   },
   barren: {
     ocean: [70, 74, 80],
@@ -341,18 +342,18 @@ const BASE_PALETTES: Record<PlanetClassification, Palette> = {
     barren: [160, 120, 70],
   },
   tidally_locked: {
-    ocean: [22, 48, 95],
-    oceanDeep: [6, 18, 45],
-    coast: [60, 75, 100],
-    landLow: [70, 78, 100],
-    landMid: [95, 90, 95],
-    landHigh: [130, 115, 100],
-    forest: [45, 70, 55],
-    rock: [55, 50, 60],
-    ice: [200, 210, 230],
-    cloud: [185, 195, 215],
-    accent: [255, 185, 85],
-    barren: [48, 42, 55],
+    ocean: [18, 42, 88],
+    oceanDeep: [4, 10, 28],
+    coast: [70, 85, 95],
+    landLow: [95, 78, 55],
+    landMid: [150, 110, 65],
+    landHigh: [195, 145, 85],
+    forest: [45, 75, 55],
+    rock: [70, 48, 38],
+    ice: [210, 225, 245],
+    cloud: [220, 225, 235],
+    accent: [255, 120, 40],
+    barren: [55, 40, 35],
   },
 };
 
@@ -439,7 +440,12 @@ export function paintPlanetTexture(
   const variant = model?.variant ?? 0;
   const rng = rngFromSeed(visualModelId);
   const seed = Math.floor(rng() * 1e9);
-  const hueShift = (variant - 1.5) * 0.35 + (rng() - 0.5) * 0.2;
+  const hueShift =
+    cls === "toxic"
+      ? (variant - 1.5) * 0.1 + (rng() - 0.5) * 0.08
+      : cls === "tidally_locked"
+        ? (variant - 1.5) * 0.08 + (rng() - 0.5) * 0.06
+        : (variant - 1.5) * 0.35 + (rng() - 0.5) * 0.2;
   const pal = shiftPalette(BASE_PALETTES[cls], hueShift);
   const threshold = landThreshold(cls, variant);
   const landScale = 1.85 + variant * 0.28 + rng() * 0.35;
@@ -577,8 +583,20 @@ export function paintPlanetTexture(
         }
 
         if (isToxic) {
-          const haze = fbm3(nx * 4, ny * 4, nz * 4, seed + 99, 3);
-          rgb = mix(rgb, pal.accent, haze * 0.32);
+          const sludge = fbm3(nx * 3.2, ny * 3.2, nz * 3.2, seed + 99, 3);
+          const rust = fbm3(nx * 6.5, ny * 6.5, nz * 6.5, seed + 111, 3);
+          const soot = fbm3(nx * 10, ny * 10, nz * 10, seed + 133, 2);
+          rgb = mix(rgb, pal.barren, sludge * 0.28);
+          if (rust > 0.52) {
+            rgb = mix(rgb, pal.accent, (rust - 0.52) * 1.55);
+          }
+          if (soot > 0.7 && landMask > 0.35) {
+            rgb = mix(rgb, pal.oceanDeep, (soot - 0.7) * 2.1);
+          }
+          if (landMask < 0.45) {
+            const oil = fbm3(nx * 5, ny * 5, nz * 5, seed + 151, 2);
+            rgb = mix(rgb, pal.oceanDeep, oil * 0.35);
+          }
         }
 
         const iceAmt =
@@ -599,9 +617,57 @@ export function paintPlanetTexture(
         }
 
         if (isTidal) {
-          const day = Math.cos(lon - Math.PI * 0.5) * 0.5 + 0.5;
-          if (day > 0.55) rgb = mix(rgb, pal.accent, (day - 0.55) * 0.55);
-          else if (day < 0.38) rgb = mix(rgb, [6, 8, 22], (0.38 - day) * 1.6);
+          // +Z hemisphere scorched; −Z eternal night; thin twilight belt between.
+          const dayRaw = Math.cos(lon - Math.PI * 0.5) * 0.5 + 0.5;
+          const edgeWarp =
+            (fbm3(nx * 2.4, ny * 2.4, nz * 2.4, seed + 40, 3) - 0.5) * 0.1;
+          const day = clamp(dayRaw + edgeWarp, 0, 1);
+          const cracks = fbm3(
+            nx * 12,
+            ny * 12,
+            nz * 12,
+            seed + 88,
+            3 + detailBoost,
+          );
+
+          if (day > 0.56) {
+            const heat = smoothstep(0.56, 0.98, day);
+            let scorched = mix([95, 55, 30], [175, 115, 55], smoothstep(0, 0.55, h));
+            scorched = mix(scorched, [220, 160, 70], smoothstep(0.45, 1, h));
+            scorched = mix(scorched, pal.rock, smoothstep(0.65, 1, h) * 0.45);
+            scorched = mix(scorched, pal.accent, micro * 0.35 * heat);
+            if (cracks > 0.62) {
+              scorched = mix(
+                scorched,
+                [255, 90, 30],
+                (cracks - 0.62) * 2.2 * heat,
+              );
+            }
+            scorched = mul(scorched, 0.82 + micro * 0.28);
+            let hotSea = mix([35, 22, 14], [70, 40, 22], depth * 0.5);
+            hotSea = mix(hotSea, [120, 70, 35], smoothstep(0.7, 1, day) * 0.4);
+            rgb = mix(hotSea, scorched, landMask);
+            rgb = mix(rgb, [255, 200, 110], heat * 0.12 * (1 - landMask * 0.3));
+          } else if (day < 0.44) {
+            const cold = smoothstep(0.44, 0.02, day);
+            let frozen = mix([35, 48, 78], [120, 145, 185], smoothstep(0, 0.5, h));
+            frozen = mix(frozen, pal.ice, smoothstep(0.35, 1, h) * 0.85);
+            frozen = mix(frozen, [18, 28, 55], (1 - landMask) * 0.2);
+            const frost = fbm3(nx * 8, ny * 8, nz * 8, seed + 200, 2);
+            frozen = mix(frozen, [235, 245, 255], frost * 0.35 * cold);
+            let nightSea = mix([4, 8, 24], [12, 28, 55], 1 - depth);
+            nightSea = mix(nightSea, [160, 185, 220], cold * 0.45 * (1 - depth));
+            rgb = mix(nightSea, frozen, landMask);
+            rgb = mix(rgb, pal.ice, cold * (0.4 + landMask * 0.45));
+            rgb = mul(rgb, 0.72 + cold * 0.12);
+          } else {
+            const twilight = 1 - Math.abs(day - 0.5) * 5;
+            let belt = mix(pal.landLow, pal.forest, moisture * 0.7);
+            belt = mix(belt, pal.landMid, h * 0.5);
+            let beltSea = mix(pal.oceanDeep, pal.ocean, 1 - depth);
+            rgb = mix(beltSea, belt, landMask);
+            rgb = mix(rgb, [90, 130, 100], Math.max(0, twilight) * 0.25);
+          }
         }
       }
 
@@ -632,11 +698,23 @@ export function paintCloudTexture(
   const density =
     cls === "gas_giant"
       ? 0.5
-      : cls === "desert" || cls === "arid" || cls === "barren" || cls === "magma"
-        ? 0.16
-        : cls === "water" || cls === "jungle" || cls === "earthlike"
-          ? 0.4 + variant * 0.03
-          : 0.3;
+      : cls === "toxic"
+        ? 0.5
+        : cls === "tidally_locked"
+          ? 0.42
+          : cls === "desert" || cls === "arid" || cls === "barren" || cls === "magma"
+            ? 0.16
+            : cls === "water" || cls === "jungle" || cls === "earthlike"
+              ? 0.4 + variant * 0.03
+              : 0.3;
+  const cloudRgb: Rgb =
+    cls === "toxic"
+      ? [192, 186, 162]
+      : cls === "volcanic" || cls === "magma"
+        ? [210, 195, 180]
+        : cls === "tidally_locked"
+          ? [230, 220, 210]
+          : [248, 250, 255];
 
   canvas.width = size;
   canvas.height = size;
@@ -666,14 +744,34 @@ export function paintCloudTexture(
         2,
       );
       const combined = n * 0.7 + wispy * 0.3;
-      const a =
+      let a =
         combined > 1 - density
           ? Math.min(200, ((combined - (1 - density)) / density) * 185)
           : 0;
+      let cr = cloudRgb[0];
+      let cg = cloudRgb[1];
+      let cb = cloudRgb[2];
+      if (cls === "tidally_locked") {
+        const day = Math.cos(lon - Math.PI * 0.5) * 0.5 + 0.5;
+        const band = Math.max(0, 1 - Math.abs(day - 0.5) * 3.4);
+        // Thick storm wall at the terminator; thin frost on night; almost bare day.
+        const mask =
+          band * 1.15 + (day < 0.42 ? (0.42 - day) * 0.55 : 0) + (day > 0.7 ? 0.08 : 0);
+        a = Math.min(220, a * (0.12 + mask));
+        if (day > 0.55) {
+          cr = 255;
+          cg = 210;
+          cb = 160;
+        } else if (day < 0.45) {
+          cr = 200;
+          cg = 215;
+          cb = 240;
+        }
+      }
       const i = (y * size + x) * 4;
-      data[i] = 248;
-      data[i + 1] = 250;
-      data[i + 2] = 255;
+      data[i] = cr;
+      data[i + 1] = cg;
+      data[i + 2] = cb;
       data[i + 3] = a;
     }
   }
@@ -779,11 +877,11 @@ export function atmosphereColor(
     case "magma":
       return "#e07040";
     case "toxic":
-      return "#a0e040";
+      return "#6a7860";
     case "gas_giant":
       return "#e8c070";
     case "tidally_locked":
-      return "#8090c0";
+      return "#c09058";
     default:
       return "#9aa4b0";
   }

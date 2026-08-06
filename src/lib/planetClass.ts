@@ -1,4 +1,4 @@
-import type { PlanetClassification } from "../types/campaign";
+import type { Planet, PlanetClassification } from "../types/campaign";
 import { PLANET_CLASSIFICATION_ORDER } from "../types/campaign";
 
 export function isPlanetClassification(
@@ -14,6 +14,20 @@ export function normalizePlanetClassification(
   value: unknown,
 ): PlanetClassification {
   return isPlanetClassification(value) ? value : "earthlike";
+}
+
+/**
+ * Worlds that support the strategic hex surface map.
+ * Gas giants have no land surface; asteroid belts use a separate view.
+ */
+export function supportsStrategicSurface(
+  planet: Pick<Planet, "type" | "classification">,
+): boolean {
+  if (planet.type === "asteroid_belt") return false;
+  if (normalizePlanetClassification(planet.classification) === "gas_giant") {
+    return false;
+  }
+  return true;
 }
 
 /** Surface body color for map / planet portrait (by climate class). */
@@ -48,13 +62,13 @@ export function classificationColor(
     case "magma":
       return "#c04020";
     case "toxic":
-      return "#6a8a30";
+      return "#6a7a68";
     case "barren":
       return "#7a746c";
     case "gas_giant":
       return "#c8a060";
     case "tidally_locked":
-      return "#5a6078";
+      return "#8a7068";
   }
 }
 

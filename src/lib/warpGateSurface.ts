@@ -5,10 +5,10 @@ import type {
   StructureKind,
 } from "../types/campaign";
 import {
-  buildStationGrid,
+  nearestStationTile,
   stationDirFromTile,
-  STATION_HEX_RADIUS,
 } from "./stationHex";
+import { buildStationMaze } from "./stationMaze";
 import { RELAY_CROWN_KIND } from "./warpGates";
 
 type Rng = () => number;
@@ -38,80 +38,113 @@ function pick<T>(rng: Rng, list: T[]): T {
 }
 
 /**
- * Build a flat station layout: relay crown at center, docks/habitats on the ring.
- * Ownership is solely the crown's controllingFactionId (starts unclaimed).
+ * Orthogonal corridor station: boarding locks at the bottom,
+ * relay crown chamber at the top.
  */
 export function generateWarpGateSurface(
   planetId: string,
   options?: { controllingFactionId?: string },
 ): { cities: City[]; structures: PlanetStructure[] } {
-  const rng = mulberry32(seedFromString(planetId));
-  const grid = buildStationGrid(STATION_HEX_RADIUS);
-  const used = new Set<number>([0]);
+  const rng = mulberry32(seedFromString(planetId + ":sq-surface-v2"));
+  const maze = buildStationMaze(planetId);
 
   const crown: PlanetStructure = {
     id: crypto.randomUUID(),
     name: "Relay Crown",
     kind: RELAY_CROWN_KIND,
-    tileIndex: 0,
-    dir: stationDirFromTile(0),
+    tileIndex: maze.crownTile,
+    dir: stationDirFromTile(maze.crownTile),
     controllingFactionId: options?.controllingFactionId,
     notes: "Whoever holds the crown commands the gate.",
   };
 
   const structures: PlanetStructure[] = [crown];
-  const auxKinds: StructureKind[] = [
-    "space_port",
-    "outpost",
-    "relay",
+  const used = new Set<number>([maze.crownTile, ...maze.dockTiles]);
+
+  maze.dockTiles.forEach((tileIndex, i) => {
+    structures.push({
+      id: crypto.randomUUID(),
+      name: i === 0 ? "Primary Boarding Lock" : `Boarding Lock ${i + 1}`,
+      kind: "space_port",
+      tileIndex,
+      dir: stationDirFromTile(tileIndex),
+      notes: "Orbit-to-station ingress. Detachments deploy here.",
+    });
+  });
+
+  const chamberKinds: StructureKind[] = [
     "reactor",
+    "relay",
+    "fortress_bastion",
+    "outpost",
   ];
-  const auxNames = [
-    "Boarding Dock",
-    "Hab Ring",
-    "Vox Spur",
-    "Plasma Spine",
+  const chamberNames = [
+    "Plasma Core",
+    "Mag-Seal Vault",
     "Gun Gallery",
-    "Transit Quay",
+    "Coolant Junction",
+    "Vox Hub",
+    "Bulkhead Shrine",
   ];
+  const chamberColors = ["#3b82f6", "#ef4444", "#22c55e", "#a855f7"];
 
-  const ringTiles = grid.tiles
-    .map((t, i) => ({ t, i }))
-    .filter(({ t }) => {
-      const dist = Math.max(
-        Math.abs(t.q),
-        Math.abs(t.r),
-        Math.abs(-t.q - t.r),
-      );
-      return dist >= 2;
-    })
-    .map(({ i }) => i);
-
-  const extras = 3 + Math.floor(rng() * 3);
-  for (let n = 0; n < extras && ringTiles.length; n++) {
-    const idx = Math.floor(rng() * ringTiles.length);
-    const tileIndex = ringTiles.splice(idx, 1)[0]!;
-    if (used.has(tileIndex)) continue;
+  maze.chamberTiles.forEach((tileIndex, i) => {
+    if (used.has(tileIndex)) return;
     used.add(tileIndex);
     structures.push({
       id: crypto.randomUUID(),
-      name: pick(rng, auxNames),
-      kind: pick(rng, auxKinds),
+      name: pick(rng, chamberNames),
+      kind: pick(rng, chamberKinds),
       tileIndex,
       dir: stationDirFromTile(tileIndex),
-      notes: "",
+      notes: `Interior chamber · ${chamberColors[i % chamberColors.length]}`,
+    });
+  });
+
+  // A few extra outposts along corridors.
+  const extras = [...maze.walkable].filter((t) => !used.has(t));
+  for (let n = 0; n < 3 && extras.length; n++) {
+    const idx = Math.floor(rng() * extras.length);
+    const tileIndex = extras.splice(idx, 1)[0]!;
+    used.add(tileIndex);
+    structures.push({
+      id: crypto.randomUUID(),
+      name: pick(rng, ["Transit Chokepoint", "Hab Niche", "Seal Archive"]),
+      kind: "outpost",
+      tileIndex,
+      dir: stationDirFromTile(tileIndex),
+      notes: "Corridor hardpoint.",
     });
   }
 
   return { cities: [], structures };
 }
 
-/** Ensure a warp gate has a relay crown on the flat station grid. */
+function needsSquareMazeRegen(structures: PlanetStructure[], planetId: string): boolean {
+  const maze = buildStationMaze(planetId);
+  const crown = structures.find((s) => s.kind === RELAY_CROWN_KIND);
+  if (!crown) return true;
+  if (crown.tileIndex !== maze.crownTile) return true;
+  if (!maze.walkable.has(crown.tileIndex)) return true;
+  const hasBoardingLock = structures.some(
+    (s) =>
+      s.kind === "space_port" &&
+      (s.name.includes("Boarding") || s.notes.includes("ingress")),
+  );
+  if (!hasBoardingLock) return true;
+  return structures.some(
+    (s) =>
+      typeof s.tileIndex !== "number" || !maze.walkable.has(s.tileIndex),
+  );
+}
+
+/** Ensure a warp gate uses the square-corridor maze layout. */
 export function ensureWarpGateSurface(planet: Planet): Planet {
   if (planet.type !== "warp_gate") return planet;
   const structures = planet.structures ?? [];
-  const hasCrown = structures.some((s) => s.kind === RELAY_CROWN_KIND);
-  if (hasCrown && structures.every((s) => typeof s.tileIndex === "number")) {
+  const maze = buildStationMaze(planet.id);
+
+  if (!needsSquareMazeRegen(structures, planet.id)) {
     return {
       ...planet,
       cities: planet.cities ?? [],
@@ -121,21 +154,27 @@ export function ensureWarpGateSurface(planet: Planet): Planet {
         ?.controllingFactionId,
     };
   }
+
   const gen = generateWarpGateSurface(planet.id, {
     controllingFactionId: planet.controllingFactionId,
   });
-  // Preserve existing crown owner if present under another layout.
   const oldCrown = structures.find((s) => s.kind === RELAY_CROWN_KIND);
   const nextStructures = gen.structures.map((s) =>
     s.kind === RELAY_CROWN_KIND && oldCrown?.controllingFactionId
       ? { ...s, controllingFactionId: oldCrown.controllingFactionId }
       : s,
   );
+
+  const armies = (planet.armies ?? []).map((a) => {
+    const tile = nearestStationTile(a.dir, undefined, maze.walkable);
+    return { ...a, dir: stationDirFromTile(tile) };
+  });
+
   return {
     ...planet,
     cities: [],
     structures: nextStructures,
-    armies: planet.armies ?? [],
+    armies,
     controllingFactionId: nextStructures.find((s) => s.kind === RELAY_CROWN_KIND)
       ?.controllingFactionId,
   };

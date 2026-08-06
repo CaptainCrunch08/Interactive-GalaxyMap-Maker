@@ -23,7 +23,7 @@ import {
   fleetsInOrbit,
   fleetsInSystem,
 } from "../lib/fleets";
-import { normalizeStarClass, starAppearance, starSystemLabel } from "../lib/stars";
+import { isBlackHoleBomb, normalizeStarClass, starAppearance, starSystemLabel } from "../lib/stars";
 import { useCampaignStore } from "../store/useCampaignStore";
 
 const INITIAL_SCALE = 0.85;
@@ -71,7 +71,12 @@ export function SystemView() {
   const starClass = normalizeStarClass(system.starClass);
   const starSize = starAppearance(starClass).systemSize;
   const hasDyson = Boolean(system.dysonSphere);
-  const displayStarSize = hasDyson ? starSize * 1.85 : starSize;
+  const isBomb = isBlackHoleBomb(system);
+  const displayStarSize = isBomb
+    ? starSize * 2.75
+    : hasDyson
+      ? starSize * 1.85
+      : starSize;
   const starFleets = fleetsAtSystemStar(fleets, system.id);
   const warpGates = planets.filter((p) => p.type === "warp_gate");
 
@@ -130,7 +135,7 @@ export function SystemView() {
               <OrbitRing radius={outermost} center={center} />
             )}
 
-            {/* Power tethers from Dyson Sphere core to warp gates */}
+            {/* Power tethers from megastructure core to warp gates */}
             {hasDyson && warpGates.length > 0 && (
               <svg
                 className="absolute inset-0 z-[9] pointer-events-none overflow-visible"
@@ -146,9 +151,19 @@ export function SystemView() {
                     x2="100%"
                     y2="0%"
                   >
-                    <stop offset="0%" stopColor="#e8c547" stopOpacity="0.15" />
-                    <stop offset="45%" stopColor="#4fd2ff" stopOpacity="0.95" />
-                    <stop offset="100%" stopColor="#e8c547" stopOpacity="0.85" />
+                    {isBomb ? (
+                      <>
+                        <stop offset="0%" stopColor="#a78bfa" stopOpacity="0.2" />
+                        <stop offset="45%" stopColor="#67e8f9" stopOpacity="0.95" />
+                        <stop offset="100%" stopColor="#f0abfc" stopOpacity="0.85" />
+                      </>
+                    ) : (
+                      <>
+                        <stop offset="0%" stopColor="#e8c547" stopOpacity="0.15" />
+                        <stop offset="45%" stopColor="#4fd2ff" stopOpacity="0.95" />
+                        <stop offset="100%" stopColor="#e8c547" stopOpacity="0.85" />
+                      </>
+                    )}
                   </linearGradient>
                 </defs>
                 {warpGates.map((gate, index) => {
@@ -168,7 +183,11 @@ export function SystemView() {
                         y1={center}
                         x2={x2}
                         y2={y2}
-                        stroke="rgba(232, 197, 71, 0.25)"
+                        stroke={
+                          isBomb
+                            ? "rgba(167, 139, 250, 0.28)"
+                            : "rgba(232, 197, 71, 0.25)"
+                        }
                         strokeWidth={6}
                         strokeLinecap="round"
                       />
@@ -186,10 +205,19 @@ export function SystemView() {
                       <circle
                         cx={x2}
                         cy={y2}
-                        r={5}
-                        fill="#e8c547"
-                        fillOpacity="0.7"
+                        r={3.5}
+                        fill={isBomb ? "#67e8f9" : "#e8c547"}
+                        fillOpacity="0.85"
                         className="dyson-power-node"
+                      />
+                      <circle
+                        cx={x2}
+                        cy={y2}
+                        r={7}
+                        fill="none"
+                        stroke={isBomb ? "#f0abfc" : "#4fd2ff"}
+                        strokeOpacity="0.45"
+                        strokeWidth="1"
                       />
                     </g>
                   );
@@ -304,6 +332,8 @@ export function SystemView() {
                       planet={planet}
                       x={px}
                       y={py}
+                      faceTowardX={center}
+                      faceTowardY={center}
                       faction={faction}
                       selected={selected}
                       mapScale={mapScale}

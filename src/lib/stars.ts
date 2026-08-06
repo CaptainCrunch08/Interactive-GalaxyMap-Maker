@@ -72,6 +72,14 @@ const APPEARANCE: Record<StarClass, StarAppearance> = {
     systemSize: 40,
     shortLabel: "M",
   },
+  white_dwarf: {
+    color: "#e8f0ff",
+    highlight: "#ffffff",
+    corona: "#a8c4ff",
+    galaxySize: 11,
+    systemSize: 30,
+    shortLabel: "WD",
+  },
   neutron: {
     color: "#c4b5fd",
     highlight: "#f5f3ff",
@@ -107,6 +115,7 @@ const WEIGHTS: Record<StarClass, number> = {
   G: 18,
   K: 20,
   M: 28,
+  white_dwarf: 8,
   neutron: 2,
   pulsar: 2,
   black_hole: 2,
@@ -138,7 +147,7 @@ export function pickRandomStarClass(rng: () => number = Math.random): StarClass 
   return "G";
 }
 
-/** Core stars preferred inside a Dyson Sphere megastructure (includes black holes). */
+/** Core stars preferred inside a power megastructure (Dyson / black hole bomb). */
 const DYSON_CORE_WEIGHTS: Partial<Record<StarClass, number>> = {
   O: 8,
   B: 10,
@@ -147,6 +156,7 @@ const DYSON_CORE_WEIGHTS: Partial<Record<StarClass, number>> = {
   G: 14,
   K: 10,
   M: 6,
+  white_dwarf: 6,
   neutron: 8,
   pulsar: 8,
   black_hole: 18,
@@ -166,14 +176,46 @@ export function pickDysonCoreStarClass(
   return "G";
 }
 
-/** Display label for a system star, including Dyson shell when present. */
+/** True when the megastructure is a Press–Teukolsky black hole bomb. */
+export function isBlackHoleBomb(system: {
+  starClass?: StarClass;
+  dysonSphere?: boolean;
+}): boolean {
+  return (
+    Boolean(system.dysonSphere) &&
+    normalizeStarClass(system.starClass) === "black_hole"
+  );
+}
+
+/** Short map badge: BHB (bomb) or DS (Dyson). */
+export function megastructureShortLabel(system: {
+  starClass?: StarClass;
+  dysonSphere?: boolean;
+}): string | null {
+  if (!system.dysonSphere) return null;
+  return isBlackHoleBomb(system) ? "BHB" : "DS";
+}
+
+/** Display label for a system star, including power megastructure when present. */
 export function starSystemLabel(system: {
   starClass?: StarClass;
   dysonSphere?: boolean;
 }): string {
   const core = STAR_CLASS_LABELS[normalizeStarClass(system.starClass)];
-  if (system.dysonSphere) return `Dyson Sphere · ${core}`;
-  return core;
+  if (!system.dysonSphere) return core;
+  if (isBlackHoleBomb(system)) return `Black Hole Bomb · ${core}`;
+  return `Dyson Sphere · ${core}`;
+}
+
+/** UI name for the warp-power megastructure around this core. */
+export function megastructureName(system: {
+  starClass?: StarClass;
+  dysonSphere?: boolean;
+}): string {
+  if (normalizeStarClass(system.starClass) === "black_hole") {
+    return "Black Hole Bomb";
+  }
+  return "Dyson Sphere";
 }
 
 export function starBodyGradient(starClass: StarClass | undefined): string {

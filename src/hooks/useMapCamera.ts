@@ -3,14 +3,15 @@ import type { ReactZoomPanPinchRef } from "react-zoom-pan-pinch";
 import { GALAXY_SIZE } from "../types/campaign";
 
 const MAX_SCALE = 2.5;
-/** Absolute floor so tiny windows still behave. */
 const ABSOLUTE_MIN_SCALE = 0.02;
-/** Leave a little margin around the map when fully zoomed out. */
 const FIT_PADDING = 0.92;
-const ZOOM_LERP = 0.14;
-const ZOOM_SENSITIVITY = 0.0011;
-/** Base pan speed (px/sec) at scale 1. Multiplied by scale so zoomed-out is slower. */
-const PAN_SPEED = 462;
+/** Slightly snappier than before — still eased, less “floaty”. */
+const ZOOM_LERP = 0.22;
+const ZOOM_SENSITIVITY = 0.00115;
+/** Base pan speed (px/sec) at scale 1. */
+const PAN_SPEED = 520;
+/** Ignore sub-pixel scale chatter before notifying React. */
+const SCALE_NOTIFY_EPS = 0.002;
 
 function isTypingTarget(target: EventTarget | null) {
   return (
@@ -31,14 +32,24 @@ function fitScaleForViewport(
   worldSize: number = GALAXY_SIZE,
 ) {
   if (width <= 0 || height <= 0) return ABSOLUTE_MIN_SCALE;
-  // Uniform fit against the square map size on both axes
   const fit = (Math.min(width, height) / worldSize) * FIT_PADDING;
   return clamp(fit, ABSOLUTE_MIN_SCALE, MAX_SCALE);
 }
 
+type ZoomAnchor = {
+  /** World-space point under the cursor at wheel time. */
+  worldX: number;
+  worldY: number;
+  /** Wrapper-local screen point to keep that world point under. */
+  screenX: number;
+  screenY: number;
+};
+
 /**
  * Stellaris-style continuous camera: WASD pan + eased wheel zoom toward cursor.
- * Min zoom is computed so the entire map can fit on screen.
+ *
+ * Important: never call setTransform while react-zoom-pan-pinch is panning —
+ * that desyncs startCoords and causes the “flung across the map” bug.
  */
 export function useMapCamera(
   transformRef: React.RefObject<ReactZoomPanPinchRef | null>,
@@ -48,13 +59,22 @@ export function useMapCamera(
 ) {
   const keysRef = useRef({ w: false, a: false, s: false, d: false });
   const targetScaleRef = useRef(0.45);
-  const zoomAnchorRef = useRef<{ x: number; y: number } | null>(null);
+  const zoomAnchorRef = useRef<ZoomAnchor | null>(null);
   const minScaleRef = useRef(ABSOLUTE_MIN_SCALE);
   const worldSizeRef = useRef(worldSize);
   worldSizeRef.current = worldSize;
+  const lastNotifiedScaleRef = useRef<number | null>(null);
+  const wasPanningRef = useRef(false);
   const [minScale, setMinScale] = useState(ABSOLUTE_MIN_SCALE);
   const onScaleChangeRef = useRef(onScaleChange);
   onScaleChangeRef.current = onScaleChange;
+
+  const notifyScale = (scale: number) => {
+    const prev = lastNotifiedScaleRef.current;
+    if (prev !== null && Math.abs(prev - scale) < SCALE_NOTIFY_EPS) return;
+    lastNotifiedScaleRef.current = scale;
+    onScaleChangeRef.current?.(scale);
+  };
 
   useEffect(() => {
     if (!enabled) return;
@@ -84,9 +104,8 @@ export function useMapCamera(
     if (wrapper && observer) observer.observe(wrapper);
     window.addEventListener("resize", updateMinScale);
 
-    // Wrapper may not exist on first paint — retry briefly
     const retry = window.setTimeout(updateMinScale, 50);
-    const retry2 = window.setTimeout(updateMinScale, 200);
+    const retry2 = window.setTimeout(updateMinScale, 250);
 
     return () => {
       observer?.disconnect();
@@ -139,12 +158,7 @@ export function useMapCamera(
       e.preventDefault();
       e.stopPropagation();
 
-      const rect = wrapper.getBoundingClientRect();
       const { scale, positionX, positionY } = api.state;
-      if (Math.abs(targetScaleRef.current - scale) < 0.0001) {
-        targetScaleRef.current = scale;
-      }
-
       const floor = minScaleRef.current;
       const factor = Math.exp(-e.deltaY * ZOOM_SENSITIVITY);
       targetScaleRef.current = clamp(
@@ -153,11 +167,21 @@ export function useMapCamera(
         MAX_SCALE,
       );
 
-      const cursorX = e.clientX - rect.left;
-      const cursorY = e.clientY - rect.top;
+      // While the library is dragging, do not re-anchor — applying setTransform
+      // mid-pan desyncs its startCoords and flings the camera.
+      if (api.instance?.isPanning) {
+        zoomAnchorRef.current = null;
+        return;
+      }
+
+      const rect = wrapper.getBoundingClientRect();
+      const screenX = e.clientX - rect.left;
+      const screenY = e.clientY - rect.top;
       zoomAnchorRef.current = {
-        x: (cursorX - positionX) / scale,
-        y: (cursorY - positionY) / scale,
+        worldX: (screenX - positionX) / scale,
+        worldY: (screenY - positionY) / scale,
+        screenX,
+        screenY,
       };
     };
 
@@ -174,10 +198,47 @@ export function useMapCamera(
     const tick = (now: number) => {
       raf = requestAnimationFrame(tick);
       const api = transformRef.current;
-      if (!api) return;
+      if (!api?.instance) return;
 
       const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
+
+      const isPanning = Boolean(api.instance.isPanning);
+
+      // Pan just ended — if a zoom is pending, re-anchor on viewport center
+      // so the deferred scale change applies cleanly.
+      if (wasPanningRef.current && !isPanning) {
+        const { scale, positionX, positionY } = api.state;
+        targetScaleRef.current = clamp(
+          targetScaleRef.current,
+          minScaleRef.current,
+          MAX_SCALE,
+        );
+        if (Math.abs(targetScaleRef.current - scale) > 0.0004) {
+          const wrapper = api.instance.wrapperComponent;
+          if (wrapper) {
+            const rect = wrapper.getBoundingClientRect();
+            const screenX = rect.width * 0.5;
+            const screenY = rect.height * 0.5;
+            zoomAnchorRef.current = {
+              worldX: (screenX - positionX) / scale,
+              worldY: (screenY - positionY) / scale,
+              screenX,
+              screenY,
+            };
+          }
+        }
+      }
+      wasPanningRef.current = isPanning;
+
+      // Never fight the library during an active drag.
+      if (isPanning) {
+        // Drop cursor anchor so a mid-pan setTransform can't resume later
+        // with a stale screen lock from before the drag.
+        zoomAnchorRef.current = null;
+        notifyScale(api.state.scale);
+        return;
+      }
 
       const { scale, positionX, positionY } = api.state;
       let nextScale = scale;
@@ -190,11 +251,12 @@ export function useMapCamera(
       const dy = (keys.s ? 1 : 0) - (keys.w ? 1 : 0);
       if (dx !== 0 || dy !== 0) {
         const len = Math.hypot(dx, dy) || 1;
-        // Slower when zoomed out, faster when zoomed in
         const speed = PAN_SPEED * scale * dt;
         nextX -= (dx / len) * speed;
         nextY -= (dy / len) * speed;
         dirty = true;
+        // Keyboard pan while zooming: keep world anchor, update screen lock
+        // so the zoom point stays under the original wheel pixel.
       }
 
       const target = targetScaleRef.current;
@@ -204,18 +266,22 @@ export function useMapCamera(
 
         const anchor = zoomAnchorRef.current;
         if (anchor) {
-          // Keep the anchored world point fixed on screen while easing zoom
-          const cursorX = anchor.x * scale + positionX;
-          const cursorY = anchor.y * scale + positionY;
-          nextX = cursorX - anchor.x * nextScale;
-          nextY = cursorY - anchor.y * nextScale;
+          // Fixed screen point from the wheel event (stable; no reconstruct).
+          nextX = anchor.screenX - anchor.worldX * nextScale;
+          nextY = anchor.screenY - anchor.worldY * nextScale;
         }
         dirty = true;
+
+        if (nextScale === target) {
+          zoomAnchorRef.current = null;
+        }
+      } else if (zoomAnchorRef.current) {
+        zoomAnchorRef.current = null;
       }
 
       if (dirty) {
         api.setTransform(nextX, nextY, nextScale, 0);
-        onScaleChangeRef.current?.(nextScale);
+        notifyScale(nextScale);
       }
     };
 
@@ -227,7 +293,10 @@ export function useMapCamera(
     minScale,
     maxScale: MAX_SCALE,
     syncTargetScale: (scale: number) => {
-      targetScaleRef.current = scale;
+      targetScaleRef.current = clamp(scale, minScaleRef.current, MAX_SCALE);
+      lastNotifiedScaleRef.current = scale;
+      // External sync (init / pinch) should not keep a stale wheel anchor.
+      zoomAnchorRef.current = null;
     },
   };
 }

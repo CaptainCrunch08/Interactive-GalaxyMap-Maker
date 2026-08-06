@@ -4,15 +4,25 @@ import type {
   Planet,
   PlanetStructure,
   SphereDir,
+  StarSystem,
 } from "../types/campaign";
 import {
-  buildStationGrid,
   nearestStationTile,
   stationDirFromTile,
   STATION_HEX_RADIUS,
 } from "./stationHex";
+import { buildStationMaze } from "./stationMaze";
+import {
+  buildHyperlanes,
+  getCampaignHyperlanes,
+  systemHopDistance,
+  type Hyperlane,
+} from "./hyperlanes";
 
 export const RELAY_CROWN_KIND = "relay_crown" as const;
+
+/** Minimum hyperlane hops between any two warp-gate systems. */
+export const MIN_WARP_GATE_SYSTEM_HOPS = 8;
 
 /** Faction that owns the relay crown (sole controller of a warp gate). */
 export function warpGateController(planet: Planet): string | undefined {
@@ -59,6 +69,67 @@ export function warpGatesInSystem(
   );
 }
 
+/** System ids that already host a warp gate (unique). */
+export function warpGateSystemIds(
+  planets: Planet[],
+  excludePlanetId?: string,
+): string[] {
+  const ids = new Set<string>();
+  for (const p of planets) {
+    if (p.type !== "warp_gate") continue;
+    if (excludePlanetId && p.id === excludePlanetId) continue;
+    ids.add(p.systemId);
+  }
+  return [...ids];
+}
+
+/**
+ * True if `systemId` is within {@link MIN_WARP_GATE_SYSTEM_HOPS} of any
+ * existing warp-gate system (paired or not).
+ */
+export function isWarpGateSystemTooClose(
+  systems: StarSystem[],
+  planets: Planet[],
+  systemId: string,
+  opts?: {
+    lanes?: Hyperlane[];
+    /** Ignore this gate planet (e.g. when re-classifying the same body). */
+    excludePlanetId?: string;
+    /** Extra system ids to treat as occupied (generation in progress). */
+    extraGateSystemIds?: Iterable<string>;
+  },
+): boolean {
+  const lanes = opts?.lanes ?? buildHyperlanes(systems);
+  const occupied = new Set(warpGateSystemIds(planets, opts?.excludePlanetId));
+  if (opts?.extraGateSystemIds) {
+    for (const id of opts.extraGateSystemIds) occupied.add(id);
+  }
+  // Same system already hosting a different gate counts as distance 0.
+  if (occupied.has(systemId)) return true;
+  for (const other of occupied) {
+    const hops = systemHopDistance(systems, systemId, other, lanes);
+    if (hops < MIN_WARP_GATE_SYSTEM_HOPS) return true;
+  }
+  return false;
+}
+
+/** Human-readable block reason, or null when placement is allowed. */
+export function warpGatePlacementBlockedReason(
+  campaign: Campaign,
+  systemId: string,
+  excludePlanetId?: string,
+): string | null {
+  if (
+    isWarpGateSystemTooClose(campaign.systems, campaign.planets, systemId, {
+      lanes: getCampaignHyperlanes(campaign),
+      excludePlanetId,
+    })
+  ) {
+    return `Warp gates must be at least ${MIN_WARP_GATE_SYSTEM_HOPS} systems apart along hyperlanes`;
+  }
+  return null;
+}
+
 export function fleetAtWarpGate(
   campaign: Campaign,
   fleet: Fleet,
@@ -98,6 +169,64 @@ export function warpDestinationSystemId(
   return linked?.systemId ?? null;
 }
 
+/**
+ * Bidirectionally pair two warp gates. Clears any previous partners.
+ * Returns updated planets array, or null if the link is invalid.
+ */
+export function linkWarpGates(
+  planets: Planet[],
+  gateAId: string,
+  gateBId: string,
+): Planet[] | null {
+  if (gateAId === gateBId) return null;
+  const a = planets.find((p) => p.id === gateAId);
+  const b = planets.find((p) => p.id === gateBId);
+  if (!a || !b || a.type !== "warp_gate" || b.type !== "warp_gate") return null;
+
+  const clearIds = new Set<string>([gateAId, gateBId]);
+  if (a.linkedGateId) clearIds.add(a.linkedGateId);
+  if (b.linkedGateId) clearIds.add(b.linkedGateId);
+
+  return planets.map((p) => {
+    if (p.id === gateAId) return { ...p, linkedGateId: gateBId };
+    if (p.id === gateBId) return { ...p, linkedGateId: gateAId };
+    if (clearIds.has(p.id) && p.linkedGateId) {
+      const { linkedGateId: _drop, ...rest } = p;
+      return rest;
+    }
+    // Also clear anyone who pointed at A or B
+    if (p.linkedGateId === gateAId || p.linkedGateId === gateBId) {
+      const { linkedGateId: _drop, ...rest } = p;
+      return rest;
+    }
+    return p;
+  });
+}
+
+/** Break a gate's link (and its partner's). */
+export function unlinkWarpGate(planets: Planet[], gateId: string): Planet[] {
+  const gate = planets.find((p) => p.id === gateId);
+  const partnerId = gate?.linkedGateId;
+  return planets.map((p) => {
+    if (p.id === gateId || (partnerId && p.id === partnerId)) {
+      if (!p.linkedGateId) return p;
+      const { linkedGateId: _drop, ...rest } = p;
+      return rest;
+    }
+    return p;
+  });
+}
+
+/** Other warp gates available as link targets (excluding self). */
+export function warpGateLinkCandidates(
+  campaign: Campaign,
+  gateId: string,
+): Planet[] {
+  return campaign.planets.filter(
+    (p) => p.type === "warp_gate" && p.id !== gateId,
+  );
+}
+
 export function randomOtherSystemId(
   campaign: Campaign,
   excludeSystemId: string,
@@ -132,30 +261,22 @@ export function warpLaneSystemPairs(
   return pairs;
 }
 
-export function armyStationTile(armyDir: SphereDir): number {
-  return nearestStationTile(armyDir, STATION_HEX_RADIUS);
+export function armyStationTile(armyDir: SphereDir, planetId?: string): number {
+  const walkable = planetId ? buildStationMaze(planetId).walkable : null;
+  return nearestStationTile(armyDir, STATION_HEX_RADIUS, walkable);
 }
 
 export function placeArmyOnStationTile(tileIndex: number): SphereDir {
   return stationDirFromTile(tileIndex, STATION_HEX_RADIUS);
 }
 
-export function stationCenterTile(): number {
+export function stationCenterTile(planetId?: string): number {
+  if (planetId) return buildStationMaze(planetId).crownTile;
   return 0;
 }
 
-export function stationDockTiles(): number[] {
-  const grid = buildStationGrid();
-  // Outer ring tiles as docks / boarding points.
-  const docks: number[] = [];
-  for (let i = 0; i < grid.tiles.length; i++) {
-    const t = grid.tiles[i]!;
-    const dist = Math.max(
-      Math.abs(t.q),
-      Math.abs(t.r),
-      Math.abs(-t.q - t.r),
-    );
-    if (dist === STATION_HEX_RADIUS) docks.push(i);
-  }
-  return docks;
+/** Boarding locks at the bottom of the station maze. */
+export function stationDockTiles(planetId?: string): number[] {
+  if (planetId) return buildStationMaze(planetId).dockTiles;
+  return buildStationMaze("default-docks").dockTiles;
 }

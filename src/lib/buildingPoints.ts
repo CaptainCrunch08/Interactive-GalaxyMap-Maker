@@ -2,13 +2,16 @@ import type {
   Campaign,
   City,
   District,
+  Fleet,
   Planet,
   PlanetStructure,
+  Ship,
   ShipChassis,
 } from "../types/campaign";
 import { normalizeCampaignPlay, SHIP_CHASSIS_ORDER } from "../types/campaign";
 import { isTileAroundCity, settlementTileSet, tilesAroundCity } from "./settlements";
 import { CHASSIS_RANK } from "./shipMeshes";
+import { normalizeShipCargo, TRANSPORT_BP_CAPACITY } from "./fleets";
 
 /** BP per owned manufactorum district at start of turn. */
 export const MANUFACTORUM_BP_INCOME = 10;
@@ -17,6 +20,9 @@ export const DETACHMENT_BP_COST = 500;
 
 /** Build a new manufactorum district adjacent to an owned city. */
 export const MANUFACTORUM_BP_COST = 1000;
+
+/** Re-export transport hold capacity. */
+export { TRANSPORT_BP_CAPACITY };
 
 /** Baseline: escort costs 50 BP; other hulls scale by chassis rank. */
 export const ESCORT_BP_COST = 50;
@@ -38,7 +44,7 @@ export function shipBpCost(chassis: ShipChassis): number {
   return SHIP_BP_COST[chassis] ?? ESCORT_BP_COST;
 }
 
-function districtOwnedBy(district: District, factionId: string): boolean {
+export function districtOwnedBy(district: District, factionId: string): boolean {
   return district.controllingFactionId === factionId;
 }
 
@@ -177,10 +183,16 @@ export function ownedCamps(
 export function ownedSpacePorts(
   planet: Planet,
   factionId: string,
-): PlanetStructure[] {
-  return (planet.structures ?? []).filter(
-    (s) => s.kind === "space_port" && structureOwnedBy(s, factionId),
-  );
+): { cityId: string; district: District }[] {
+  const out: { cityId: string; district: District }[] = [];
+  for (const city of planet.cities ?? []) {
+    for (const d of city.districts) {
+      if (d.kind === "docks" && districtOwnedBy(d, factionId)) {
+        out.push({ cityId: city.id, district: d });
+      }
+    }
+  }
+  return out;
 }
 
 export function applyTurnIncome(
@@ -305,4 +317,193 @@ export function spendBuildingPoints(
       [factionId]: next,
     },
   };
+}
+
+export function shipCargoBp(ship: Ship): number {
+  if (ship.chassis !== "transport") return 0;
+  const n = ship.cargoBp;
+  return typeof n === "number" && n > 0 ? Math.floor(n) : 0;
+}
+
+export function shipCargoCapacity(ship: Ship): number {
+  return ship.chassis === "transport" ? TRANSPORT_BP_CAPACITY : 0;
+}
+
+export function fleetCargoBp(fleet: Fleet): number {
+  return fleet.ships.reduce((n, s) => n + shipCargoBp(s), 0);
+}
+
+export function fleetCargoCapacity(fleet: Fleet): number {
+  return fleet.ships.reduce((n, s) => n + shipCargoCapacity(s), 0);
+}
+
+export function fleetCargoRoom(fleet: Fleet): number {
+  return Math.max(0, fleetCargoCapacity(fleet) - fleetCargoBp(fleet));
+}
+
+/** Spend BP from transport holds (most-full first). Null if not enough cargo. */
+export function spendFleetCargo(fleet: Fleet, cost: number): Fleet | null {
+  const need = Math.max(0, Math.floor(cost));
+  if (need <= 0) return fleet;
+  if (fleetCargoBp(fleet) < need) return null;
+
+  const ships = fleet.ships.map((s) => normalizeShipCargo({ ...s }));
+  const order = ships
+    .map((s, i) => ({ i, bp: shipCargoBp(s) }))
+    .filter((x) => x.bp > 0)
+    .sort((a, b) => b.bp - a.bp);
+
+  let remaining = need;
+  for (const { i } of order) {
+    if (remaining <= 0) break;
+    const have = shipCargoBp(ships[i]!);
+    const take = Math.min(have, remaining);
+    ships[i] = { ...ships[i]!, cargoBp: have - take };
+    remaining -= take;
+  }
+  return { ...fleet, ships };
+}
+
+/** Fill transport holds up to capacity. Returns how many BP were loaded. */
+export function addFleetCargo(
+  fleet: Fleet,
+  amount: number,
+): { fleet: Fleet; added: number } {
+  let left = Math.max(0, Math.floor(amount));
+  if (left <= 0) return { fleet, added: 0 };
+
+  const ships = fleet.ships.map((s) => normalizeShipCargo({ ...s }));
+  for (let i = 0; i < ships.length; i++) {
+    if (left <= 0) break;
+    const ship = ships[i]!;
+    if (ship.chassis !== "transport") continue;
+    const have = shipCargoBp(ship);
+    const room = TRANSPORT_BP_CAPACITY - have;
+    if (room <= 0) continue;
+    const add = Math.min(room, left);
+    ships[i] = { ...ship, cargoBp: have + add };
+    left -= add;
+  }
+  return { fleet: { ...fleet, ships }, added: amount - left };
+}
+
+export type TransportDeployBlockReason =
+  | RecruitBlockReason
+  | "no_orbit"
+  | "no_transport"
+  | "insufficient_cargo";
+
+/**
+ * Deploy a detachment from orbiting transport cargo — no War Camp required.
+ * Fleet must be in orbit of the target planet (including warp gates).
+ */
+export function canDeployFromTransport(
+  campaign: Campaign,
+  fleet: Fleet,
+  planet: Planet,
+):
+  | { ok: true }
+  | { ok: false; reason: TransportDeployBlockReason; message: string } {
+  const play = normalizeCampaignPlay(campaign.play);
+  if (!play.active) {
+    return { ok: false, reason: "not_play", message: "Start Play to deploy" };
+  }
+  if (play.activeFactionId !== fleet.factionId) {
+    return {
+      ok: false,
+      reason: "wrong_faction",
+      message: "Only the active faction can deploy from this fleet",
+    };
+  }
+  if (
+    fleet.location.kind !== "orbit" ||
+    fleet.location.planetId !== planet.id
+  ) {
+    return {
+      ok: false,
+      reason: "no_orbit",
+      message: "Fleet must be in orbit of this world to deploy",
+    };
+  }
+  if (fleetCargoCapacity(fleet) <= 0) {
+    return {
+      ok: false,
+      reason: "no_transport",
+      message: "Need a transport ship to carry deployment BP",
+    };
+  }
+  if (fleetCargoBp(fleet) < DETACHMENT_BP_COST) {
+    return {
+      ok: false,
+      reason: "insufficient_cargo",
+      message: `Need ${DETACHMENT_BP_COST} BP in transport holds (have ${fleetCargoBp(fleet)})`,
+    };
+  }
+  return { ok: true };
+}
+
+/** Load planet BP into orbiting transport holds. */
+export function canLoadTransportCargo(
+  campaign: Campaign,
+  fleet: Fleet,
+  planet: Planet,
+  amount?: number,
+):
+  | { ok: true; load: number }
+  | { ok: false; reason: TransportDeployBlockReason; message: string } {
+  const play = normalizeCampaignPlay(campaign.play);
+  if (!play.active) {
+    return { ok: false, reason: "not_play", message: "Start Play to load cargo" };
+  }
+  if (play.activeFactionId !== fleet.factionId) {
+    return {
+      ok: false,
+      reason: "wrong_faction",
+      message: "Only the active faction can load this fleet",
+    };
+  }
+  if (
+    fleet.location.kind !== "orbit" ||
+    fleet.location.planetId !== planet.id
+  ) {
+    return {
+      ok: false,
+      reason: "no_orbit",
+      message: "Fleet must be in orbit to load BP from this world",
+    };
+  }
+  if (fleetCargoCapacity(fleet) <= 0) {
+    return {
+      ok: false,
+      reason: "no_transport",
+      message: "Need a transport ship in the fleet",
+    };
+  }
+  const room = fleetCargoRoom(fleet);
+  if (room <= 0) {
+    return {
+      ok: false,
+      reason: "insufficient_cargo",
+      message: "Transport holds are full",
+    };
+  }
+  const bank = getBuildingPoints(planet, fleet.factionId);
+  if (bank <= 0) {
+    return {
+      ok: false,
+      reason: "insufficient_bp",
+      message: "No planet BP available to load",
+    };
+  }
+  const want =
+    amount != null && amount > 0 ? Math.floor(amount) : Math.min(room, bank);
+  const load = Math.min(want, room, bank);
+  if (load <= 0) {
+    return {
+      ok: false,
+      reason: "insufficient_bp",
+      message: "Nothing to load",
+    };
+  }
+  return { ok: true, load };
 }

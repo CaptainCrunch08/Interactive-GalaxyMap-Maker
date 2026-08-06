@@ -25,6 +25,7 @@ import { normalizeStarClass, pickRandomStarClass } from "../lib/stars";
 import {
   normalizePlanetClassification,
   pickRandomClassification,
+  supportsStrategicSurface,
 } from "../lib/planetClass";
 import {
   pickPlanetVisualModel,
@@ -68,7 +69,12 @@ import {
   GALAXY_WIDTH,
   normalizeCampaignPlay,
 } from "../types/campaign";
-import { createShip, isValidFleetMove, normalizeShipChassis } from "../lib/fleets";
+import { createShip, isValidFleetMove, normalizeShipChassis, normalizeShipCargo } from "../lib/fleets";
+import {
+  applyWarCampHeals,
+  mergeArmiesInto,
+  playAfterArmyMoved,
+} from "../lib/armyActions";
 import { scrubCharacterPlacements } from "../lib/characterLocation";
 import {
   applyStrengthLoss,
@@ -83,6 +89,7 @@ import {
   eligibleSupportArmies,
   isArmyDestroyed,
   pruneDestroyedArmies,
+  stationArmiesAreAdjacent,
   type BattleResolveInput,
   type BattleResolvePending,
 } from "../lib/battleResolve";
@@ -94,12 +101,16 @@ import {
   canPlaceManufactorumAtTile,
   canRecruitDetachment,
   canRecruitShip,
+  canDeployFromTransport,
+  canLoadTransportCargo,
   DETACHMENT_BP_COST,
   MANUFACTORUM_BP_COST,
   ownedCamps,
-  ownedSpacePorts,
   shipBpCost,
   spendBuildingPoints,
+  spendFleetCargo,
+  addFleetCargo,
+  fleetCargoBp,
 } from "../lib/buildingPoints";
 import {
   ARMY_MOVE_RANGE,
@@ -118,14 +129,18 @@ import {
   nearestStationTile,
   stationTileDistance,
 } from "../lib/stationHex";
+import { buildStationMaze } from "../lib/stationMaze";
 import {
   applyWarpGateOwnership,
   fleetAtWarpGate,
   linkedWarpGate,
+  linkWarpGates,
   placeArmyOnStationTile,
   randomOtherSystemId,
   RELAY_CROWN_KIND,
   stationDockTiles,
+  unlinkWarpGate,
+  warpGatePlacementBlockedReason,
   warpTravelBlockedReason,
 } from "../lib/warpGates";
 
@@ -218,10 +233,12 @@ function ensureCampaignSettlements(campaign: Campaign): Campaign {
     symbols: campaign.symbols ?? [],
     fleets: (campaign.fleets ?? []).map((f) => ({
       ...f,
-      ships: (f.ships ?? []).map((s) => ({
-        ...s,
-        chassis: normalizeShipChassis(s.chassis),
-      })),
+      ships: (f.ships ?? []).map((s) =>
+        normalizeShipCargo({
+          ...s,
+          chassis: normalizeShipChassis(s.chassis),
+        }),
+      ),
     })),
     characters: campaign.characters ?? [],
     hyperlanes: campaign.hyperlanes,
@@ -279,7 +296,8 @@ export type SurfacePlaceMode =
   | null
   | { kind: "city" }
   | { kind: "district"; districtKind: DistrictKind; cityId: string | null }
-  | { kind: "structure"; structureKind: StructureKind };
+  | { kind: "structure"; structureKind: StructureKind }
+  | { kind: "erase" };
 
 /** Play-mode click-to-build (e.g. manufactorum around a city). */
 export type PlayBuildMode =
@@ -402,6 +420,10 @@ interface CampaignState {
 
   addPlanet: (systemId: string) => string;
   updatePlanet: (id: string, patch: Partial<Planet>) => void;
+  /** Bidirectionally pair two warp gates (edit / setup). */
+  linkWarpGates: (gateAId: string, gateBId: string) => boolean;
+  /** Clear a warp gate's partner link. */
+  unlinkWarpGate: (gateId: string) => void;
   deletePlanet: (id: string) => void;
   setPlanetOwner: (planetId: string, factionId: string | null) => void;
   setCityOwner: (
@@ -430,6 +452,11 @@ interface CampaignState {
     planetId: string,
     patches: Record<number, string | null>,
   ) => void;
+  /** Replace all biome overrides (full-world paint / regenerate). */
+  replaceTileTerrain: (
+    planetId: string,
+    tileTerrain: Record<string, string>,
+  ) => void;
   clearTileTerrain: (planetId: string) => void;
   setTerrainPaintFaction: (factionId: string | null) => void;
   /** Biome brush: terrain kind, TERRAIN_KIND_ERASE, or null. */
@@ -454,6 +481,8 @@ interface CampaignState {
     tileIndex: number,
     structureKind: StructureKind,
   ) => string | null;
+  /** Remove the city, district, or structure occupying a hex (edit erase tool). */
+  removeSurfaceAtTile: (planetId: string, tileIndex: number) => boolean;
   regenerateSettlements: (planetId: string) => void;
   addStructure: (planetId: string, kind: StructureKind) => string | null;
   updateStructure: (
@@ -520,6 +549,13 @@ interface CampaignState {
   seizeRelayCrown: (planetId: string, armyId: string) => boolean;
   /** Deploy a boarding detachment onto a warp-gate station from orbit. */
   boardWarpGate: (planetId: string) => string | null;
+  /** Load planet BP into orbiting transport holds. */
+  loadTransportCargo: (fleetId: string, amount?: number) => number;
+  /**
+   * Spend transport cargo BP to deploy a detachment onto the orbit world
+   * (planet or warp gate) — no War Camp / district required.
+   */
+  deployFromTransport: (fleetId: string) => string | null;
   selectFleet: (fleetId: string | null) => void;
   setFleetMoveMode: (fleetId: string | null) => void;
 
@@ -555,6 +591,12 @@ interface CampaignState {
   clearPlayMoveHint: () => void;
   /** Spend planet BP at an owned War Camp to spawn a detachment. */
   recruitDetachment: (planetId: string) => string | null;
+  /** Merge source detachment into an adjacent target (costs 1 movement in Play). */
+  mergeArmies: (
+    planetId: string,
+    sourceArmyId: string,
+    targetArmyId: string,
+  ) => boolean;
   /** Spend planet BP at an owned Space Port to build a ship (new or existing orbit fleet). */
   recruitShip: (planetId: string, chassis: ShipChassis) => string | null;
 }
@@ -850,7 +892,7 @@ export const useCampaignStore = create<CampaignState>()(
 
       enterStrategic: (planetId) => {
         const planet = get().campaign.planets.find((p) => p.id === planetId);
-        if (!planet || planet.type === "asteroid_belt") return;
+        if (!planet || !supportsStrategicSurface(planet)) return;
         set((s) => {
           const ensured =
             planet.type === "warp_gate"
@@ -1139,7 +1181,7 @@ export const useCampaignStore = create<CampaignState>()(
           if (hasGate) {
             set({
               playMoveHint:
-                "Cannot remove the Dyson Sphere while a warp gate remains in this system",
+                "Cannot remove the power megastructure while a warp gate remains in this system",
             });
             return;
           }
@@ -1295,6 +1337,21 @@ export const useCampaignStore = create<CampaignState>()(
 
       updatePlanet: (id, patch) =>
         set((s) => {
+          const current = s.campaign.planets.find((p) => p.id === id);
+          if (
+            current &&
+            patch.type === "warp_gate" &&
+            current.type !== "warp_gate"
+          ) {
+            const blocked = warpGatePlacementBlockedReason(
+              s.campaign,
+              current.systemId,
+              id,
+            );
+            if (blocked) {
+              return { ...s, playMoveHint: blocked };
+            }
+          }
           const planets = s.campaign.planets.map((p) => {
             if (p.id !== id) return p;
             const next = { ...p, ...patch };
@@ -1334,12 +1391,61 @@ export const useCampaignStore = create<CampaignState>()(
               sys.id === planet.systemId ? { ...sys, dysonSphere: true } : sys,
             );
           }
+          const nextPlanets =
+            planet && patch.type === "warp_gate"
+              ? planets.map((p) =>
+                  p.id === id ? ensurePlanetCities(p) : p,
+                )
+              : planet &&
+                  patch.type &&
+                  patch.type !== "warp_gate" &&
+                  current?.type === "warp_gate"
+                ? unlinkWarpGate(planets, id)
+                : planets;
           return withCampaign(
             s,
-            withHistoryCapture({ ...s.campaign, planets, systems }),
+            withHistoryCapture({
+              ...s.campaign,
+              planets: nextPlanets,
+              systems,
+            }),
             { coalesceKey: `planet:${id}` },
           );
         }),
+
+      linkWarpGates: (gateAId, gateBId) => {
+        const state = get();
+        const next = linkWarpGates(state.campaign.planets, gateAId, gateBId);
+        if (!next) {
+          set({
+            playMoveHint: "Select two different warp gates to link",
+          });
+          return false;
+        }
+        const a = next.find((p) => p.id === gateAId);
+        const b = next.find((p) => p.id === gateBId);
+        set((s) => ({
+          ...withCampaign(
+            s,
+            withHistoryCapture({ ...s.campaign, planets: next }),
+          ),
+          playMoveHint: a && b ? `Linked ${a.name} ↔ ${b.name}` : null,
+        }));
+        return true;
+      },
+
+      unlinkWarpGate: (gateId) => {
+        set((s) => ({
+          ...withCampaign(
+            s,
+            withHistoryCapture({
+              ...s.campaign,
+              planets: unlinkWarpGate(s.campaign.planets, gateId),
+            }),
+          ),
+          playMoveHint: "Warp gate link cleared",
+        }));
+      },
 
       setPlanetOwner: (planetId, factionId) => {
         const owner = factionId || undefined;
@@ -1518,6 +1624,16 @@ export const useCampaignStore = create<CampaignState>()(
           });
           return withCampaign(s, { ...s.campaign, planets });
         }),
+
+      replaceTileTerrain: (planetId, tileTerrain) =>
+        set((s) =>
+          withCampaign(s, {
+            ...s.campaign,
+            planets: s.campaign.planets.map((p) =>
+              p.id === planetId ? { ...p, tileTerrain: { ...tileTerrain } } : p,
+            ),
+          }),
+        ),
 
       clearTileTerrain: (planetId) =>
         set((s) =>
@@ -1737,6 +1853,132 @@ export const useCampaignStore = create<CampaignState>()(
           selectedDistrictId: null,
         }));
         return structure.id;
+      },
+
+      removeSurfaceAtTile: (planetId, tileIndex) => {
+        const planet = get().campaign.planets.find((p) => p.id === planetId);
+        if (!planet) return false;
+
+        const cityHit = (planet.cities ?? []).find(
+          (c) => c.tileIndex === tileIndex,
+        );
+        if (cityHit) {
+          set((s) => {
+            const cities = (planet.cities ?? []).filter((c) => c.id !== cityHit.id);
+            const structures = planet.structures ?? [];
+            return {
+              ...withCampaign(s, {
+                ...s.campaign,
+                planets: s.campaign.planets.map((p) =>
+                  p.id === planetId
+                    ? {
+                        ...p,
+                        cities,
+                        tileClaims: scrubTileClaims(
+                          p.tileClaims,
+                          cities,
+                          structures,
+                        ),
+                      }
+                    : p,
+                ),
+              }),
+              selectedCityId:
+                s.selectedCityId === cityHit.id ? null : s.selectedCityId,
+              selectedDistrictId:
+                s.selectedCityId === cityHit.id ? null : s.selectedDistrictId,
+            };
+          });
+          return true;
+        }
+
+        let districtCityId: string | null = null;
+        let districtId: string | null = null;
+        for (const city of planet.cities ?? []) {
+          const d = city.districts.find((x) => x.tileIndex === tileIndex);
+          if (d) {
+            districtCityId = city.id;
+            districtId = d.id;
+            break;
+          }
+        }
+        if (districtCityId && districtId) {
+          const removedDistrictId = districtId;
+          const parentCityId = districtCityId;
+          set((s) => {
+            const cities = (planet.cities ?? []).map((c) =>
+              c.id === parentCityId
+                ? {
+                    ...c,
+                    districts: c.districts.filter(
+                      (d) => d.id !== removedDistrictId,
+                    ),
+                  }
+                : c,
+            );
+            const structures = planet.structures ?? [];
+            return {
+              ...withCampaign(s, {
+                ...s.campaign,
+                planets: s.campaign.planets.map((p) =>
+                  p.id === planetId
+                    ? {
+                        ...p,
+                        cities,
+                        tileClaims: scrubTileClaims(
+                          p.tileClaims,
+                          cities,
+                          structures,
+                        ),
+                      }
+                    : p,
+                ),
+              }),
+              selectedDistrictId:
+                s.selectedDistrictId === removedDistrictId
+                  ? null
+                  : s.selectedDistrictId,
+            };
+          });
+          return true;
+        }
+
+        const structureHit = (planet.structures ?? []).find(
+          (st) => st.tileIndex === tileIndex,
+        );
+        if (structureHit) {
+          set((s) => {
+            const cities = planet.cities ?? [];
+            const structures = (planet.structures ?? []).filter(
+              (st) => st.id !== structureHit.id,
+            );
+            return {
+              ...withCampaign(s, {
+                ...s.campaign,
+                planets: s.campaign.planets.map((p) =>
+                  p.id === planetId
+                    ? {
+                        ...p,
+                        structures,
+                        tileClaims: scrubTileClaims(
+                          p.tileClaims,
+                          cities,
+                          structures,
+                        ),
+                      }
+                    : p,
+                ),
+              }),
+              selectedStructureId:
+                s.selectedStructureId === structureHit.id
+                  ? null
+                  : s.selectedStructureId,
+            };
+          });
+          return true;
+        }
+
+        return false;
       },
 
       regenerateSettlements: (planetId) =>
@@ -2060,9 +2302,19 @@ export const useCampaignStore = create<CampaignState>()(
         const isGate = planet.type === "warp_gate";
         let distance: number;
         if (isGate) {
-          const fromTile = nearestStationTile(army.dir);
-          const toTile = nearestStationTile(dir);
-          distance = stationTileDistance(fromTile, toTile);
+          const maze = buildStationMaze(planet.id);
+          const fromTile = nearestStationTile(army.dir, undefined, maze.walkable);
+          const toTile = nearestStationTile(dir, undefined, maze.walkable);
+          if (!maze.walkable.has(toTile)) {
+            set({ playMoveHint: "That bulkhead is sealed — stay in the corridors" });
+            return false;
+          }
+          distance = stationTileDistance(
+            fromTile,
+            toTile,
+            undefined,
+            maze.walkable,
+          );
         } else {
           const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
           const fromTile = nearestTileIndex(sphere, army.dir);
@@ -2121,6 +2373,19 @@ export const useCampaignStore = create<CampaignState>()(
               movedArmyIds: movedIds,
               armyMovementUsed: movement,
             });
+            const movedPlanet = campaign.planets.find((p) => p.id === planetId);
+            const movedArmy = movedPlanet?.armies?.find((a) => a.id === armyId);
+            if (movedPlanet && movedArmy) {
+              campaign = withPlay(
+                campaign,
+                playAfterArmyMoved(
+                  normalizeCampaignPlay(campaign.play),
+                  movedPlanet,
+                  movedArmy,
+                  distance,
+                ),
+              );
+            }
           }
           const left = play.active
             ? ARMY_MOVE_RANGE -
@@ -2161,16 +2426,20 @@ export const useCampaignStore = create<CampaignState>()(
           set({ playMoveHint: "Detachments must belong to rival factions" });
           return;
         }
-        if (
-          !armiesAreAdjacent(
-            attacker,
-            defender,
-            buildHexSphere(SETTLEMENT_HEX_FREQUENCY),
-          )
-        ) {
+        const canEngage =
+          planet.type === "warp_gate"
+            ? stationArmiesAreAdjacent(attacker, defender, planet.id)
+            : armiesAreAdjacent(
+                attacker,
+                defender,
+                buildHexSphere(SETTLEMENT_HEX_FREQUENCY),
+              );
+        if (!canEngage) {
           set({
             playMoveHint:
-              "Target must be on the same or an adjacent hex to engage",
+              planet.type === "warp_gate"
+                ? "Target must be on the same or an adjacent corridor tile to engage"
+                : "Target must be on the same or an adjacent hex to engage",
           });
           return;
         }
@@ -2239,19 +2508,21 @@ export const useCampaignStore = create<CampaignState>()(
         const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
         const play = normalizeCampaignPlay(state.campaign.play);
         const acted = new Set(play.movedArmyIds);
+        const supportCtx =
+          planet.type === "warp_gate" ? planet.id : sphere;
 
         const eligibleAtk = eligibleSupportArmies(
           planet.armies,
           attacker,
           defender.id,
-          sphere,
+          supportCtx,
           acted,
         );
         const eligibleDef = eligibleSupportArmies(
           planet.armies,
           defender,
           attacker.id,
-          sphere,
+          supportCtx,
           acted,
         );
         const atkEligibleIds = new Set(eligibleAtk.map((a) => a.id));
@@ -2372,8 +2643,24 @@ export const useCampaignStore = create<CampaignState>()(
         });
 
         set((s) => {
-          const monumentDir = battleMonumentDir(attacker, defender);
-          const monumentTile = nearestTileIndex(sphere, monumentDir);
+          const monumentDir =
+            planet.type === "warp_gate"
+              ? placeArmyOnStationTile(
+                  nearestStationTile(
+                    battleMonumentDir(attacker, defender),
+                    undefined,
+                    buildStationMaze(planet.id).walkable,
+                  ),
+                )
+              : battleMonumentDir(attacker, defender);
+          const monumentTile =
+            planet.type === "warp_gate"
+              ? nearestStationTile(
+                  monumentDir,
+                  undefined,
+                  buildStationMaze(planet.id).walkable,
+                )
+              : nearestTileIndex(sphere, monumentDir);
           const siteId = crypto.randomUUID();
           const famousSite =
             (victoryKind === "heroic" || victoryKind === "epochal") &&
@@ -2446,6 +2733,18 @@ export const useCampaignStore = create<CampaignState>()(
               movedArmyIds: [...moved],
               armyMovementUsed: movement,
             });
+            const foughtPlanet = campaign.planets.find(
+              (p) => p.id === pending.planetId,
+            );
+            if (foughtPlanet) {
+              let campPlay = normalizeCampaignPlay(campaign.play);
+              for (const a of foughtPlanet.armies ?? []) {
+                if (!participantIds.has(a.id)) continue;
+                if (armyStrength(a) >= 100) continue;
+                campPlay = playAfterArmyMoved(campPlay, foughtPlanet, a, 1);
+              }
+              campaign = withPlay(campaign, campPlay);
+            }
           }
 
           campaign = {
@@ -2634,7 +2933,9 @@ export const useCampaignStore = create<CampaignState>()(
                 ? {
                     ...f,
                     ships: f.ships.map((ship) =>
-                      ship.id === shipId ? { ...ship, ...patch } : ship,
+                      ship.id === shipId
+                        ? normalizeShipCargo({ ...ship, ...patch })
+                        : ship,
                     ),
                   }
                 : f,
@@ -2803,13 +3104,15 @@ export const useCampaignStore = create<CampaignState>()(
           set({ playMoveHint: "Only the active faction can seize the crown" });
           return false;
         }
-        const armyTile = nearestStationTile(army.dir);
+        const maze = buildStationMaze(planet.id);
+        const armyTile = nearestStationTile(army.dir, undefined, maze.walkable);
         const crown = (planet.structures ?? []).find(
           (s) => s.kind === RELAY_CROWN_KIND,
         );
         if (!crown || crown.tileIndex !== armyTile) {
           set({
-            playMoveHint: "Move a detachment onto the Relay Crown hex to seize it",
+            playMoveHint:
+              "Climb the station and stand on the Relay Crown tile to seize it",
           });
           return false;
         }
@@ -2865,13 +3168,17 @@ export const useCampaignStore = create<CampaignState>()(
           return null;
         }
 
-        const docks = stationDockTiles();
+        const docks = stationDockTiles(planetId);
+        const maze = buildStationMaze(planetId);
         const occupied = new Set(
-          (planet.armies ?? []).map((a) => nearestStationTile(a.dir)),
+          (planet.armies ?? []).map((a) =>
+            nearestStationTile(a.dir, undefined, maze.walkable),
+          ),
         );
         const tile =
           docks.find((t) => !occupied.has(t)) ??
           docks[0] ??
+          maze.dockTiles[0] ??
           1;
         const faction = state.campaign.factions.find((f) => f.id === factionId);
         const id = crypto.randomUUID();
@@ -2885,25 +3192,44 @@ export const useCampaignStore = create<CampaignState>()(
           strengthPercent: 100,
         };
 
-        // Spend BP from any planet this faction holds if in play
+        // Prefer transport cargo from an orbiting fleet, else any planet BP bank.
+        let spendFleetId: string | null = null;
         let spendPlanetId: string | null = null;
         if (play.active) {
-          for (const p of state.campaign.planets) {
-            const bp = (p.buildingPoints ?? {})[factionId] ?? 0;
-            if (bp >= DETACHMENT_BP_COST) {
-              spendPlanetId = p.id;
-              break;
+          const orbitFleets = (state.campaign.fleets ?? []).filter(
+            (f) =>
+              f.factionId === factionId &&
+              f.location.kind === "orbit" &&
+              f.location.planetId === planetId &&
+              fleetCargoBp(f) >= DETACHMENT_BP_COST,
+          );
+          if (orbitFleets[0]) {
+            spendFleetId = orbitFleets[0].id;
+          } else {
+            for (const p of state.campaign.planets) {
+              const bp = (p.buildingPoints ?? {})[factionId] ?? 0;
+              if (bp >= DETACHMENT_BP_COST) {
+                spendPlanetId = p.id;
+                break;
+              }
             }
-          }
-          if (!spendPlanetId) {
-            set({
-              playMoveHint: `Need ${DETACHMENT_BP_COST} BP to board the station`,
-            });
-            return null;
+            if (!spendPlanetId) {
+              set({
+                playMoveHint: `Need ${DETACHMENT_BP_COST} BP in transport holds or on a world to board`,
+              });
+              return null;
+            }
           }
         }
 
         set((s) => {
+          let fleets = s.campaign.fleets ?? [];
+          if (spendFleetId) {
+            fleets = fleets.map((f) => {
+              if (f.id !== spendFleetId) return f;
+              return spendFleetCargo(f, DETACHMENT_BP_COST) ?? f;
+            });
+          }
           const planets = s.campaign.planets.map((p) => {
             let next = p;
             if (spendPlanetId && p.id === spendPlanetId) {
@@ -2918,12 +3244,190 @@ export const useCampaignStore = create<CampaignState>()(
             return next;
           });
           return {
-            ...withCampaign(s, withHistoryCapture({ ...s.campaign, planets })),
+            ...withCampaign(
+              s,
+              withHistoryCapture({ ...s.campaign, planets, fleets }),
+            ),
             selectedArmyId: id,
-            playMoveHint: "Boarding detachment deployed to the station docks",
+            playMoveHint: spendFleetId
+              ? "Boarding detachment deployed from transport cargo — climb to the Relay Crown"
+              : "Boarding detachment deployed at the bottom locks — climb to the Relay Crown",
             inspectorOpen: true,
           };
         });
+        return id;
+      },
+
+      loadTransportCargo: (fleetId, amount) => {
+        const state = get();
+        const fleet = (state.campaign.fleets ?? []).find((f) => f.id === fleetId);
+        if (!fleet || fleet.location.kind !== "orbit") {
+          set({ playMoveHint: "Fleet must be in orbit to load BP" });
+          return 0;
+        }
+        const planet = state.campaign.planets.find(
+          (p) => p.id === fleet.location.planetId,
+        );
+        if (!planet) {
+          set({ playMoveHint: "Orbit world not found" });
+          return 0;
+        }
+        const check = canLoadTransportCargo(
+          state.campaign,
+          fleet,
+          planet,
+          amount,
+        );
+        if (!check.ok) {
+          set({ playMoveHint: check.message });
+          return 0;
+        }
+        const { fleet: loadedFleet, added } = addFleetCargo(fleet, check.load);
+        if (added <= 0) return 0;
+        set((s) => ({
+          ...withCampaign(
+            s,
+            withHistoryCapture({
+              ...s.campaign,
+              fleets: (s.campaign.fleets ?? []).map((f) =>
+                f.id === fleetId ? loadedFleet : f,
+              ),
+              planets: s.campaign.planets.map((p) =>
+                p.id === planet.id
+                  ? spendBuildingPoints(p, fleet.factionId, added)
+                  : p,
+              ),
+            }),
+          ),
+          playMoveHint: `Loaded ${added} BP into transport holds (${fleetCargoBp(loadedFleet)} total)`,
+        }));
+        return added;
+      },
+
+      deployFromTransport: (fleetId) => {
+        const state = get();
+        const fleet = (state.campaign.fleets ?? []).find((f) => f.id === fleetId);
+        if (!fleet || fleet.location.kind !== "orbit") {
+          set({ playMoveHint: "Fleet must be in orbit to deploy" });
+          return null;
+        }
+        const planetId = fleet.location.planetId;
+        const planet = state.campaign.planets.find((p) => p.id === planetId);
+        if (!planet) {
+          set({ playMoveHint: "Orbit world not found" });
+          return null;
+        }
+        const check = canDeployFromTransport(state.campaign, fleet, planet);
+        if (!check.ok) {
+          set({ playMoveHint: check.message });
+          return null;
+        }
+
+        const spentFleet = spendFleetCargo(fleet, DETACHMENT_BP_COST);
+        if (!spentFleet) {
+          set({
+            playMoveHint: `Need ${DETACHMENT_BP_COST} BP in transport holds`,
+          });
+          return null;
+        }
+
+        const faction = state.campaign.factions.find(
+          (f) => f.id === fleet.factionId,
+        );
+        const id = crypto.randomUUID();
+
+        if (planet.type === "warp_gate") {
+          const docks = stationDockTiles(planetId);
+          const maze = buildStationMaze(planetId);
+          const occupied = new Set(
+            (planet.armies ?? []).map((a) =>
+              nearestStationTile(a.dir, undefined, maze.walkable),
+            ),
+          );
+          const tile =
+            docks.find((t) => !occupied.has(t)) ??
+            docks[0] ??
+            maze.dockTiles[0] ??
+            1;
+          const army: Army = {
+            id,
+            name: `${faction?.name ?? "Landing"} Detachment`,
+            factionId: fleet.factionId,
+            symbolId: faction?.defaultSymbolId,
+            dir: placeArmyOnStationTile(tile),
+            notes: "Deployed from transport hold",
+            strengthPercent: 100,
+          };
+          set((s) => ({
+            ...withCampaign(
+              s,
+              withHistoryCapture({
+                ...s.campaign,
+                fleets: (s.campaign.fleets ?? []).map((f) =>
+                  f.id === fleetId ? spentFleet : f,
+                ),
+                planets: s.campaign.planets.map((p) =>
+                  p.id === planetId
+                    ? { ...p, armies: [...(p.armies ?? []), army] }
+                    : p,
+                ),
+              }),
+            ),
+            selectedArmyId: id,
+            selectedFleetId: fleetId,
+            focusedPlanetId: planetId,
+            selectedPlanetId: planetId,
+            viewLevel: "strategic",
+            placingArmyId: null,
+            playMoveHint:
+              "Detachment landed at the boarding locks from transport cargo",
+            inspectorOpen: true,
+          }));
+          return id;
+        }
+
+        // Surface world: spawn then let the player place on the strategic map.
+        if (!supportsStrategicSurface(planet)) {
+          set({
+            playMoveHint:
+              "Gas giants have no surface for detachments — deploy to a solid world",
+          });
+          return null;
+        }
+        const army: Army = {
+          id,
+          name: `${faction?.name ?? "Landing"} Detachment`,
+          factionId: fleet.factionId,
+          symbolId: faction?.defaultSymbolId,
+          dir: { x: 0, y: 1, z: 0 },
+          notes: "Deployed from transport hold",
+          strengthPercent: 100,
+        };
+        set((s) => ({
+          ...withCampaign(
+            s,
+            withHistoryCapture({
+              ...s.campaign,
+              fleets: (s.campaign.fleets ?? []).map((f) =>
+                f.id === fleetId ? spentFleet : f,
+              ),
+              planets: s.campaign.planets.map((p) =>
+                p.id === planetId
+                  ? { ...p, armies: [...(p.armies ?? []), army] }
+                  : p,
+              ),
+            }),
+          ),
+          selectedArmyId: id,
+          selectedFleetId: fleetId,
+          focusedPlanetId: planetId,
+          selectedPlanetId: planetId,
+          viewLevel: "strategic",
+          placingArmyId: id,
+          playMoveHint:
+            "Detachment deployed from transport — click a hex to place it",
+          inspectorOpen: true,
+        }));
         return id;
       },
 
@@ -3055,7 +3559,11 @@ export const useCampaignStore = create<CampaignState>()(
         set((s) => {
           const planet = s.campaign.planets.find((p) => p.id === id);
           if (!planet) return s;
-          const remaining = s.campaign.planets
+          const unlinked =
+            planet.type === "warp_gate"
+              ? unlinkWarpGate(s.campaign.planets, id)
+              : s.campaign.planets;
+          const remaining = unlinked
             .filter((p) => p.id !== id)
             .map((p) =>
               p.systemId === planet.systemId && p.orbitIndex > planet.orbitIndex
@@ -3291,6 +3799,7 @@ export const useCampaignStore = create<CampaignState>()(
             movedFleetIds: [],
             movedArmyIds: [],
             armyMovementUsed: {},
+            armyCampEnteredRound: {},
           });
           const withIncome = applyTurnIncome(withPlayState, activeFactionId);
           return {
@@ -3318,6 +3827,7 @@ export const useCampaignStore = create<CampaignState>()(
               movedFleetIds: [],
               movedArmyIds: [],
               armyMovementUsed: {},
+              armyCampEnteredRound: {},
             }),
           ),
           fleetMoveModeId: null,
@@ -3358,10 +3868,17 @@ export const useCampaignStore = create<CampaignState>()(
             movedFleetIds: [],
             movedArmyIds: [],
             armyMovementUsed: {},
+            armyCampEnteredRound: play.armyCampEnteredRound,
           });
+          const healed = applyWarCampHeals(campaign);
+          campaign = healed.campaign;
           if (nextFactionId) {
             campaign = applyTurnIncome(campaign, nextFactionId);
           }
+          const healHint =
+            healed.healedIds.length > 0
+              ? `${healed.healedIds.length} detachment${healed.healedIds.length === 1 ? "" : "s"} restored at War Camp`
+              : null;
           return {
             ...withCampaign(
               s,
@@ -3373,12 +3890,46 @@ export const useCampaignStore = create<CampaignState>()(
             fleetMoveModeId: null,
             placingArmyId: null,
             playBuildMode: null,
-            playMoveHint: null,
+            playMoveHint: healHint,
           };
         });
       },
 
       clearPlayMoveHint: () => set({ playMoveHint: null }),
+
+      mergeArmies: (planetId, sourceArmyId, targetArmyId) => {
+        const state = get();
+        const result = mergeArmiesInto(
+          state.campaign,
+          planetId,
+          sourceArmyId,
+          targetArmyId,
+        );
+        if (!result.ok) {
+          set({ playMoveHint: result.message });
+          return false;
+        }
+        set((s) => ({
+          ...withCampaign(
+            s,
+            withHistoryCapture({
+              ...result.campaign,
+              characters: scrubCharacterPlacements(
+                s.campaign.characters ?? [],
+                result.campaign,
+              ),
+            }),
+          ),
+          selectedArmyId:
+            s.selectedArmyId === sourceArmyId
+              ? targetArmyId
+              : s.selectedArmyId,
+          placingArmyId:
+            s.placingArmyId === sourceArmyId ? null : s.placingArmyId,
+          playMoveHint: "Detachments merged",
+        }));
+        return true;
+      },
 
       recruitDetachment: (planetId) => {
         const state = get();
@@ -3458,8 +4009,6 @@ export const useCampaignStore = create<CampaignState>()(
           set({ playMoveHint: check.message });
           return null;
         }
-        const ports = ownedSpacePorts(planet, factionId);
-        const port = ports[0]!;
         const cost = shipBpCost(chassis);
         const faction = state.campaign.factions.find((f) => f.id === factionId);
 

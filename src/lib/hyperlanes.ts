@@ -227,6 +227,52 @@ export function getCampaignHyperlanes(campaign: Campaign): Hyperlane[] {
   return buildHyperlanes(campaign.systems);
 }
 
+/** Adjacency list from hyperlane endpoints. */
+export function hyperlaneAdjacency(
+  systems: StarSystem[],
+  lanes?: Hyperlane[],
+): Map<string, string[]> {
+  const graph = new Map<string, string[]>();
+  for (const s of systems) graph.set(s.id, []);
+  const edges = lanes ?? buildHyperlanes(systems);
+  for (const lane of edges) {
+    graph.get(lane.a)?.push(lane.b);
+    graph.get(lane.b)?.push(lane.a);
+  }
+  return graph;
+}
+
+/**
+ * Shortest hyperlane hop count between two systems.
+ * Returns `Infinity` when disconnected.
+ */
+export function systemHopDistance(
+  systems: StarSystem[],
+  fromId: string,
+  toId: string,
+  lanes?: Hyperlane[],
+): number {
+  if (fromId === toId) return 0;
+  const adj = hyperlaneAdjacency(systems, lanes);
+  if (!adj.has(fromId) || !adj.has(toId)) return Number.POSITIVE_INFINITY;
+
+  const queue: string[] = [fromId];
+  const dist = new Map<string, number>([[fromId, 0]]);
+  let head = 0;
+  while (head < queue.length) {
+    const cur = queue[head++]!;
+    const d = dist.get(cur)!;
+    for (const next of adj.get(cur) ?? []) {
+      if (dist.has(next)) continue;
+      const nd = d + 1;
+      if (next === toId) return nd;
+      dist.set(next, nd);
+      queue.push(next);
+    }
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
 export function laneKey(a: string, b: string): string {
   return a < b ? `${a}__${b}` : `${b}__${a}`;
 }

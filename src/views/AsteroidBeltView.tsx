@@ -1,14 +1,12 @@
 import { useMemo } from "react";
 import { PLANET_TYPE_LABELS } from "../types/campaign";
 import {
+  megastructureName,
   normalizeStarClass,
   starAppearance,
-  starBodyGradient,
+  starSystemLabel,
 } from "../lib/stars";
-import {
-  PulsarJets,
-  pulsarJetAngle,
-} from "../components/galaxy/PulsarJets";
+import { SystemStar } from "../components/system/SystemStar";
 import { fleetsInOrbit, shipCount } from "../lib/fleets";
 import { useCampaignStore } from "../store/useCampaignStore";
 
@@ -101,7 +99,14 @@ export function AsteroidBeltView() {
 
   const starClass = normalizeStarClass(system.starClass);
   const star = starAppearance(starClass);
+  const hasMega = Boolean(system.dysonSphere);
   const accent = faction?.color ?? "#9a9088";
+  // Distant POV: slightly smaller than system view, but keep bomb cage readable.
+  const distantStarSize = hasMega
+    ? starClass === "black_hole"
+      ? 52
+      : 48
+    : 44;
 
   return (
     <div className="relative h-full w-full overflow-hidden galaxy-bg">
@@ -112,33 +117,39 @@ export function AsteroidBeltView() {
         className="pointer-events-none absolute inset-0"
         style={{
           background: `
-            radial-gradient(ellipse 70% 50% at 50% 42%, ${star.corona}22 0%, transparent 55%),
+            radial-gradient(ellipse 70% 50% at 50% 42%, ${
+              hasMega && starClass === "black_hole"
+                ? "#a78bfa28"
+                : `${star.corona}22`
+            } 0%, transparent 55%),
             linear-gradient(180deg, transparent 40%, rgba(20,18,16,0.55) 72%, rgba(8,8,10,0.92) 100%)
           `,
         }}
       />
 
-      {/* Distant star */}
+      {/* Distant star / megastructure */}
       <div
-        className="pointer-events-none absolute left-1/2 top-[38%] -translate-x-1/2 -translate-y-1/2"
-        style={{ width: 72, height: 72 }}
+        className="pointer-events-none absolute left-1/2 top-[36%] -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-2"
+        style={{
+          width: hasMega
+            ? starClass === "black_hole"
+              ? distantStarSize * 2.75
+              : distantStarSize * 1.85
+            : distantStarSize,
+        }}
       >
-        {starClass === "pulsar" && (
-          <PulsarJets
-            length={160}
-            baseWidth={18}
-            color={star.color}
-            highlight={star.highlight}
-            angleDeg={pulsarJetAngle(system.id)}
-          />
-        )}
-        <div
-          className="absolute inset-0 rounded-full"
-          style={{
-            background: starBodyGradient(starClass),
-            boxShadow: `0 0 40px ${star.color}aa, 0 0 120px ${star.corona}66, 0 0 200px ${star.corona}33`,
-          }}
+        <SystemStar
+          starClass={starClass}
+          size={distantStarSize}
+          seed={system.id}
+          dysonSphere={hasMega}
+          title={starSystemLabel(system)}
         />
+        {hasMega && (
+          <span className="text-[9px] uppercase tracking-[0.18em] text-brass/90 drop-shadow-[0_1px_4px_#000]">
+            {megastructureName(system)}
+          </span>
+        )}
       </div>
 
       {/* Mid-field dust motes */}

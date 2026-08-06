@@ -195,6 +195,9 @@ function rawSupply(campaign: Campaign, factionId: string): number {
       if (planet.type === "agri") score += 16;
       if (planet.type === "forge") score += 14;
       if (planet.type === "hive") score += 10;
+      if (planet.type === "fortress") score += 18;
+      if (planet.type === "homeworld") score += 14;
+      if (planet.type === "feudal") score += 8;
     }
   }
   score += Math.min(80, bp / 40) + income * 2.5;
@@ -211,6 +214,9 @@ function rawGrowth(campaign: Campaign, factionId: string): number {
       if (planet.type === "agri") score += 28;
       if (planet.type === "forge") score += 22;
       if (planet.type === "hive") score += 12;
+      if (planet.type === "homeworld") score += 16;
+      if (planet.type === "feudal") score += 14;
+      if (planet.type === "fortress") score += 6;
       if (planet.type === "custom") score += 8;
     }
     score += countOwnedManufactorums(planet, factionId) * 11;

@@ -12,6 +12,12 @@ import {
   type StructureKind,
 } from "../../types/campaign";
 import { useCampaignStore } from "../../store/useCampaignStore";
+import { megastructureName } from "../../lib/stars";
+import { supportsStrategicSurface } from "../../lib/planetClass";
+import {
+  linkedWarpGate,
+  warpGateLinkCandidates,
+} from "../../lib/warpGates";
 
 const inputClass = "hud-input";
 
@@ -34,6 +40,8 @@ export function EditGalaxyContentsInspector({
   const deleteSystem = useCampaignStore((s) => s.deleteSystem);
   const addPlanet = useCampaignStore((s) => s.addPlanet);
   const updatePlanet = useCampaignStore((s) => s.updatePlanet);
+  const linkWarpGates = useCampaignStore((s) => s.linkWarpGates);
+  const unlinkWarpGate = useCampaignStore((s) => s.unlinkWarpGate);
   const deletePlanet = useCampaignStore((s) => s.deletePlanet);
   const setPlanetOwner = useCampaignStore((s) => s.setPlanetOwner);
   const setCityOwner = useCampaignStore((s) => s.setCityOwner);
@@ -144,8 +152,13 @@ export function EditGalaxyContentsInspector({
                   })
                 }
               />
-              Dyson Sphere megastructure
+              {megastructureName(system)} megastructure
             </label>
+            {system.dysonSphere && system.starClass === "black_hole" && (
+              <p className="text-[10px] text-brass leading-snug -mt-1 mb-1">
+                Superradiant mirror cavity — extracts spin energy, not starlight.
+              </p>
+            )}
             <label className="block text-[10px] uppercase tracking-wider text-muted">
               Notes
               <textarea
@@ -222,7 +235,7 @@ export function EditGalaxyContentsInspector({
               >
                 Enter planet
               </button>
-              {planet.type !== "asteroid_belt" && (
+              {supportsStrategicSurface(planet) && (
                 <button
                   type="button"
                   className="hud-btn flex-1"
@@ -260,7 +273,81 @@ export function EditGalaxyContentsInspector({
                 ))}
               </select>
             </label>
-            {planet.type !== "asteroid_belt" && (
+            {planet.type === "warp_gate" && (
+              <div className="rounded border border-panel-border/60 p-2 space-y-1.5">
+                <p className="text-[10px] uppercase tracking-wider text-muted">
+                  Gate link
+                </p>
+                {(() => {
+                  const linked = linkedWarpGate(campaign, planet);
+                  const candidates = warpGateLinkCandidates(
+                    campaign,
+                    planet.id,
+                  );
+                  const linkedSystem = linked
+                    ? campaign.systems.find((s) => s.id === linked.systemId)
+                    : undefined;
+                  return (
+                    <>
+                      <p className="text-[11px] text-star leading-snug">
+                        {linked
+                          ? `Linked to ${linked.name}${linkedSystem ? ` (${linkedSystem.name})` : ""}`
+                          : "Unlinked — transit picks a random system"}
+                      </p>
+                      {candidates.length === 0 ? (
+                        <p className="text-[10px] text-brass leading-snug">
+                          No other warp gates to connect to
+                        </p>
+                      ) : (
+                        <label className="flex flex-col gap-0.5 text-[10px] text-muted">
+                          Connect to
+                          <select
+                            className={inputClass + " mt-0.5"}
+                            defaultValue=""
+                            key={planet.linkedGateId ?? "unlinked"}
+                            onChange={(e) => {
+                              const targetId = e.target.value;
+                              if (!targetId) return;
+                              linkWarpGates(planet.id, targetId);
+                            }}
+                          >
+                            <option value="">
+                              {linked ? "Change partner…" : "Select gate…"}
+                            </option>
+                            {candidates.map((g) => {
+                              const sys = campaign.systems.find(
+                                (s) => s.id === g.systemId,
+                              );
+                              return (
+                                <option key={g.id} value={g.id}>
+                                  {g.name}
+                                  {sys ? ` · ${sys.name}` : ""}
+                                  {g.linkedGateId &&
+                                  g.linkedGateId !== planet.id
+                                    ? " (relink)"
+                                    : ""}
+                                </option>
+                              );
+                            })}
+                          </select>
+                        </label>
+                      )}
+                      {linked && (
+                        <button
+                          type="button"
+                          className="hud-btn w-full"
+                          onClick={() => unlinkWarpGate(planet.id)}
+                        >
+                          Disconnect
+                        </button>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+            )}
+            {planet.type !== "asteroid_belt" &&
+              planet.type !== "warp_gate" && (
               <label className="block text-[10px] uppercase tracking-wider text-muted">
                 Classification
                 <select

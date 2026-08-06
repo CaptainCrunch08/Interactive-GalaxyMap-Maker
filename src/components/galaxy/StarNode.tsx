@@ -1,6 +1,8 @@
 import type { Faction, StarSystem } from "../../types/campaign";
 import { useRef } from "react";
 import {
+  isBlackHoleBomb,
+  megastructureShortLabel,
   normalizeStarClass,
   starAppearance,
   starBodyGradient,
@@ -42,11 +44,17 @@ export function StarNode({
   const look = starAppearance(starClass);
   const isPulsar = starClass === "pulsar";
   const hasDyson = Boolean(system.dysonSphere);
+  const isBomb = isBlackHoleBomb(system);
+  const megaShort = megastructureShortLabel(system);
   /** Labels only when zoomed in enough (map starts ~0.45). */
   const showLabel = mapScale >= 0.55 || selected;
   const dragMoved = useRef(false);
   const allowDrag = canDrag ?? editMode;
-  const bodySize = hasDyson ? look.galaxySize * 1.35 : look.galaxySize;
+  const bodySize = isBomb
+    ? look.galaxySize * 1.7
+    : hasDyson
+      ? look.galaxySize * 1.35
+      : look.galaxySize;
 
   const handlePointerDown = (e: React.PointerEvent) => {
     if (!allowDrag) return;
@@ -111,16 +119,57 @@ export function StarNode({
           height: bodySize,
         }}
       >
-        {hasDyson && (
-          <span
-            className="absolute rounded-full pointer-events-none"
-            style={{
-              inset: "-18%",
-              border: `1.5px dashed ${look.highlight}99`,
-              boxShadow: `0 0 10px ${look.corona}66, inset 0 0 8px ${look.color}44`,
-            }}
-          />
-        )}
+        {hasDyson &&
+          (isBomb ? (
+            <>
+              <span
+                className="absolute rounded-full pointer-events-none"
+                style={{
+                  inset: "-38%",
+                  border: "2px solid #c4b5fd",
+                  boxShadow:
+                    "0 0 14px #22d3eeaa, 0 0 6px #f0abfc88, inset 0 0 8px #a78bfa66",
+                  background:
+                    "radial-gradient(circle, transparent 58%, rgba(167,139,250,0.22) 78%, transparent 92%)",
+                }}
+              />
+              <span
+                className="absolute rounded-full pointer-events-none"
+                style={{
+                  inset: "-22%",
+                  border: "1.5px dashed #22d3ee",
+                  opacity: 0.85,
+                }}
+              />
+              {[0, 45, 90, 135].map((deg) => (
+                <span
+                  key={deg}
+                  className="absolute pointer-events-none"
+                  style={{
+                    left: "50%",
+                    top: "50%",
+                    width: "2px",
+                    height: "138%",
+                    marginLeft: "-1px",
+                    marginTop: "-69%",
+                    background:
+                      "linear-gradient(to bottom, #f0abfc00, #f0abfcbb, #22d3eecc, #f0abfc00)",
+                    transform: `rotate(${deg}deg)`,
+                    opacity: 0.7,
+                  }}
+                />
+              ))}
+            </>
+          ) : (
+            <span
+              className="absolute rounded-full pointer-events-none"
+              style={{
+                inset: "-18%",
+                border: `1.5px dashed ${look.highlight}99`,
+                boxShadow: `0 0 10px ${look.corona}66, inset 0 0 8px ${look.color}44`,
+              }}
+            />
+          ))}
         {isPulsar && (
           <PulsarJets
             length={look.galaxySize * 2.4}
@@ -159,7 +208,7 @@ export function StarNode({
           {system.name}
           <span className="text-muted">
             {" "}
-            · {hasDyson ? "DS" : look.shortLabel}
+            · {megaShort ?? look.shortLabel}
           </span>
           {ownerBit}
         </span>

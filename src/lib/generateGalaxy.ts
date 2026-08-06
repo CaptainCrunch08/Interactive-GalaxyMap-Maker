@@ -5,10 +5,14 @@ import type {
   StarSystem,
 } from "../types/campaign";
 import { GALAXY_EDGE_PADDING } from "../types/campaign";
-import { HYPERLANE_MAX_DIST } from "./hyperlanes";
+import { HYPERLANE_MAX_DIST, buildHyperlanes, systemHopDistance } from "./hyperlanes";
 import { generatePlanetSurface, planetOwnerFromCities } from "./settlements";
 import { generateWarpGateSurface } from "./warpGateSurface";
-import { applyWarpGateOwnership } from "./warpGates";
+import {
+  applyWarpGateOwnership,
+  isWarpGateSystemTooClose,
+  MIN_WARP_GATE_SYSTEM_HOPS,
+} from "./warpGates";
 import { pickDysonCoreStarClass, pickRandomStarClass } from "./stars";
 import { pickRandomClassification } from "./planetClass";
 import { pickPlanetVisualModel } from "./planetModels";
@@ -53,6 +57,9 @@ const PLANET_TYPES: PlanetType[] = [
   "agri",
   "death",
   "shrine",
+  "feudal",
+  "fortress",
+  "homeworld",
   "asteroid_belt",
   "custom",
 ];
@@ -462,21 +469,27 @@ export function generateGalaxyCampaign(
 
 /**
  * Place a small number of bidirectional warp-gate pairs on distant stars.
- * Chance scales gently with galaxy size (~1 pair per ~28 systems, rng gated).
+ * Every gate system (paired or not) stays ≥ {@link MIN_WARP_GATE_SYSTEM_HOPS}
+ * hyperlane hops from every other gate system.
  */
 function spawnWarpGatePairs(
   rng: () => number,
   systems: StarSystem[],
   planets: Planet[],
-  mapSize: number,
+  _mapSize: number,
 ) {
-  if (systems.length < 8) return;
+  if (systems.length < MIN_WARP_GATE_SYSTEM_HOPS + 1) return;
+
+  const lanes = buildHyperlanes(systems);
   const maxPairs = Math.max(1, Math.floor(systems.length / 28));
-  const minDist = mapSize * 0.35;
   const usedSystems = new Set<string>();
   let placed = 0;
 
-  for (let attempt = 0; attempt < maxPairs * 4 && placed < maxPairs; attempt++) {
+  for (
+    let attempt = 0;
+    attempt < maxPairs * 8 && placed < maxPairs;
+    attempt++
+  ) {
     if (rng() > 0.62) continue;
 
     const available = systems.filter((s) => !usedSystems.has(s.id));
@@ -484,22 +497,41 @@ function spawnWarpGatePairs(
 
     let bestA: StarSystem | null = null;
     let bestB: StarSystem | null = null;
-    let bestD = 0;
-    // Sample random pairs; keep the farthest that clears minDist.
-    for (let s = 0; s < 40; s++) {
+    let bestHops = 0;
+
+    for (let s = 0; s < 80; s++) {
       const a = pick(rng, available);
       const b = pick(rng, available);
       if (a.id === b.id) continue;
-      const d = Math.hypot(a.x - b.x, a.y - b.y);
-      if (d >= minDist && d > bestD) {
-        bestD = d;
+
+      const hops = systemHopDistance(systems, a.id, b.id, lanes);
+      if (hops < MIN_WARP_GATE_SYSTEM_HOPS) continue;
+      if (
+        isWarpGateSystemTooClose(systems, planets, a.id, {
+          lanes,
+          extraGateSystemIds: usedSystems,
+        })
+      ) {
+        continue;
+      }
+      if (
+        isWarpGateSystemTooClose(systems, planets, b.id, {
+          lanes,
+          extraGateSystemIds: new Set([...usedSystems, a.id]),
+        })
+      ) {
+        continue;
+      }
+
+      if (hops > bestHops) {
+        bestHops = hops;
         bestA = a;
         bestB = b;
       }
     }
     if (!bestA || !bestB) continue;
 
-    // Warp gates require a Dyson Sphere megastructure around the system core.
+    // Warp gates require a Dyson Sphere / Black Hole Bomb around the core.
     for (const sys of [bestA, bestB]) {
       const idx = systems.findIndex((s) => s.id === sys.id);
       if (idx < 0) continue;

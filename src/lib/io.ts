@@ -7,6 +7,8 @@ import { normalizePlanetClassification } from "./planetClass";
 import { resolvePlanetVisualModelId } from "./planetModels";
 import { enforceUniqueSymbolOwnership } from "./factionSymbols";
 import { armyStrength, pruneDestroyedArmies } from "./battleResolve";
+import { normalizeShipCargo, normalizeShipChassis } from "./fleets";
+import { normalizeTerrainKind } from "./planetTerrain";
 
 const factionSchema = z.object({
   id: z.string(),
@@ -83,6 +85,7 @@ const starSystemSchema = z.object({
       "G",
       "K",
       "M",
+      "white_dwarf",
       "neutron",
       "pulsar",
       "black_hole",
@@ -121,6 +124,7 @@ const districtSchema = z.object({
     "cloister",
     "quarter",
     "ruins",
+    "supply_station",
   ]),
   controllingFactionId: z.string().optional(),
   tileIndex: z.number().int().nonnegative(),
@@ -167,6 +171,7 @@ const structureSchema = z.object({
         "relay_crown",
         "outpost",
         "ruins_site",
+        "supply_network",
       ]),
     ),
   tileIndex: z.number().int().nonnegative(),
@@ -259,6 +264,7 @@ const shipSchema = z.object({
   name: z.string(),
   chassis: shipChassisSchema,
   notes: z.string().default(""),
+  cargoBp: z.number().nonnegative().optional(),
 });
 
 const fleetLocationSchema = z.discriminatedUnion("kind", [
@@ -329,6 +335,9 @@ const planetSchema = z.object({
     "agri",
     "death",
     "shrine",
+    "feudal",
+    "fortress",
+    "homeworld",
     "asteroid_belt",
     "warp_gate",
     "custom",
@@ -376,6 +385,10 @@ const campaignPlaySchema = z.object({
   movedFleetIds: z.array(z.string()).default([]),
   movedArmyIds: z.array(z.string()).default([]),
   armyMovementUsed: z.record(z.string(), z.number()).optional().default({}),
+  armyCampEnteredRound: z
+    .record(z.string(), z.number())
+    .optional()
+    .default({}),
 });
 
 const campaignSchema = z.object({
@@ -393,13 +406,32 @@ const campaignSchema = z.object({
   play: campaignPlaySchema.optional(),
 });
 
+function normalizeTileTerrain(
+  raw: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    const kind = normalizeTerrainKind(v);
+    if (kind) out[k] = kind;
+  }
+  return out;
+}
+
 export function parseCampaignJson(json: string): Campaign {
   const data = JSON.parse(json) as unknown;
   const campaign = campaignSchema.parse(data) as Campaign;
   return {
     ...campaign,
     symbols: campaign.symbols ?? [],
-    fleets: campaign.fleets ?? [],
+    fleets: (campaign.fleets ?? []).map((f) => ({
+      ...f,
+      ships: (f.ships ?? []).map((s) =>
+        normalizeShipCargo({
+          ...s,
+          chassis: normalizeShipChassis(s.chassis),
+        }),
+      ),
+    })),
     characters: campaign.characters ?? [],
     hyperlanes: campaign.hyperlanes,
     factions: enforceUniqueSymbolOwnership(
@@ -441,7 +473,9 @@ export function parseCampaignJson(json: string): Campaign {
       return {
         ...ensured,
         tileClaims: ensured.tileClaims ?? {},
-        tileTerrain: p.tileTerrain ?? ensured.tileTerrain ?? {},
+        tileTerrain: normalizeTileTerrain(
+          p.tileTerrain ?? ensured.tileTerrain ?? {},
+        ),
         armies: pruneDestroyedArmies(
           (ensured.armies ?? []).map((a) => ({
             ...a,
