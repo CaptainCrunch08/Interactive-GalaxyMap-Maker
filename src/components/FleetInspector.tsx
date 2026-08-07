@@ -11,6 +11,7 @@ import {
 import {
   canDeployFromTransport,
   canLoadTransportCargo,
+  canUnloadTransportCargo,
   DETACHMENT_BP_COST,
   fleetCargoBp,
   fleetCargoCapacity,
@@ -19,7 +20,7 @@ import {
 } from "../lib/buildingPoints";
 import { playMoveBlockReason } from "../lib/play";
 import { factionSymbolIds } from "../lib/factionSymbols";
-import { getFactionById } from "../lib/territory";
+import { factionsSortedByName, getFactionById } from "../lib/territory";
 import { normalizeCampaignPlay } from "../types/campaign";
 import { useCampaignStore } from "../store/useCampaignStore";
 
@@ -52,6 +53,7 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
   const setFleetMoveMode = useCampaignStore((s) => s.setFleetMoveMode);
   const travelThroughWarpGate = useCampaignStore((s) => s.travelThroughWarpGate);
   const loadTransportCargo = useCampaignStore((s) => s.loadTransportCargo);
+  const unloadTransportCargo = useCampaignStore((s) => s.unloadTransportCargo);
   const deployFromTransport = useCampaignStore((s) => s.deployFromTransport);
   const enterSystem = useCampaignStore((s) => s.enterSystem);
   const goBack = useCampaignStore((s) => s.goBack);
@@ -75,6 +77,10 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
   const loadCheck =
     orbitPlanet && play.active
       ? canLoadTransportCargo(campaign, fleet, orbitPlanet)
+      : null;
+  const unloadCheck =
+    orbitPlanet && play.active
+      ? canUnloadTransportCargo(campaign, fleet, orbitPlanet)
       : null;
   const deployCheck =
     orbitPlanet && play.active
@@ -155,7 +161,7 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
                 })
               }
             >
-              {campaign.factions.map((f) => (
+              {factionsSortedByName(campaign.factions).map((f) => (
                 <option key={f.id} value={f.id}>
                   {f.name}
                 </option>
@@ -335,8 +341,9 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
               <span className="text-muted"> / {cargoCap} BP in holds</span>
             </p>
             <p className="text-[10px] text-muted leading-snug">
-              Load BP from an orbit world, then deploy detachments onto planets
-              or warp gates without a War Camp ({DETACHMENT_BP_COST} BP each).
+              Shuttle BP between owned worlds: load from producers, unload onto
+              worlds with your cities (for ships/detachments), or spend cargo to
+              deploy ({DETACHMENT_BP_COST} BP) without a War Camp.
             </p>
             {play.active && orbitPlanet ? (
               <div className="flex flex-col gap-1.5">
@@ -354,6 +361,24 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
                 {!loadCheck?.ok && loadCheck && (
                   <p className="text-[10px] text-brass leading-snug">
                     {loadCheck.message}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  className="hud-btn w-full"
+                  disabled={!unloadCheck?.ok}
+                  title={
+                    unloadCheck && !unloadCheck.ok
+                      ? unloadCheck.message
+                      : undefined
+                  }
+                  onClick={() => unloadTransportCargo(fleet.id)}
+                >
+                  Unload BP onto {orbitPlanet.name}
+                </button>
+                {!unloadCheck?.ok && unloadCheck && (
+                  <p className="text-[10px] text-brass leading-snug">
+                    {unloadCheck.message}
                   </p>
                 )}
                 <button
@@ -378,8 +403,8 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
             ) : cargoCap > 0 ? (
               <p className="text-[10px] text-brass leading-snug">
                 {play.active
-                  ? "Move into orbit to load or deploy cargo BP"
-                  : "Start Play to load and deploy from transport holds"}
+                  ? "Move into orbit to load, unload, or deploy cargo BP"
+                  : "Start Play to move BP with transport holds"}
               </p>
             ) : null}
           </section>
@@ -452,7 +477,7 @@ export function FleetListSection({
             }}
           >
             <option value="">+ Deploy…</option>
-            {campaign.factions.map((f) => (
+            {factionsSortedByName(campaign.factions).map((f) => (
               <option key={f.id} value={f.id}>
                 {f.name}
               </option>

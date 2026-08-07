@@ -38,6 +38,7 @@ export type PlanetClassification =
 export type DistrictKind =
   | "spire"
   | "underhive"
+  | "domed_habitat"
   | "docks"
   | "bastion"
   | "manufactorum"
@@ -91,8 +92,6 @@ export interface Faction {
   color: string;
   /** Named commander / sovereign shown in Galactic Overview. */
   leader?: string;
-  /** Default army doctrine / unit style for this faction. */
-  armyType: FactionArmyType;
   /**
    * Primary emblem for the faction as a whole
    * (also used as default for new detachments / fleets).
@@ -139,16 +138,6 @@ export interface CampaignCharacter {
   notes?: string;
 }
 
-/** Default army style for a faction (doctrine / formation type). */
-export type FactionArmyType =
-  | "infantry"
-  | "armored"
-  | "mechanized"
-  | "artillery"
-  | "airborne"
-  | "elite"
-  | "irregular";
-
 /** Imported / assigned army icon (stored as a data URL). */
 export interface ArmySymbol {
   id: string;
@@ -161,6 +150,17 @@ export interface CampaignHyperlane {
   id: string;
   a: string;
   b: string;
+}
+
+/**
+ * Incremental hyperlane edits over a base graph (baked `hyperlanes` or live auto).
+ * Prefer baking a sticky network; edits remain supported for older saves.
+ */
+export interface HyperlaneEdits {
+  /** Extra lanes the user drew (kept even if the base graph would not include them). */
+  added: CampaignHyperlane[];
+  /** Base lane keys (`laneKey`) the user deleted — stay suppressed. */
+  removed: string[];
 }
 
 /** Force on a planet surface — shown as symbol + name label. */
@@ -374,6 +374,11 @@ export interface Planet {
   battles: BattleEntry[];
   /** Cities and districts factions contest on the surface. */
   cities: City[];
+  /**
+   * Districts more than 2 hexes from every city hub.
+   * Reassigned automatically whenever settlements change.
+   */
+  independentDistricts?: District[];
   /** World-type structures on free hexes (mines, docks, forts, …). */
   structures: PlanetStructure[];
   /**
@@ -478,8 +483,14 @@ export interface Campaign {
   /** Notable NPCs / named characters for the encyclopedia. */
   characters: CampaignCharacter[];
   /**
-   * When set, these lanes replace the auto-generated hyperlane graph.
-   * Absent / undefined = compute lanes automatically.
+   * Incremental lane edits over the auto graph (preferred).
+   * Auto lanes still update when stars move; added/removed persist.
+   */
+  hyperlaneEdits?: HyperlaneEdits;
+  /**
+   * Sticky hyperlane network. When set, lanes keep their endpoints until
+   * manually edited, a star is placed (new links only), or Reset lanes.
+   * When unset, lanes are derived live from star positions.
    */
   hyperlanes?: CampaignHyperlane[];
   /** Optional in-game chronicle (territory/fleet timelapse + events). */
@@ -579,6 +590,7 @@ export const STAR_CLASS_ORDER: StarClass[] = [
 export const DISTRICT_KIND_LABELS: Record<DistrictKind, string> = {
   spire: "Hive Spire",
   underhive: "Underhive",
+  domed_habitat: "Domed Habitat",
   docks: "Space Port",
   bastion: "Bastion",
   manufactorum: "Manufactorum",
@@ -602,6 +614,7 @@ export const DISTRICT_KIND_LABELS: Record<DistrictKind, string> = {
 export const DISTRICT_KIND_ORDER: DistrictKind[] = [
   "spire",
   "underhive",
+  "domed_habitat",
   "docks",
   "bastion",
   "manufactorum",
@@ -641,26 +654,6 @@ export const STRUCTURE_KIND_ORDER: StructureKind[] = [
   "ore_mine",
   "trench_line",
   "supply_network",
-];
-
-export const FACTION_ARMY_TYPE_LABELS: Record<FactionArmyType, string> = {
-  infantry: "Infantry",
-  armored: "Armored",
-  mechanized: "Mechanized",
-  artillery: "Artillery",
-  airborne: "Airborne",
-  elite: "Elite",
-  irregular: "Irregular",
-};
-
-export const FACTION_ARMY_TYPE_ORDER: FactionArmyType[] = [
-  "infantry",
-  "armored",
-  "mechanized",
-  "artillery",
-  "airborne",
-  "elite",
-  "irregular",
 ];
 
 export const SHIP_CHASSIS_LABELS: Record<ShipChassis, string> = {

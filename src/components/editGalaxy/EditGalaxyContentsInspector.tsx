@@ -14,6 +14,7 @@ import {
 import { useCampaignStore } from "../../store/useCampaignStore";
 import { megastructureName } from "../../lib/stars";
 import { supportsStrategicSurface } from "../../lib/planetClass";
+import { factionsSortedByName } from "../../lib/territory";
 import {
   linkedWarpGate,
   warpGateLinkCandidates,
@@ -71,8 +72,9 @@ export function EditGalaxyContentsInspector({
           <div className="space-y-3">
             <p className="text-xs text-muted leading-relaxed">
               Select a star on the map to edit the system, planets, structures,
-              and open-hex claims. Use Connect lanes to draw or delete
-              hyperlanes freely.
+              and open-hex claims. Connect lanes to draw or delete links. Placing
+              a star keeps existing lanes and only adds links to the new system.
+              Reset lanes rebuilds the network from current star positions.
             </p>
             <p className="text-[10px] uppercase tracking-wider text-muted">
               Systems ({campaign.systems.length})
@@ -377,7 +379,7 @@ export function EditGalaxyContentsInspector({
                 }
               >
                 <option value="">Unowned</option>
-                {campaign.factions.map((f) => (
+                {factionsSortedByName(campaign.factions).map((f) => (
                   <option key={f.id} value={f.id}>
                     {f.name}
                   </option>
@@ -395,20 +397,24 @@ export function EditGalaxyContentsInspector({
               />
             </label>
             <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                className="hud-btn"
-                onClick={() => regenerateSettlements(planet.id)}
-              >
-                Regenerate surface
-              </button>
-              <button
-                type="button"
-                className="hud-btn"
-                onClick={() => clearOpenTileClaims(planet.id)}
-              >
-                Clear open tiles
-              </button>
+              {supportsStrategicSurface(planet) && (
+                <>
+                  <button
+                    type="button"
+                    className="hud-btn"
+                    onClick={() => regenerateSettlements(planet.id)}
+                  >
+                    Regenerate surface
+                  </button>
+                  <button
+                    type="button"
+                    className="hud-btn"
+                    onClick={() => clearOpenTileClaims(planet.id)}
+                  >
+                    Clear open tiles
+                  </button>
+                </>
+              )}
               <button
                 type="button"
                 className="hud-btn text-crimson"
@@ -423,11 +429,14 @@ export function EditGalaxyContentsInspector({
               </button>
             </div>
 
+            {supportsStrategicSurface(planet) && (
+              <>
             <section className="space-y-2 pt-2 border-t border-panel-border">
               <p className="text-[10px] uppercase tracking-wider text-muted">
                 Cities / districts
               </p>
-              {(planet.cities ?? []).length === 0 ? (
+              {(planet.cities ?? []).length === 0 &&
+              (planet.independentDistricts ?? []).length === 0 ? (
                 <p className="text-xs text-muted">No cities.</p>
               ) : (
                 <ul className="space-y-2">
@@ -453,7 +462,7 @@ export function EditGalaxyContentsInspector({
                           }
                         >
                           <option value="">—</option>
-                          {campaign.factions.map((f) => (
+                          {factionsSortedByName(campaign.factions).map((f) => (
                             <option key={f.id} value={f.id}>
                               {f.name}
                             </option>
@@ -480,7 +489,7 @@ export function EditGalaxyContentsInspector({
                             }
                           >
                             <option value="">—</option>
-                            {campaign.factions.map((f) => (
+                            {factionsSortedByName(campaign.factions).map((f) => (
                               <option key={f.id} value={f.id}>
                                 {f.name}
                               </option>
@@ -490,6 +499,41 @@ export function EditGalaxyContentsInspector({
                       ))}
                     </li>
                   ))}
+                  {(planet.independentDistricts ?? []).length > 0 && (
+                    <li className="rounded border border-panel-border/60 p-2 space-y-1">
+                      <p className="text-[10px] uppercase tracking-wider text-muted">
+                        Independent
+                      </p>
+                      {(planet.independentDistricts ?? []).map((d) => (
+                        <div
+                          key={d.id}
+                          className="flex items-center gap-2 pl-2 text-[11px] text-muted"
+                        >
+                          <span className="flex-1 truncate">{d.name}</span>
+                          <select
+                            className={inputClass}
+                            style={{ fontSize: "0.65rem", width: "6.5rem" }}
+                            value={d.controllingFactionId ?? ""}
+                            onChange={(e) =>
+                              setDistrictOwner(
+                                planet.id,
+                                null,
+                                d.id,
+                                e.target.value || null,
+                              )
+                            }
+                          >
+                            <option value="">—</option>
+                            {factionsSortedByName(campaign.factions).map((f) => (
+                              <option key={f.id} value={f.id}>
+                                {f.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      ))}
+                    </li>
+                  )}
                 </ul>
               )}
             </section>
@@ -567,7 +611,7 @@ export function EditGalaxyContentsInspector({
                           }
                         >
                           <option value="">—</option>
-                          {campaign.factions.map((f) => (
+                          {factionsSortedByName(campaign.factions).map((f) => (
                             <option key={f.id} value={f.id}>
                               {f.name}
                             </option>
@@ -586,6 +630,8 @@ export function EditGalaxyContentsInspector({
                 </ul>
               )}
             </section>
+              </>
+            )}
           </div>
         )}
       </div>

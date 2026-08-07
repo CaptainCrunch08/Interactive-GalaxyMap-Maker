@@ -6,6 +6,15 @@ const ORBIT_GAP = 95;
 /** Slight stagger so planets aren't stacked on one radial line. */
 const ANGLE_STEP = 2.399963; // ≈ golden angle in radians
 
+/**
+ * How far below a planet orbiting fleets sit (past disc + nameplate) so the
+ * world stays easy to click. Stacks are centered on this anchor horizontally.
+ */
+export const ORBIT_FLEET_CLEARANCE = 88;
+
+/** Offset of fleets parked at the system star (from star center). */
+export const STAR_FLEET_OFFSET = { x: 56, y: -64 };
+
 export function orbitRadiusForIndex(orbitIndex: number): number {
   return STAR_CLEARANCE + Math.max(0, orbitIndex) * ORBIT_GAP;
 }
@@ -22,6 +31,18 @@ export function orbitPosition(
   return {
     x: Math.cos(angle) * radius,
     y: Math.sin(angle) * radius,
+  };
+}
+
+/** Anchor for fleets in orbit of a planet (clear of the planet hit target). */
+export function orbitFleetAnchor(
+  orbitIndex: number,
+  center: number,
+): { x: number; y: number } {
+  const pos = orbitPosition(Math.max(0, orbitIndex));
+  return {
+    x: center + pos.x,
+    y: center + pos.y + ORBIT_FLEET_CLEARANCE,
   };
 }
 

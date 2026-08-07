@@ -1,10 +1,43 @@
-import type { Campaign, Faction, StarSystem } from "../types/campaign";
+import type {
+  Campaign,
+  Faction,
+  Planet,
+  StarSystem,
+} from "../types/campaign";
 
 export type SystemOwnership =
   | { status: "unowned"; factions: [] }
   | { status: "owned"; factions: [Faction] }
   | { status: "contested"; factions: [Faction, Faction, ...Faction[]] };
 
+/**
+ * Factions with a surface stake on this world (settlements, structures, open
+ * hex claims). Armies and fleets do not count — presence alone is not ownership.
+ */
+export function factionsPresentOnPlanet(planet: Planet): Set<string> {
+  const ids = new Set<string>();
+  for (const city of planet.cities ?? []) {
+    if (city.controllingFactionId) ids.add(city.controllingFactionId);
+    for (const d of city.districts) {
+      if (d.controllingFactionId) ids.add(d.controllingFactionId);
+    }
+  }
+  for (const d of planet.independentDistricts ?? []) {
+    if (d.controllingFactionId) ids.add(d.controllingFactionId);
+  }
+  for (const st of planet.structures ?? []) {
+    if (st.controllingFactionId) ids.add(st.controllingFactionId);
+  }
+  for (const owner of Object.values(planet.tileClaims ?? {})) {
+    if (owner) ids.add(owner);
+  }
+  return ids;
+}
+
+/**
+ * System ownership comes only from planet.controllingFactionId.
+ * Fleets in the system never contribute; nor does a stale system-level field.
+ */
 export function getFactionsControllingSystem(
   campaign: Campaign,
   systemId: string,
@@ -13,10 +46,6 @@ export function getFactionsControllingSystem(
   for (const p of campaign.planets) {
     if (p.systemId !== systemId || !p.controllingFactionId) continue;
     ids.add(p.controllingFactionId);
-  }
-  const system = campaign.systems.find((s) => s.id === systemId);
-  if (ids.size === 0 && system?.controllingFactionId) {
-    ids.add(system.controllingFactionId);
   }
   return campaign.factions.filter((f) => ids.has(f.id));
 }
@@ -50,20 +79,42 @@ export function getFactionById(
   return campaign.factions.find((f) => f.id === factionId);
 }
 
-/** Sync system.controllingFactionId from its planets (single owner or clear if contested/empty). */
+/** Stable A→Z list for faction pickers and panels. */
+export function factionsSortedByName(factions: Faction[]): Faction[] {
+  return [...factions].sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+  );
+}
+
+/**
+ * Sole planet-level owner for a system, or undefined if empty / contested.
+ * Does not fall back to a stale system.controllingFactionId — for writes.
+ */
 export function deriveSystemOwnerId(
-  campaign: Campaign,
+  planets: Planet[],
   systemId: string,
 ): string | undefined {
   const ids = new Set<string>();
-  for (const p of campaign.planets) {
+  for (const p of planets) {
     if (p.systemId !== systemId || !p.controllingFactionId) continue;
     ids.add(p.controllingFactionId);
   }
   if (ids.size === 1) return [...ids][0];
-  if (ids.size > 1) return undefined;
-  const system = campaign.systems.find((s) => s.id === systemId);
-  return system?.controllingFactionId;
+  return undefined;
+}
+
+/** Rewrite system.controllingFactionId from current planet owners. */
+export function syncSystemOwnerInSystems(
+  systems: StarSystem[],
+  planets: Planet[],
+  systemId: string,
+): StarSystem[] {
+  const owner = deriveSystemOwnerId(planets, systemId);
+  return systems.map((sys) =>
+    sys.id === systemId
+      ? { ...sys, controllingFactionId: owner }
+      : sys,
+  );
 }
 
 export function systemOwnerSelectValue(
@@ -75,5 +126,8 @@ export function systemOwnerSelectValue(
   return system.controllingFactionId ?? "";
 }
 
-/** Fixed sphere of influence for every controlled system (world units). */
-export const CLAIM_RADIUS = 320;
+/**
+ * Sphere of influence for every controlled system (world units).
+ * Larger values merge same-faction blobs across wider gaps between systems.
+ */
+export const CLAIM_RADIUS = 480;

@@ -4,12 +4,22 @@ import { GALAXY_SIZE } from "../types/campaign";
 
 const MAX_SCALE = 2.5;
 const ABSOLUTE_MIN_SCALE = 0.02;
+/** Map fills this fraction of the short viewport axis at "fit". */
 const FIT_PADDING = 0.92;
+/**
+ * How far past fit you may zoom out (1 = stop at fit, 0.45 ≈ map is
+ * less than half the viewport — more empty space around the galaxy).
+ */
+const MIN_SCALE_FIT_FRACTION = 0.45;
 /** Slightly snappier than before — still eased, less “floaty”. */
 const ZOOM_LERP = 0.22;
 const ZOOM_SENSITIVITY = 0.00115;
-/** Base pan speed (px/sec) at scale 1. */
+/** Base pan speed (px/sec) at the reference scale. */
 const PAN_SPEED = 520;
+/** Scale where WASD feels "normal"; below this, pan accelerates. */
+const PAN_REF_SCALE = 0.45;
+/** Cap on zoomed-out pan boost so it doesn't become uncontrollable. */
+const PAN_OUT_BOOST_MAX = 3.25;
 /** Ignore sub-pixel scale chatter before notifying React. */
 const SCALE_NOTIFY_EPS = 0.002;
 
@@ -33,7 +43,9 @@ function fitScaleForViewport(
 ) {
   if (width <= 0 || height <= 0) return ABSOLUTE_MIN_SCALE;
   const fit = (Math.min(width, height) / worldSize) * FIT_PADDING;
-  return clamp(fit, ABSOLUTE_MIN_SCALE, MAX_SCALE);
+  // Allow zooming out past "fit" so the map can sit smaller in the view.
+  const minZoom = fit * MIN_SCALE_FIT_FRACTION;
+  return clamp(minZoom, ABSOLUTE_MIN_SCALE, MAX_SCALE);
 }
 
 type ZoomAnchor = {
@@ -251,7 +263,14 @@ export function useMapCamera(
       const dy = (keys.s ? 1 : 0) - (keys.w ? 1 : 0);
       if (dx !== 0 || dy !== 0) {
         const len = Math.hypot(dx, dy) || 1;
-        const speed = PAN_SPEED * scale * dt;
+        // Constant world coverage at PAN_REF_SCALE; boost when zoomed out so
+        // crossing the galaxy doesn't crawl.
+        const outBoost = clamp(
+          PAN_REF_SCALE / Math.max(scale, 0.04),
+          1,
+          PAN_OUT_BOOST_MAX,
+        );
+        const speed = PAN_SPEED * scale * outBoost * dt;
         nextX -= (dx / len) * speed;
         nextY -= (dy / len) * speed;
         dirty = true;

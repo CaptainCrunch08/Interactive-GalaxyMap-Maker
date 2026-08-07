@@ -15,7 +15,9 @@ import type {
 } from "../types/campaign";
 import { useCampaignStore } from "../store/useCampaignStore";
 import { megastructureName } from "../lib/stars";
+import { supportsStrategicSurface } from "../lib/planetClass";
 import {
+  factionsSortedByName,
   getFactionById,
   getSystemOwnership,
   ownershipLabel,
@@ -23,21 +25,46 @@ import {
 } from "../lib/territory";
 import { countDistrictsByFaction } from "../lib/settlements";
 import {
+  BASTION_BP_COST,
+  canBuildBastion,
+  canBuildDomedHabitat,
   canBuildManufactorum,
+  canBuildOreMine,
+  canBuildOutpost,
+  canBuildSpire,
+  canBuildTrenchLine,
+  canBuildUnderhive,
   canRecruitDetachment,
   canRecruitShip,
+  canRenameControlled,
   canUseSpacePort,
   canDeployFromTransport,
   canLoadTransportCargo,
+  canUnloadTransportCargo,
   DETACHMENT_BP_COST,
+  demolishBpCost,
+  DOMED_HABITAT_BP_COST,
   getBuildingPoints,
   incomeForFaction,
   MANUFACTORUM_BP_COST,
+  MANUFACTORUM_BP_INCOME,
+  manufactorumIncomeBreakdown,
+  ORE_MINE_BP_BONUS,
+  ORE_MINE_BP_COST,
+  OUTPOST_BP_COST,
   ownedCities,
   shipBpCost,
   fleetCargoBp,
   fleetCargoCapacity,
+  SPIRE_BP_COST,
+  TRENCH_LINE_BP_COST,
+  UNDERHIVE_BP_COST,
 } from "../lib/buildingPoints";
+import {
+  computeActivation,
+  isApConsumer,
+  isApGenerator,
+} from "../lib/activation";
 import { fleetsInOrbit } from "../lib/fleets";
 import {
   connectedSupplyStations,
@@ -109,6 +136,9 @@ export function InspectorPanel() {
   const setCityOwner = useCampaignStore((s) => s.setCityOwner);
   const setDistrictOwner = useCampaignStore((s) => s.setDistrictOwner);
   const setStructureOwner = useCampaignStore((s) => s.setStructureOwner);
+  const updateCity = useCampaignStore((s) => s.updateCity);
+  const updateDistrict = useCampaignStore((s) => s.updateDistrict);
+  const updateStructure = useCampaignStore((s) => s.updateStructure);
   const clearOpenTileClaims = useCampaignStore((s) => s.clearOpenTileClaims);
   const setTerrainPaintFaction = useCampaignStore(
     (s) => s.setTerrainPaintFaction,
@@ -118,6 +148,7 @@ export function InspectorPanel() {
   const recruitDetachment = useCampaignStore((s) => s.recruitDetachment);
   const recruitShip = useCampaignStore((s) => s.recruitShip);
   const loadTransportCargo = useCampaignStore((s) => s.loadTransportCargo);
+  const unloadTransportCargo = useCampaignStore((s) => s.unloadTransportCargo);
   const deployFromTransport = useCampaignStore((s) => s.deployFromTransport);
   const playBuildMode = useCampaignStore((s) => s.playBuildMode);
   const setPlayBuildMode = useCampaignStore((s) => s.setPlayBuildMode);
@@ -700,7 +731,7 @@ export function InspectorPanel() {
                   }
                 >
                   <option value="">Unclaimed</option>
-                  {campaign.factions.map((f) => (
+                  {factionsSortedByName(campaign.factions).map((f) => (
                     <option key={f.id} value={f.id}>
                       {f.name}
                     </option>
@@ -718,7 +749,8 @@ export function InspectorPanel() {
               />
             </section>
 
-            {planet.type !== "asteroid_belt" && (
+            {planet.type !== "asteroid_belt" &&
+              supportsStrategicSurface(planet) && (
             <>
             <section>
               <div className="flex items-center justify-between mb-2">
@@ -747,17 +779,46 @@ export function InspectorPanel() {
               </p>
               {(() => {
                 const cities = planet.cities ?? [];
+                const independentDistricts = planet.independentDistricts ?? [];
                 const structures = planet.structures ?? [];
-                if (cities.length === 0 && structures.length === 0) {
+                if (
+                  cities.length === 0 &&
+                  structures.length === 0 &&
+                  independentDistricts.length === 0
+                ) {
                   return (
                     <p className="text-xs text-muted">
                       No settlements yet. Open strategic view or regenerate.
                     </p>
                   );
                 }
-                const counts = countDistrictsByFaction(cities);
+                const counts = countDistrictsByFaction(
+                  cities,
+                  independentDistricts,
+                );
+                const activation = computeActivation(planet);
                 return (
                   <>
+                    {activation.warnings.length > 0 && (
+                      <div className="mb-3 rounded border border-brass/40 bg-brass/5 px-2 py-1.5 space-y-0.5">
+                        <p className="text-[10px] uppercase tracking-wider text-brass">
+                          Activation warnings
+                        </p>
+                        {activation.warnings.slice(0, 8).map((w, i) => (
+                          <p
+                            key={`${i}-${w.slice(0, 24)}`}
+                            className="text-[10px] text-brass leading-snug"
+                          >
+                            {w}
+                          </p>
+                        ))}
+                        {activation.warnings.length > 8 && (
+                          <p className="text-[10px] text-muted">
+                            +{activation.warnings.length - 8} more
+                          </p>
+                        )}
+                      </div>
+                    )}
                     <div className="flex flex-wrap gap-2 mb-3">
                       {[...counts.entries()].map(([fid, n]) => {
                         const fac =
@@ -799,7 +860,36 @@ export function InspectorPanel() {
                               <span className="text-[10px] text-muted ml-2">
                                 {city.districts.length} districts
                               </span>
+                              <span className="block text-[10px] text-cyan mt-0.5">
+                                Activation{" "}
+                                {activation.groupUsed.get(city.id) ?? 0}/
+                                {activation.groupAp.get(city.id) ?? 0}
+                                {(activation.cityAp.get(city.id) ?? 0) !==
+                                  (activation.groupAp.get(city.id) ?? 0) && (
+                                  <span className="text-muted">
+                                    {" "}
+                                    (local {activation.cityAp.get(city.id) ?? 0}
+                                    , shared via supply)
+                                  </span>
+                                )}
+                              </span>
                             </button>
+                            {canRenameControlled(
+                              campaign,
+                              city.controllingFactionId,
+                            ) && (
+                              <input
+                                className={inputClass}
+                                style={{ fontSize: "0.75rem" }}
+                                value={city.name}
+                                onChange={(e) =>
+                                  updateCity(planet.id, city.id, {
+                                    name: e.target.value,
+                                  })
+                                }
+                                aria-label="City name"
+                              />
+                            )}
                             <select
                               className={inputClass}
                               style={{ fontSize: "0.75rem" }}
@@ -817,7 +907,7 @@ export function InspectorPanel() {
                             >
                               <option value="">Assign all districts…</option>
                               <option value="__none__">Unclaimed</option>
-                              {campaign.factions.map((f) => (
+                              {factionsSortedByName(campaign.factions).map((f) => (
                                 <option key={f.id} value={f.id}>
                                   {f.name}
                                 </option>
@@ -852,9 +942,35 @@ export function InspectorPanel() {
                                         </span>
                                         <span className="block text-[10px] text-brass truncate">
                                           {DISTRICT_KIND_LABELS[d.kind]}
+                                          {isApGenerator(d.kind)
+                                            ? " · +AP"
+                                            : isApConsumer(d.kind)
+                                              ? activation.activated.has(d.id)
+                                                ? " · active"
+                                                : " · inactive"
+                                              : ""}
                                         </span>
                                       </span>
                                     </button>
+                                    {canRenameControlled(
+                                      campaign,
+                                      d.controllingFactionId,
+                                    ) && (
+                                      <input
+                                        className={inputClass}
+                                        style={{ fontSize: "0.7rem" }}
+                                        value={d.name}
+                                        onChange={(e) =>
+                                          updateDistrict(
+                                            planet.id,
+                                            city.id,
+                                            d.id,
+                                            { name: e.target.value },
+                                          )
+                                        }
+                                        aria-label="District name"
+                                      />
+                                    )}
                                     <select
                                       className={inputClass}
                                       style={{ fontSize: "0.7rem" }}
@@ -870,7 +986,7 @@ export function InspectorPanel() {
                                       }}
                                     >
                                       <option value="">Unclaimed</option>
-                                      {campaign.factions.map((f) => (
+                                      {factionsSortedByName(campaign.factions).map((f) => (
                                         <option key={f.id} value={f.id}>
                                           {f.name}
                                         </option>
@@ -905,6 +1021,111 @@ export function InspectorPanel() {
                         );
                       })}
                     </ul>
+                    {independentDistricts.length > 0 && (
+                      <div className="mt-3">
+                        <h4 className="text-[10px] uppercase tracking-wide text-muted mb-2">
+                          Independent districts
+                        </h4>
+                        <p className="text-[10px] text-muted mb-2 leading-snug">
+                          More than 2 hexes from the nearest city. Independent
+                          generators provide no activation points.
+                        </p>
+                        <ul className="space-y-1.5">
+                          {independentDistricts.map((d) => {
+                            const fac = getFactionById(
+                              campaign,
+                              d.controllingFactionId,
+                            );
+                            const active = selectedDistrictId === d.id;
+                            return (
+                              <li
+                                key={d.id}
+                                id={`district-${d.id}`}
+                                className={`rounded px-1.5 py-1.5 space-y-1 border ${
+                                  active
+                                    ? "border-cyan/40 bg-cyan/10"
+                                    : "border-panel-border/60"
+                                }`}
+                              >
+                                <button
+                                  type="button"
+                                  className="w-full flex items-start gap-2 text-left bg-transparent border-0 p-0 cursor-pointer"
+                                  onClick={() => selectSettlement(null, d.id)}
+                                >
+                                  <FactionSwatch color={fac?.color} />
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block text-xs text-text truncate">
+                                      {d.name}
+                                    </span>
+                                    <span className="block text-[10px] text-brass truncate">
+                                      {DISTRICT_KIND_LABELS[d.kind]}
+                                    </span>
+                                  </span>
+                                </button>
+                                {canRenameControlled(
+                                  campaign,
+                                  d.controllingFactionId,
+                                ) && (
+                                  <input
+                                    className={inputClass}
+                                    style={{ fontSize: "0.7rem" }}
+                                    value={d.name}
+                                    onChange={(e) =>
+                                      updateDistrict(planet.id, null, d.id, {
+                                        name: e.target.value,
+                                      })
+                                    }
+                                    aria-label="District name"
+                                  />
+                                )}
+                                <select
+                                  className={inputClass}
+                                  style={{ fontSize: "0.7rem" }}
+                                  value={d.controllingFactionId ?? ""}
+                                  onChange={(e) => {
+                                    selectSettlement(null, d.id);
+                                    setDistrictOwner(
+                                      planet.id,
+                                      null,
+                                      d.id,
+                                      e.target.value || null,
+                                    );
+                                  }}
+                                >
+                                  <option value="">Unclaimed</option>
+                                  {factionsSortedByName(campaign.factions).map((f) => (
+                                    <option key={f.id} value={f.id}>
+                                      {f.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                {d.kind === "supply_station" && (
+                                  <p className="text-[10px] text-muted leading-snug pl-0.5">
+                                    {(() => {
+                                      const nets = networksLinkedToStation(
+                                        planet,
+                                        d.id,
+                                      );
+                                      const peers = connectedSupplyStations(
+                                        planet,
+                                        d.id,
+                                      );
+                                      if (
+                                        nets.length === 0 &&
+                                        peers.length === 0
+                                      ) {
+                                        return `No supply link within ${SUPPLY_LINK_RANGE} hexes`;
+                                      }
+                                      return `${peers.length} other station${peers.length === 1 ? "" : "s"} in chain · ${nets.length} network${nets.length === 1 ? "" : "s"} nearby`;
+                                    })()}
+                                  </p>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    )}
                     {structures.length > 0 && (
                       <div className="mt-4">
                         <h4 className="text-[10px] uppercase tracking-wide text-muted mb-2">
@@ -942,6 +1163,22 @@ export function InspectorPanel() {
                                     </span>
                                   </span>
                                 </button>
+                                {canRenameControlled(
+                                  campaign,
+                                  st.controllingFactionId,
+                                ) && (
+                                  <input
+                                    className={inputClass}
+                                    style={{ fontSize: "0.7rem" }}
+                                    value={st.name}
+                                    onChange={(e) =>
+                                      updateStructure(planet.id, st.id, {
+                                        name: e.target.value,
+                                      })
+                                    }
+                                    aria-label="Structure name"
+                                  />
+                                )}
                                 <select
                                   className={inputClass}
                                   style={{ fontSize: "0.7rem" }}
@@ -956,7 +1193,7 @@ export function InspectorPanel() {
                                   }}
                                 >
                                   <option value="">Unclaimed</option>
-                                  {campaign.factions.map((f) => (
+                                  {factionsSortedByName(campaign.factions).map((f) => (
                                     <option key={f.id} value={f.id}>
                                       {f.name}
                                     </option>
@@ -1031,8 +1268,9 @@ export function InspectorPanel() {
                 </button>
               </div>
               <p className="text-[10px] text-muted mb-2 leading-snug">
-                Paint empty hexes (not cities, districts, or structures) with an
-                empire color. Use Erase to unclaim.
+                Paint hexes with an empire color. Empty hexes become open
+                territory; cities, districts, and structures take that owner.
+                Use Erase to clear.
               </p>
               <div className="flex flex-wrap gap-1.5 mb-2">
                 <button
@@ -1055,7 +1293,7 @@ export function InspectorPanel() {
                 >
                   Erase
                 </button>
-                {campaign.factions.map((f) => (
+                {factionsSortedByName(campaign.factions).map((f) => (
                   <button
                     key={f.id}
                     type="button"
@@ -1072,7 +1310,7 @@ export function InspectorPanel() {
               {terrainPaintFactionId != null && (
                 <p className="text-[10px] text-cyan">
                   {viewLevel === "strategic"
-                    ? "Click and drag open hexes on the globe to paint."
+                    ? "Click and drag hexes on the globe to paint."
                     : "Open the strategic hex map to paint territory."}
                 </p>
               )}
@@ -1093,6 +1331,10 @@ export function InspectorPanel() {
               const factionId = play.activeFactionId;
               const bp = getBuildingPoints(planet, factionId);
               const income = incomeForFaction(planet, factionId);
+              const incomeParts = manufactorumIncomeBreakdown(
+                planet,
+                factionId,
+              );
               const detCheck = canRecruitDetachment(
                 campaign,
                 planet,
@@ -1101,7 +1343,12 @@ export function InspectorPanel() {
               const portCheck = canUseSpacePort(campaign, planet, factionId);
               const citiesOwned = ownedCities(planet, factionId);
               const buildCityId =
-                playBuildMode?.kind === "manufactorum" &&
+                (playBuildMode?.kind === "manufactorum" ||
+                  playBuildMode?.kind === "bastion" ||
+                  playBuildMode?.kind === "outpost" ||
+                  playBuildMode?.kind === "spire" ||
+                  playBuildMode?.kind === "underhive" ||
+                  playBuildMode?.kind === "domed_habitat") &&
                 playBuildMode.planetId === planet.id
                   ? playBuildMode.cityId
                   : (selectedCityId &&
@@ -1114,7 +1361,48 @@ export function InspectorPanel() {
                 factionId,
                 buildCityId,
               );
+              const bastionCheck = canBuildBastion(
+                campaign,
+                planet,
+                factionId,
+                buildCityId,
+              );
+              const outpostCheck = canBuildOutpost(
+                campaign,
+                planet,
+                factionId,
+                buildCityId,
+              );
+              const spireCheck = canBuildSpire(
+                campaign,
+                planet,
+                factionId,
+                buildCityId,
+              );
+              const underhiveCheck = canBuildUnderhive(
+                campaign,
+                planet,
+                factionId,
+                buildCityId,
+              );
+              const domeCheck = canBuildDomedHabitat(
+                campaign,
+                planet,
+                factionId,
+                buildCityId,
+              );
+              const trenchCheck = canBuildTrenchLine(
+                campaign,
+                planet,
+                factionId,
+              );
+              const oreMineCheck = canBuildOreMine(
+                campaign,
+                planet,
+                factionId,
+              );
               const fac = getFactionById(campaign, factionId);
+              const cityActivation = computeActivation(planet);
               return (
                 <section>
                   <h3 className="text-xs uppercase text-muted tracking-wide mb-2">
@@ -1128,11 +1416,28 @@ export function InspectorPanel() {
                       {income > 0 ? (
                         <span className="text-muted">
                           {" "}
-                          · +{income}/turn from manufactorums
+                          · +{income}/turn
+                          {incomeParts.oreBonus > 0
+                            ? ` (${incomeParts.manufactorums}×${MANUFACTORUM_BP_INCOME} manufactorum + ${incomeParts.oreMinesLinked}×${ORE_MINE_BP_BONUS} ore)`
+                            : " from manufactorums"}
                         </span>
                       ) : null}
                     </span>
                   </p>
+                  {buildCityId && (
+                    <p className="text-[10px] text-cyan mb-2">
+                      Selected city activation{" "}
+                      {cityActivation.groupUsed.get(buildCityId) ?? 0}/
+                      {cityActivation.groupAp.get(buildCityId) ?? 0}
+                      {(cityActivation.groupAp.get(buildCityId) ?? 0) >
+                        (cityActivation.cityAp.get(buildCityId) ?? 0) && (
+                        <span className="text-muted">
+                          {" "}
+                          (shared supply pool)
+                        </span>
+                      )}
+                    </p>
+                  )}
                   <div className="flex flex-col gap-1.5">
                     <button
                       type="button"
@@ -1162,10 +1467,15 @@ export function InspectorPanel() {
                       return (
                         <div className="pt-1 space-y-1.5">
                           <p className="text-[10px] uppercase tracking-wider text-muted">
-                            Transport holds (no camp needed)
+                            Transport holds
                           </p>
                           {withCargo.map((f) => {
                             const loadCheck = canLoadTransportCargo(
+                              campaign,
+                              f,
+                              planet,
+                            );
+                            const unloadCheck = canUnloadTransportCargo(
                               campaign,
                               f,
                               planet,
@@ -1206,6 +1516,22 @@ export function InspectorPanel() {
                                   <button
                                     type="button"
                                     className="hud-btn"
+                                    disabled={!unloadCheck.ok}
+                                    title={
+                                      unloadCheck.ok
+                                        ? undefined
+                                        : unloadCheck.message
+                                    }
+                                    onClick={() => {
+                                      selectFleet(f.id);
+                                      unloadTransportCargo(f.id);
+                                    }}
+                                  >
+                                    Unload BP
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="hud-btn"
                                     disabled={!deployCheck.ok}
                                     title={
                                       deployCheck.ok
@@ -1228,7 +1554,7 @@ export function InspectorPanel() {
                     })()}
 
                     <p className="text-[10px] uppercase tracking-wider text-muted pt-1">
-                      Build manufactorum
+                      Build on surface
                     </p>
                     {citiesOwned.length > 0 && (
                       <label className="flex flex-col gap-0.5 text-[10px] text-muted">
@@ -1239,11 +1565,16 @@ export function InspectorPanel() {
                           onChange={(e) => {
                             const cityId = e.target.value;
                             if (
-                              playBuildMode?.kind === "manufactorum" &&
+                              (playBuildMode?.kind === "manufactorum" ||
+                                playBuildMode?.kind === "bastion" ||
+                                playBuildMode?.kind === "outpost" ||
+                                playBuildMode?.kind === "spire" ||
+                                playBuildMode?.kind === "underhive" ||
+                                playBuildMode?.kind === "domed_habitat") &&
                               cityId
                             ) {
                               setPlayBuildMode({
-                                kind: "manufactorum",
+                                kind: playBuildMode.kind,
                                 planetId: planet.id,
                                 cityId,
                               });
@@ -1259,55 +1590,198 @@ export function InspectorPanel() {
                         </select>
                       </label>
                     )}
+                    {(
+                      [
+                        {
+                          kind: "manufactorum" as const,
+                          check: manufCheck,
+                          cost: MANUFACTORUM_BP_COST,
+                          label: "Manufactorum",
+                        },
+                        {
+                          kind: "bastion" as const,
+                          check: bastionCheck,
+                          cost: BASTION_BP_COST,
+                          label: "Bastion (+2% STR)",
+                        },
+                        {
+                          kind: "outpost" as const,
+                          check: outpostCheck,
+                          cost: OUTPOST_BP_COST,
+                          label: "Outpost (+1% STR)",
+                        },
+                        {
+                          kind: "spire" as const,
+                          check: spireCheck,
+                          cost: SPIRE_BP_COST,
+                          label: "Hive Spire (+2 AP)",
+                        },
+                        {
+                          kind: "underhive" as const,
+                          check: underhiveCheck,
+                          cost: UNDERHIVE_BP_COST,
+                          label: "Underhive (+1 AP)",
+                        },
+                        {
+                          kind: "domed_habitat" as const,
+                          check: domeCheck,
+                          cost: DOMED_HABITAT_BP_COST,
+                          label: "Domed Habitat (+1 AP)",
+                        },
+                      ] as const
+                    ).map((row) => (
+                      <div key={row.kind} className="space-y-0.5">
+                        <button
+                          type="button"
+                          className={`hud-btn w-full ${
+                            playBuildMode?.kind === row.kind
+                              ? "hud-btn-active"
+                              : ""
+                          }`}
+                          disabled={!row.check.ok && playBuildMode == null}
+                          title={
+                            row.check.ok
+                              ? "Then click a free hex next to the city"
+                              : row.check.message
+                          }
+                          onClick={() => {
+                            if (playBuildMode?.kind === row.kind) {
+                              setPlayBuildMode(null);
+                              return;
+                            }
+                            if (!row.check.ok) return;
+                            setPlayBuildMode({
+                              kind: row.kind,
+                              planetId: planet.id,
+                              cityId: row.check.city.id,
+                            });
+                            if (viewLevel !== "strategic") {
+                              enterPlanet(planet.id);
+                            }
+                          }}
+                        >
+                          {playBuildMode?.kind === row.kind
+                            ? `Click hex… (cancel)`
+                            : `Build ${row.label} (${row.cost} BP)`}
+                        </button>
+                        {!row.check.ok && playBuildMode == null && (
+                          <p className="text-[10px] text-brass leading-snug">
+                            {row.check.message}
+                          </p>
+                        )}
+                      </div>
+                    ))}
                     <button
                       type="button"
                       className={`hud-btn w-full ${
-                        playBuildMode?.kind === "manufactorum"
+                        playBuildMode?.kind === "trench_line"
                           ? "hud-btn-active"
                           : ""
                       }`}
-                      disabled={!manufCheck.ok && playBuildMode == null}
+                      disabled={!trenchCheck.ok && playBuildMode == null}
                       title={
-                        manufCheck.ok
-                          ? "Then click a free hex next to the city on the strategic map"
-                          : manufCheck.message
+                        trenchCheck.ok
+                          ? "Then click any free hex"
+                          : trenchCheck.message
                       }
                       onClick={() => {
-                        if (playBuildMode?.kind === "manufactorum") {
+                        if (playBuildMode?.kind === "trench_line") {
                           setPlayBuildMode(null);
                           return;
                         }
-                        if (!manufCheck.ok) {
-                          return;
-                        }
+                        if (!trenchCheck.ok) return;
                         setPlayBuildMode({
-                          kind: "manufactorum",
+                          kind: "trench_line",
                           planetId: planet.id,
-                          cityId: manufCheck.city.id,
                         });
                         if (viewLevel !== "strategic") {
                           enterPlanet(planet.id);
                         }
                       }}
                     >
-                      {playBuildMode?.kind === "manufactorum"
-                        ? "Click hex around city… (cancel)"
-                        : `Build manufactorum (${MANUFACTORUM_BP_COST} BP)`}
+                      {playBuildMode?.kind === "trench_line"
+                        ? "Click free hex… (cancel)"
+                        : `Build trench line (+1% any) (${TRENCH_LINE_BP_COST} BP)`}
                     </button>
-                    {!manufCheck.ok && playBuildMode == null && (
+                    {!trenchCheck.ok && playBuildMode == null && (
                       <p className="text-[10px] text-brass leading-snug">
-                        {manufCheck.message}
+                        {trenchCheck.message}
                       </p>
                     )}
-                    {playBuildMode?.kind === "manufactorum" && (
-                      <p className="text-[10px] text-cyan leading-snug">
-                        Open the strategic map and click a free hex adjacent to{" "}
-                        {manufCheck.ok
-                          ? manufCheck.city.name
-                          : "the city"}
-                        .
+                    <button
+                      type="button"
+                      className={`hud-btn w-full ${
+                        playBuildMode?.kind === "ore_mine"
+                          ? "hud-btn-active"
+                          : ""
+                      }`}
+                      disabled={!oreMineCheck.ok && playBuildMode == null}
+                      title={
+                        oreMineCheck.ok
+                          ? "Then click a free crater hex"
+                          : oreMineCheck.message
+                      }
+                      onClick={() => {
+                        if (playBuildMode?.kind === "ore_mine") {
+                          setPlayBuildMode(null);
+                          return;
+                        }
+                        if (!oreMineCheck.ok) return;
+                        setPlayBuildMode({
+                          kind: "ore_mine",
+                          planetId: planet.id,
+                        });
+                        if (viewLevel !== "strategic") {
+                          enterPlanet(planet.id);
+                        }
+                      }}
+                    >
+                      {playBuildMode?.kind === "ore_mine"
+                        ? "Click crater hex… (cancel)"
+                        : `Build ore mine (+${ORE_MINE_BP_BONUS} BP linked) (${ORE_MINE_BP_COST} BP)`}
+                    </button>
+                    {!oreMineCheck.ok && playBuildMode == null && (
+                      <p className="text-[10px] text-brass leading-snug">
+                        {oreMineCheck.message}
                       </p>
                     )}
+                    <button
+                      type="button"
+                      className={`hud-btn w-full ${
+                        playBuildMode?.kind === "demolish"
+                          ? "hud-btn-active"
+                          : ""
+                      }`}
+                      onClick={() => {
+                        if (playBuildMode?.kind === "demolish") {
+                          setPlayBuildMode(null);
+                          return;
+                        }
+                        setPlayBuildMode({
+                          kind: "demolish",
+                          planetId: planet.id,
+                        });
+                        if (viewLevel !== "strategic") {
+                          enterPlanet(planet.id);
+                        }
+                      }}
+                    >
+                      {playBuildMode?.kind === "demolish"
+                        ? "Click feature to demolish… (cancel)"
+                        : "Demolish (½ build cost BP)"}
+                    </button>
+                    <p className="text-[10px] text-muted leading-snug">
+                      Demolish manufactorums (
+                      {demolishBpCost("manufactorum")} BP), bastions (
+                      {demolishBpCost("bastion")} BP), outposts (
+                      {demolishBpCost("outpost")} BP), spires (
+                      {demolishBpCost("spire")} BP), underhives (
+                      {demolishBpCost("underhive")} BP), domed habitats (
+                      {demolishBpCost("domed_habitat")} BP), trench lines (
+                      {demolishBpCost("trench_line")} BP), or ore mines (
+                      {demolishBpCost("ore_mine")} BP) you own. Demolishing a
+                      spire disables underhives that no longer touch any spire.
+                    </p>
 
                     <p className="text-[10px] uppercase tracking-wider text-muted pt-1">
                       Build ship at Space Port
@@ -1371,7 +1845,7 @@ export function InspectorPanel() {
                     }}
                   >
                     <option value="">+ Deploy…</option>
-                    {campaign.factions.map((f) => (
+                    {factionsSortedByName(campaign.factions).map((f) => (
                       <option key={f.id} value={f.id}>
                         {f.name}
                       </option>
@@ -1482,7 +1956,7 @@ export function InspectorPanel() {
                             })
                           }
                         >
-                          {campaign.factions.map((f) => (
+                          {factionsSortedByName(campaign.factions).map((f) => (
                             <option key={f.id} value={f.id}>
                               {f.name}
                             </option>
@@ -1830,7 +2304,7 @@ export function InspectorPanel() {
                       Contested — {ownershipLabel(systemOwnership)}
                     </option>
                   )}
-                  {campaign.factions.map((f) => (
+                  {factionsSortedByName(campaign.factions).map((f) => (
                     <option key={f.id} value={f.id}>
                       {f.name}
                     </option>

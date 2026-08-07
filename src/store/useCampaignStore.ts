@@ -8,19 +8,34 @@ import {
 import {
   assignAllDistricts,
   assignAllStructures,
+  assignAllTileClaims,
   createCityAtTile,
   createDistrictAtTile,
   createStructureAtTile,
   createStructureOnFreeHex,
   ensurePlanetCities,
+  featureAtTileIndex,
   generatePlanetSurface,
   planetOwnerFromCities,
+  preferredDetachmentSpawnDir,
+  reassignDistrictsToCities,
   scrubTileClaims,
   settlementTileSet,
 } from "../lib/settlements";
 import { normalizeStructureKind } from "../lib/structureMeshes";
-import { getCampaignHyperlanes, laneKey } from "../lib/hyperlanes";
-import { getSystemOwnership } from "../lib/territory";
+import {
+  campaignWithHyperlaneAdded,
+  campaignWithHyperlaneRemoved,
+  campaignWithHyperlanesReset,
+  campaignWithSystemHyperlanesPruned,
+  campaignWithSystemsHyperlanesPruned,
+  campaignWithSystemPlaced,
+} from "../lib/hyperlanes";
+import {
+  getSystemOwnership,
+  syncSystemOwnerInSystems,
+  deriveSystemOwnerId,
+} from "../lib/territory";
 import { normalizeStarClass, pickRandomStarClass } from "../lib/stars";
 import {
   normalizePlanetClassification,
@@ -45,6 +60,8 @@ import type {
   BattleEntry,
   Campaign,
   CampaignCharacter,
+  City,
+  District,
   DistrictKind,
   Faction,
   FamousBattleSite,
@@ -83,7 +100,6 @@ import {
   buildBattleRecord,
   classifyBattleVictory,
   classifyVictory,
-  combinedForceStrength,
   commanderLabel,
   battleMonumentDir,
   eligibleSupportArmies,
@@ -93,25 +109,51 @@ import {
   type BattleResolveInput,
   type BattleResolvePending,
 } from "../lib/battleResolve";
+import { combinedForceStrengthWithFortifications } from "../lib/fortificationBonus";
 import { SETTLEMENT_HEX_FREQUENCY } from "../lib/settlements";
 import { withHistoryCapture } from "../lib/galaxyHistory";
 import {
   applyTurnIncome,
+  BASTION_BP_COST,
+  canBuildBastion,
+  canBuildDomedHabitat,
   canBuildManufactorum,
-  canPlaceManufactorumAtTile,
+  canBuildOutpost,
+  canBuildSpire,
+  canBuildUnderhive,
+  canBuildOreMine,
+  canBuildTrenchLine,
+  canDemolishAtTile,
+  canPlaceCityAdjacentDistrictAtTile,
+  canPlaceOreMineAtTile,
+  canPlaceTrenchLineAtTile,
   canRecruitDetachment,
   canRecruitShip,
   canDeployFromTransport,
   canLoadTransportCargo,
+  canUnloadTransportCargo,
+  creditBuildingPoints,
   DETACHMENT_BP_COST,
+  DOMED_HABITAT_BP_COST,
+  getBuildingPoints,
   MANUFACTORUM_BP_COST,
+  ORE_MINE_BP_COST,
+  OUTPOST_BP_COST,
   ownedCamps,
   shipBpCost,
   spendBuildingPoints,
   spendFleetCargo,
   addFleetCargo,
   fleetCargoBp,
+  SPIRE_BP_COST,
+  TRENCH_LINE_BP_COST,
+  UNDERHIVE_BP_COST,
 } from "../lib/buildingPoints";
+import {
+  canPlaceSpireAtTile,
+  canPlaceUnderhiveAtTile,
+  districtPlacementWarnings,
+} from "../lib/activation";
 import {
   ARMY_MOVE_RANGE,
   armyMovementRemaining,
@@ -143,6 +185,137 @@ import {
   warpGatePlacementBlockedReason,
   warpTravelBlockedReason,
 } from "../lib/warpGates";
+
+function buildPlayCityDistrict(
+  get: () => { campaign: Campaign },
+  set: (partial: Record<string, unknown> | ((state: any) => Record<string, unknown>)) => void,
+  args: {
+    planetId: string;
+    cityId: string;
+    tileIndex: number;
+    kind: "manufactorum" | "bastion" | "outpost" | "spire" | "underhive" | "domed_habitat";
+    cost: number;
+    label: string;
+    canBuild: typeof canBuildManufactorum;
+  },
+): string | null {
+  const state = get();
+  const play = normalizeCampaignPlay(state.campaign.play);
+  const factionId = play.activeFactionId;
+  if (!factionId) {
+    set({ playMoveHint: "No active faction" });
+    return null;
+  }
+  const planet = state.campaign.planets.find((p) => p.id === args.planetId);
+  if (!planet) return null;
+  const check = args.canBuild(
+    state.campaign,
+    planet,
+    factionId,
+    args.cityId,
+  );
+  if (!check.ok) {
+    set({ playMoveHint: check.message });
+    return null;
+  }
+  const placeErr = canPlaceCityAdjacentDistrictAtTile(
+    planet,
+    check.city,
+    args.tileIndex,
+    args.label,
+  );
+  if (placeErr) {
+    set({ playMoveHint: placeErr });
+    return null;
+  }
+  if (args.kind === "spire") {
+    const err = canPlaceSpireAtTile(planet, args.tileIndex);
+    if (err) {
+      set({ playMoveHint: err });
+      return null;
+    }
+  }
+  if (args.kind === "underhive") {
+    const err = canPlaceUnderhiveAtTile(planet, args.tileIndex);
+    if (err) {
+      set({ playMoveHint: err });
+      return null;
+    }
+  }
+  const result = createDistrictAtTile(
+    planet,
+    args.cityId,
+    args.tileIndex,
+    args.kind,
+    { controllingFactionId: factionId },
+  );
+  if (!result) {
+    set({ playMoveHint: `Could not place ${args.label.toLowerCase()}` });
+    return null;
+  }
+  const newDistrict = result.district;
+  const parentCity =
+    result.cities.find((c) =>
+      c.districts.some((d) => d.id === newDistrict.id),
+    ) ?? null;
+  set((s) => {
+    const planets = s.campaign.planets.map((p: Planet) => {
+      if (p.id !== args.planetId) return p;
+      const spent = spendBuildingPoints(
+        {
+          ...p,
+          cities: result.cities,
+          independentDistricts: result.independentDistricts,
+        },
+        factionId,
+        args.cost,
+      );
+      const tileClaims = scrubTileClaims(
+        spent.tileClaims,
+        result.cities,
+        spent.structures ?? [],
+        result.independentDistricts,
+      );
+      return {
+        ...spent,
+        cities: result.cities,
+        independentDistricts: result.independentDistricts,
+        tileClaims,
+        controllingFactionId: planetOwnerFromCities(
+          result.cities,
+          tileClaims,
+          spent.structures ?? [],
+          result.independentDistricts,
+        ),
+      };
+    });
+    const touched = planets.find((p) => p.id === args.planetId);
+    const systems = touched
+      ? syncSystemOwnerInSystems(
+          s.campaign.systems,
+          planets,
+          touched.systemId,
+        )
+      : s.campaign.systems;
+    return {
+      ...withCampaign(
+        s,
+        withHistoryCapture({
+          ...s.campaign,
+          planets,
+          systems,
+        }),
+      ),
+      selectedCityId: parentCity?.id ?? null,
+      selectedDistrictId: newDistrict.id,
+      selectedStructureId: null,
+      playBuildMode: null,
+      playMoveHint: null,
+      inspectorOpen: true,
+    };
+  });
+  return newDistrict.id;
+}
 
 function createInitialMaps() {
   const id = crypto.randomUUID();
@@ -242,12 +415,8 @@ function ensureCampaignSettlements(campaign: Campaign): Campaign {
     })),
     characters: campaign.characters ?? [],
     hyperlanes: campaign.hyperlanes,
-    factions: enforceUniqueSymbolOwnership(
-      campaign.factions.map((f) => ({
-        ...f,
-        armyType: f.armyType ?? "infantry",
-      })),
-    ),
+    hyperlaneEdits: campaign.hyperlaneEdits,
+    factions: enforceUniqueSymbolOwnership(campaign.factions),
     timeline: {
       frames: campaign.timeline?.frames ?? [],
       events: campaign.timeline?.events ?? [],
@@ -268,6 +437,7 @@ function ensureCampaignSettlements(campaign: Campaign): Campaign {
             p.id,
           ),
           cities: p.cities ?? [],
+          independentDistricts: p.independentDistricts ?? [],
           structures: (p.structures ?? []).map((st) => ({
             ...st,
             kind: normalizeStructureKind(st.kind),
@@ -299,10 +469,18 @@ export type SurfacePlaceMode =
   | { kind: "structure"; structureKind: StructureKind }
   | { kind: "erase" };
 
-/** Play-mode click-to-build (e.g. manufactorum around a city). */
+/** Play-mode click-to-build / demolish. */
 export type PlayBuildMode =
   | null
-  | { kind: "manufactorum"; planetId: string; cityId: string };
+  | { kind: "manufactorum"; planetId: string; cityId: string }
+  | { kind: "bastion"; planetId: string; cityId: string }
+  | { kind: "outpost"; planetId: string; cityId: string }
+  | { kind: "spire"; planetId: string; cityId: string }
+  | { kind: "underhive"; planetId: string; cityId: string }
+  | { kind: "domed_habitat"; planetId: string; cityId: string }
+  | { kind: "trench_line"; planetId: string }
+  | { kind: "ore_mine"; planetId: string }
+  | { kind: "demolish"; planetId: string };
 
 interface CampaignState {
   campaign: Campaign;
@@ -352,8 +530,8 @@ interface CampaignState {
   /** Full-screen Galactic Overview overlay. */
   galaxyOverviewOpen: boolean;
   galaxyOverviewTab: "strategic" | "factions" | "planets" | "characters";
-  /** Contents editor tool: select/drag stars vs draw hyperlanes. */
-  galaxyEditorTool: "select" | "connect";
+  /** Contents editor tool: select/drag stars, draw hyperlanes, place, or mass-delete. */
+  galaxyEditorTool: "select" | "connect" | "place" | "mass_delete";
   /** First endpoint when drawing a hyperlane. */
   hyperlaneConnectFromId: string | null;
   /** Snapshots for Ctrl+Z / Undo in Galaxy Contents. */
@@ -395,7 +573,9 @@ interface CampaignState {
   setGalaxyOverviewTab: (
     tab: "strategic" | "factions" | "planets" | "characters",
   ) => void;
-  setGalaxyEditorTool: (tool: "select" | "connect") => void;
+  setGalaxyEditorTool: (
+    tool: "select" | "connect" | "place" | "mass_delete",
+  ) => void;
   ensureManualHyperlanes: () => void;
   addHyperlane: (a: string, b: string) => boolean;
   removeHyperlane: (laneId: string) => void;
@@ -415,6 +595,8 @@ interface CampaignState {
   updateSystem: (id: string, patch: Partial<StarSystem>) => void;
   moveSystem: (id: string, x: number, y: number) => void;
   deleteSystem: (id: string) => void;
+  /** Delete many systems in one undoable step (planets, fleets, lanes pruned). */
+  deleteSystems: (ids: string[]) => number;
   /** Assign a whole system (and all its planets) to a faction, or clear. */
   setSystemOwner: (systemId: string, factionId: string | null) => void;
 
@@ -433,7 +615,7 @@ interface CampaignState {
   ) => void;
   setDistrictOwner: (
     planetId: string,
-    cityId: string,
+    cityId: string | null,
     districtId: string,
     factionId: string | null,
   ) => void;
@@ -469,6 +651,55 @@ interface CampaignState {
     cityId: string,
     tileIndex: number,
   ) => string | null;
+  buildBastionAtTile: (
+    planetId: string,
+    cityId: string,
+    tileIndex: number,
+  ) => string | null;
+  buildOutpostAtTile: (
+    planetId: string,
+    cityId: string,
+    tileIndex: number,
+  ) => string | null;
+  buildSpireAtTile: (
+    planetId: string,
+    cityId: string,
+    tileIndex: number,
+  ) => string | null;
+  buildUnderhiveAtTile: (
+    planetId: string,
+    cityId: string,
+    tileIndex: number,
+  ) => string | null;
+  buildDomedHabitatAtTile: (
+    planetId: string,
+    cityId: string,
+    tileIndex: number,
+  ) => string | null;
+  buildTrenchLineAtTile: (
+    planetId: string,
+    tileIndex: number,
+  ) => string | null;
+  buildOreMineAtTile: (
+    planetId: string,
+    tileIndex: number,
+  ) => string | null;
+  /** Spend half build-cost BP to remove an owned priced district/structure. */
+  demolishSurfaceAtTile: (
+    planetId: string,
+    tileIndex: number,
+  ) => boolean;
+  updateCity: (
+    planetId: string,
+    cityId: string,
+    patch: Partial<City>,
+  ) => void;
+  updateDistrict: (
+    planetId: string,
+    cityId: string | null,
+    districtId: string,
+    patch: Partial<District>,
+  ) => void;
   addCityAtTile: (planetId: string, tileIndex: number) => string | null;
   addDistrictAtTile: (
     planetId: string,
@@ -551,6 +782,8 @@ interface CampaignState {
   boardWarpGate: (planetId: string) => string | null;
   /** Load planet BP into orbiting transport holds. */
   loadTransportCargo: (fleetId: string, amount?: number) => number;
+  /** Unload transport cargo BP onto an orbit world with an owned city. */
+  unloadTransportCargo: (fleetId: string, amount?: number) => number;
   /**
    * Spend transport cargo BP to deploy a detachment onto the orbit world
    * (planet or warp gate) — no War Camp / district required.
@@ -1045,67 +1278,29 @@ export const useCampaignStore = create<CampaignState>()(
           contentsUndoCoalesceKey: null,
         }),
 
-      ensureManualHyperlanes: () =>
-        set((s) => {
-          if (s.campaign.hyperlanes) return s;
-          return withCampaign(
-            s,
-            {
-              ...s.campaign,
-              hyperlanes: getCampaignHyperlanes(s.campaign),
-            },
-            { skipUndo: true },
-          );
-        }),
+      ensureManualHyperlanes: () => {
+        // No-op: lanes are sticky when baked; place/connect bake as needed.
+      },
 
       addHyperlane: (a, b) => {
-        if (a === b) return false;
         const state = get();
-        const existing =
-          state.campaign.hyperlanes ?? getCampaignHyperlanes(state.campaign);
-        const id = laneKey(a, b);
-        if (
-          existing.some(
-            (l) =>
-              l.id === id ||
-              (l.a === a && l.b === b) ||
-              (l.a === b && l.b === a),
-          )
-        ) {
-          return false;
-        }
-        set((s) =>
-          withCampaign(s, {
-            ...s.campaign,
-            hyperlanes: [
-              ...(s.campaign.hyperlanes ?? getCampaignHyperlanes(s.campaign)),
-              { id, a, b },
-            ],
-          }),
-        );
+        const next = campaignWithHyperlaneAdded(state.campaign, a, b);
+        if (!next) return false;
+        set((s) => withCampaign(s, next));
         return true;
       },
 
       removeHyperlane: (laneId) => {
-        set((s) => {
-          const lanes =
-            s.campaign.hyperlanes ?? getCampaignHyperlanes(s.campaign);
-          return withCampaign(s, {
-            ...s.campaign,
-            hyperlanes: lanes.filter((l) => l.id !== laneId),
-          });
-        });
+        set((s) =>
+          withCampaign(s, campaignWithHyperlaneRemoved(s.campaign, laneId)),
+        );
       },
 
       resetHyperlanesToAuto: () =>
-        set((s) => {
-          const campaign = { ...s.campaign };
-          delete campaign.hyperlanes;
-          return {
-            ...withCampaign(s, campaign),
-            hyperlaneConnectFromId: null,
-          };
-        }),
+        set((s) => ({
+          ...withCampaign(s, campaignWithHyperlanesReset(s.campaign)),
+          hyperlaneConnectFromId: null,
+        })),
 
       undoContentsEdit: () => {
         const state = get();
@@ -1163,10 +1358,7 @@ export const useCampaignStore = create<CampaignState>()(
           starClass: pickRandomStarClass(),
         };
         set((s) => ({
-          ...withCampaign(s, {
-            ...s.campaign,
-            systems: [...s.campaign.systems, system],
-          }),
+          ...withCampaign(s, campaignWithSystemPlaced(s.campaign, system)),
           selectedSystemId: id,
         }));
         return id;
@@ -1220,16 +1412,14 @@ export const useCampaignStore = create<CampaignState>()(
 
       deleteSystem: (id) =>
         set((s) => {
+          const pruned = campaignWithSystemHyperlanesPruned(s.campaign, id);
           const nextCampaign = {
-            ...s.campaign,
-            systems: s.campaign.systems.filter((sys) => sys.id !== id),
-            planets: s.campaign.planets.filter((p) => p.systemId !== id),
-            fleets: (s.campaign.fleets ?? []).filter(
+            ...pruned,
+            systems: pruned.systems.filter((sys) => sys.id !== id),
+            planets: pruned.planets.filter((p) => p.systemId !== id),
+            fleets: (pruned.fleets ?? []).filter(
               (f) => f.location.systemId !== id,
             ),
-            hyperlanes: s.campaign.hyperlanes
-              ? s.campaign.hyperlanes.filter((l) => l.a !== id && l.b !== id)
-              : undefined,
           };
           return {
             ...withCampaign(s, {
@@ -1268,9 +1458,95 @@ export const useCampaignStore = create<CampaignState>()(
           };
         }),
 
+      deleteSystems: (ids) => {
+        const idSet = new Set(ids.filter((id) => typeof id === "string" && id));
+        if (idSet.size === 0) return 0;
+        set((s) => {
+          const pruned = campaignWithSystemsHyperlanesPruned(
+            s.campaign,
+            idSet,
+          );
+          const nextCampaign = {
+            ...pruned,
+            systems: pruned.systems.filter((sys) => !idSet.has(sys.id)),
+            planets: pruned.planets.filter((p) => !idSet.has(p.systemId)),
+            fleets: (pruned.fleets ?? []).filter(
+              (f) => !idSet.has(f.location.systemId),
+            ),
+          };
+          const focusedGone =
+            s.focusedSystemId != null && idSet.has(s.focusedSystemId);
+          const selectedFleet = (s.campaign.fleets ?? []).find(
+            (f) => f.id === s.selectedFleetId,
+          );
+          const movingFleet = (s.campaign.fleets ?? []).find(
+            (f) => f.id === s.fleetMoveModeId,
+          );
+          return {
+            ...withCampaign(s, {
+              ...nextCampaign,
+              characters: scrubCharacterPlacements(
+                s.campaign.characters ?? [],
+                nextCampaign,
+              ),
+            }),
+            focusedSystemId: focusedGone ? null : s.focusedSystemId,
+            selectedSystemId:
+              s.selectedSystemId != null && idSet.has(s.selectedSystemId)
+                ? null
+                : s.selectedSystemId,
+            selectedPlanetId:
+              s.selectedPlanetId != null &&
+              nextCampaign.planets.some((p) => p.id === s.selectedPlanetId)
+                ? s.selectedPlanetId
+                : null,
+            selectedFleetId:
+              selectedFleet && idSet.has(selectedFleet.location.systemId)
+                ? null
+                : s.selectedFleetId,
+            fleetMoveModeId:
+              movingFleet && idSet.has(movingFleet.location.systemId)
+                ? null
+                : s.fleetMoveModeId,
+            hyperlaneConnectFromId:
+              s.hyperlaneConnectFromId != null &&
+              idSet.has(s.hyperlaneConnectFromId)
+                ? null
+                : s.hyperlaneConnectFromId,
+            viewLevel:
+              focusedGone && s.viewLevel !== "galaxy" ? "galaxy" : s.viewLevel,
+          };
+        });
+        return idSet.size;
+      },
+
       setSystemOwner: (systemId, factionId) =>
         set((s) => {
           const owner = factionId || undefined;
+          const planets = s.campaign.planets.map((p) => {
+            if (p.systemId !== systemId) return p;
+            const assigned = assignAllDistricts(
+              p.cities ?? [],
+              owner ?? null,
+              p.independentDistricts ?? [],
+            );
+            const structures = assignAllStructures(
+              p.structures ?? [],
+              owner ?? null,
+            );
+            const tileClaims = assignAllTileClaims(
+              p.tileClaims,
+              owner ?? null,
+            );
+            return {
+              ...p,
+              controllingFactionId: owner,
+              cities: assigned.cities,
+              independentDistricts: assigned.independentDistricts,
+              structures,
+              tileClaims,
+            };
+          });
           return withCampaign(
             s,
             withHistoryCapture({
@@ -1280,19 +1556,7 @@ export const useCampaignStore = create<CampaignState>()(
                   ? { ...sys, controllingFactionId: owner }
                   : sys,
               ),
-              planets: s.campaign.planets.map((p) =>
-                p.systemId === systemId
-                  ? {
-                      ...p,
-                      controllingFactionId: owner,
-                      cities: assignAllDistricts(p.cities ?? [], owner ?? null),
-                      structures: assignAllStructures(
-                        p.structures ?? [],
-                        owner ?? null,
-                      ),
-                    }
-                  : p,
-              ),
+              planets,
             }),
           );
         }),
@@ -1303,11 +1567,13 @@ export const useCampaignStore = create<CampaignState>()(
           (p) => p.systemId === systemId,
         );
         const system = get().campaign.systems.find((s) => s.id === systemId);
-        const { cities, structures } = generatePlanetSurface(id, "custom", {
-          defaultFactionId: system?.controllingFactionId,
-        });
         const classification =
           pickRandomClassification() as PlanetClassification;
+        const { cities, structures, independentDistricts } =
+          generatePlanetSurface(id, "custom", {
+            defaultFactionId: system?.controllingFactionId,
+            classification,
+          });
         const planet: Planet = {
           id,
           systemId,
@@ -1317,11 +1583,16 @@ export const useCampaignStore = create<CampaignState>()(
           classification,
           visualModelId: pickPlanetVisualModel(classification),
           controllingFactionId:
-            planetOwnerFromCities(cities, undefined, structures) ??
-            system?.controllingFactionId,
+            planetOwnerFromCities(
+              cities,
+              undefined,
+              structures,
+              independentDistricts,
+            ) ?? system?.controllingFactionId,
           notes: "",
           battles: [],
           cities,
+          independentDistricts,
           structures,
           armies: [],
         };
@@ -1362,27 +1633,31 @@ export const useCampaignStore = create<CampaignState>()(
             ) {
               next.visualModelId = pickPlanetVisualModel(next.classification);
             }
+            // Gas giants cannot have surface settlements.
+            if (
+              normalizePlanetClassification(next.classification) ===
+                "gas_giant" &&
+              normalizePlanetClassification(p.classification) !== "gas_giant"
+            ) {
+              next.cities = [];
+              next.independentDistricts = [];
+              next.structures = [];
+              next.tileClaims = scrubTileClaims(
+                next.tileClaims,
+                [],
+                [],
+                [],
+              );
+            }
             return next;
           });
           const planet = planets.find((p) => p.id === id);
           let systems = s.campaign.systems;
           if (planet && "controllingFactionId" in patch) {
-            const ids = new Set(
-              planets
-                .filter(
-                  (p) =>
-                    p.systemId === planet.systemId && p.controllingFactionId,
-                )
-                .map((p) => p.controllingFactionId!),
-            );
-            systems = s.campaign.systems.map((sys) =>
-              sys.id === planet.systemId
-                ? {
-                    ...sys,
-                    controllingFactionId:
-                      ids.size === 1 ? [...ids][0] : undefined,
-                  }
-                : sys,
+            systems = syncSystemOwnerInSystems(
+              s.campaign.systems,
+              planets,
+              planet.systemId,
             );
           }
           // Warp gates require a Dyson Sphere megastructure in their system.
@@ -1451,15 +1726,24 @@ export const useCampaignStore = create<CampaignState>()(
         const owner = factionId || undefined;
         const planet = get().campaign.planets.find((p) => p.id === planetId);
         if (!planet) return;
+        const assigned = assignAllDistricts(
+          planet.cities ?? [],
+          factionId,
+          planet.independentDistricts ?? [],
+        );
         get().updatePlanet(planetId, {
           controllingFactionId: owner,
-          cities: assignAllDistricts(planet.cities ?? [], factionId),
+          cities: assigned.cities,
+          independentDistricts: assigned.independentDistricts,
           structures: assignAllStructures(planet.structures ?? [], factionId),
+          tileClaims: assignAllTileClaims(planet.tileClaims, factionId),
         });
       },
 
       setCityOwner: (planetId, cityId, factionId) =>
         set((s) => {
+          const planet = s.campaign.planets.find((p) => p.id === planetId);
+          if (!planet) return s;
           const planets = s.campaign.planets.map((p) => {
             if (p.id !== planetId) return p;
             const cities = p.cities.map((c) =>
@@ -1467,10 +1751,6 @@ export const useCampaignStore = create<CampaignState>()(
                 ? {
                     ...c,
                     controllingFactionId: factionId || undefined,
-                    districts: c.districts.map((d) => ({
-                      ...d,
-                      controllingFactionId: factionId || undefined,
-                    })),
                   }
                 : c,
             );
@@ -1481,52 +1761,75 @@ export const useCampaignStore = create<CampaignState>()(
                 cities,
                 p.tileClaims,
                 p.structures ?? [],
+                p.independentDistricts ?? [],
               ),
             };
           });
           return withCampaign(
             s,
-            withHistoryCapture({ ...s.campaign, planets }),
+            withHistoryCapture({
+              ...s.campaign,
+              planets,
+              systems: syncSystemOwnerInSystems(
+                s.campaign.systems,
+                planets,
+                planet.systemId,
+              ),
+            }),
           );
         }),
 
-      setDistrictOwner: (planetId, cityId, districtId, factionId) =>
+      setDistrictOwner: (planetId, _cityId, districtId, factionId) =>
         set((s) => {
+          const planet = s.campaign.planets.find((p) => p.id === planetId);
+          if (!planet) return s;
           const planets = s.campaign.planets.map((p) => {
             if (p.id !== planetId) return p;
-            const cities = p.cities.map((c) =>
-              c.id === cityId
-                ? {
-                    ...c,
-                    districts: c.districts.map((d) =>
-                      d.id === districtId
-                        ? {
-                            ...d,
-                            controllingFactionId: factionId || undefined,
-                          }
-                        : d,
-                    ),
-                  }
-                : c,
+            const owner = factionId || undefined;
+            const cities = p.cities.map((c) => ({
+              ...c,
+              districts: c.districts.map((d) =>
+                d.id === districtId
+                  ? { ...d, controllingFactionId: owner }
+                  : d,
+              ),
+            }));
+            const independentDistricts = (p.independentDistricts ?? []).map(
+              (d) =>
+                d.id === districtId
+                  ? { ...d, controllingFactionId: owner }
+                  : d,
             );
             return {
               ...p,
               cities,
+              independentDistricts,
               controllingFactionId: planetOwnerFromCities(
                 cities,
                 p.tileClaims,
                 p.structures ?? [],
+                independentDistricts,
               ),
             };
           });
           return withCampaign(
             s,
-            withHistoryCapture({ ...s.campaign, planets }),
+            withHistoryCapture({
+              ...s.campaign,
+              planets,
+              systems: syncSystemOwnerInSystems(
+                s.campaign.systems,
+                planets,
+                planet.systemId,
+              ),
+            }),
           );
         }),
 
       setStructureOwner: (planetId, structureId, factionId) =>
         set((s) => {
+          const planet = s.campaign.planets.find((p) => p.id === planetId);
+          if (!planet) return s;
           const planets = s.campaign.planets.map((p) => {
             if (p.id !== planetId) return p;
             const structures = (p.structures ?? []).map((st) =>
@@ -1544,53 +1847,127 @@ export const useCampaignStore = create<CampaignState>()(
                 p.cities ?? [],
                 p.tileClaims,
                 structures,
+                p.independentDistricts ?? [],
               ),
             };
           });
           return withCampaign(
             s,
-            withHistoryCapture({ ...s.campaign, planets }),
+            withHistoryCapture({
+              ...s.campaign,
+              planets,
+              systems: syncSystemOwnerInSystems(
+                s.campaign.systems,
+                planets,
+                planet.systemId,
+              ),
+            }),
           );
         }),
 
       setTileClaims: (planetId, claims) =>
         set((s) => {
+          const planet = s.campaign.planets.find((p) => p.id === planetId);
+          if (!planet) return s;
           const planets = s.campaign.planets.map((p) => {
             if (p.id !== planetId) return p;
-            const occupied = settlementTileSet(
-              p.cities ?? [],
-              p.structures ?? [],
-            );
-            const next = { ...(p.tileClaims ?? {}) };
+            let cities = p.cities ?? [];
+            let independentDistricts = p.independentDistricts ?? [];
+            let structures = p.structures ?? [];
+            const nextClaims = { ...(p.tileClaims ?? {}) };
+
             for (const [key, factionId] of Object.entries(claims)) {
               const tileIndex = Number(key);
-              if (occupied.has(tileIndex)) continue;
-              if (factionId) next[String(tileIndex)] = factionId;
-              else delete next[String(tileIndex)];
+              if (Number.isNaN(tileIndex)) continue;
+              const owner = factionId || undefined;
+              const feature = featureAtTileIndex(
+                tileIndex,
+                cities,
+                structures,
+                independentDistricts,
+              );
+              if (feature?.kind === "city") {
+                cities = cities.map((c) =>
+                  c.id === feature.cityId
+                    ? { ...c, controllingFactionId: owner }
+                    : c,
+                );
+                continue;
+              }
+              if (feature?.kind === "district") {
+                if (feature.cityId) {
+                  cities = cities.map((c) =>
+                    c.id === feature.cityId
+                      ? {
+                          ...c,
+                          districts: c.districts.map((d) =>
+                            d.id === feature.districtId
+                              ? { ...d, controllingFactionId: owner }
+                              : d,
+                          ),
+                        }
+                      : c,
+                  );
+                } else {
+                  independentDistricts = independentDistricts.map((d) =>
+                    d.id === feature.districtId
+                      ? { ...d, controllingFactionId: owner }
+                      : d,
+                  );
+                }
+                continue;
+              }
+              if (feature?.kind === "structure") {
+                structures = structures.map((st) =>
+                  st.id === feature.structureId
+                    ? { ...st, controllingFactionId: owner }
+                    : st,
+                );
+                continue;
+              }
+              // Empty hex — open territory paint only.
+              if (factionId) nextClaims[String(tileIndex)] = factionId;
+              else delete nextClaims[String(tileIndex)];
             }
+
             const tileClaims = scrubTileClaims(
-              next,
-              p.cities ?? [],
-              p.structures ?? [],
+              nextClaims,
+              cities,
+              structures,
+              independentDistricts,
             );
             return {
               ...p,
+              cities,
+              independentDistricts,
+              structures,
               tileClaims,
               controllingFactionId: planetOwnerFromCities(
-                p.cities ?? [],
+                cities,
                 tileClaims,
-                p.structures ?? [],
+                structures,
+                independentDistricts,
               ),
             };
           });
           return withCampaign(
             s,
-            withHistoryCapture({ ...s.campaign, planets }),
+            withHistoryCapture({
+              ...s.campaign,
+              planets,
+              systems: syncSystemOwnerInSystems(
+                s.campaign.systems,
+                planets,
+                planet.systemId,
+              ),
+            }),
           );
         }),
 
       clearOpenTileClaims: (planetId) =>
         set((s) => {
+          const planet = s.campaign.planets.find((p) => p.id === planetId);
+          if (!planet) return s;
           const planets = s.campaign.planets.map((p) => {
             if (p.id !== planetId) return p;
             return {
@@ -1600,12 +1977,21 @@ export const useCampaignStore = create<CampaignState>()(
                 p.cities ?? [],
                 {},
                 p.structures ?? [],
+                p.independentDistricts ?? [],
               ),
             };
           });
           return withCampaign(
             s,
-            withHistoryCapture({ ...s.campaign, planets }),
+            withHistoryCapture({
+              ...s.campaign,
+              planets,
+              systems: syncSystemOwnerInSystems(
+                s.campaign.systems,
+                planets,
+                planet.systemId,
+              ),
+            }),
           );
         }),
 
@@ -1679,7 +2065,73 @@ export const useCampaignStore = create<CampaignState>()(
           placingArmyId: mode != null ? null : s.placingArmyId,
         })),
 
-      buildManufactorumAtTile: (planetId, cityId, tileIndex) => {
+      buildManufactorumAtTile: (planetId, cityId, tileIndex) =>
+        buildPlayCityDistrict(get, set, {
+          planetId,
+          cityId,
+          tileIndex,
+          kind: "manufactorum",
+          cost: MANUFACTORUM_BP_COST,
+          label: "Manufactorum",
+          canBuild: canBuildManufactorum,
+        }),
+
+      buildBastionAtTile: (planetId, cityId, tileIndex) =>
+        buildPlayCityDistrict(get, set, {
+          planetId,
+          cityId,
+          tileIndex,
+          kind: "bastion",
+          cost: BASTION_BP_COST,
+          label: "Bastion",
+          canBuild: canBuildBastion,
+        }),
+
+      buildOutpostAtTile: (planetId, cityId, tileIndex) =>
+        buildPlayCityDistrict(get, set, {
+          planetId,
+          cityId,
+          tileIndex,
+          kind: "outpost",
+          cost: OUTPOST_BP_COST,
+          label: "Outpost",
+          canBuild: canBuildOutpost,
+        }),
+
+      buildSpireAtTile: (planetId, cityId, tileIndex) =>
+        buildPlayCityDistrict(get, set, {
+          planetId,
+          cityId,
+          tileIndex,
+          kind: "spire",
+          cost: SPIRE_BP_COST,
+          label: "Hive Spire",
+          canBuild: canBuildSpire,
+        }),
+
+      buildUnderhiveAtTile: (planetId, cityId, tileIndex) =>
+        buildPlayCityDistrict(get, set, {
+          planetId,
+          cityId,
+          tileIndex,
+          kind: "underhive",
+          cost: UNDERHIVE_BP_COST,
+          label: "Underhive",
+          canBuild: canBuildUnderhive,
+        }),
+
+      buildDomedHabitatAtTile: (planetId, cityId, tileIndex) =>
+        buildPlayCityDistrict(get, set, {
+          planetId,
+          cityId,
+          tileIndex,
+          kind: "domed_habitat",
+          cost: DOMED_HABITAT_BP_COST,
+          label: "Domed Habitat",
+          canBuild: canBuildDomedHabitat,
+        }),
+
+      buildTrenchLineAtTile: (planetId, tileIndex) => {
         const state = get();
         const play = normalizeCampaignPlay(state.campaign.play);
         const factionId = play.activeFactionId;
@@ -1689,72 +2141,269 @@ export const useCampaignStore = create<CampaignState>()(
         }
         const planet = state.campaign.planets.find((p) => p.id === planetId);
         if (!planet) return null;
-        const check = canBuildManufactorum(
-          state.campaign,
-          planet,
-          factionId,
-          cityId,
-        );
+        const check = canBuildTrenchLine(state.campaign, planet, factionId);
         if (!check.ok) {
           set({ playMoveHint: check.message });
           return null;
         }
-        const placeErr = canPlaceManufactorumAtTile(
-          planet,
-          check.city,
-          tileIndex,
-        );
+        const placeErr = canPlaceTrenchLineAtTile(planet, tileIndex);
         if (placeErr) {
           set({ playMoveHint: placeErr });
           return null;
         }
-        const result = createDistrictAtTile(
+        const structure = createStructureAtTile(
           planet,
-          cityId,
           tileIndex,
-          "manufactorum",
+          "trench_line",
           { controllingFactionId: factionId },
         );
-        if (!result) {
-          set({ playMoveHint: "Could not place manufactorum" });
+        if (!structure) {
+          set({ playMoveHint: "Could not place trench line" });
           return null;
         }
-        const newDistrict = result.cities
-          .find((c) => c.id === cityId)
-          ?.districts.slice(-1)[0];
-        if (!newDistrict) return null;
-        set((s) => ({
-          ...withCampaign(
-            s,
-            withHistoryCapture({
-              ...s.campaign,
-              planets: s.campaign.planets.map((p) => {
-                if (p.id !== planetId) return p;
-                const spent = spendBuildingPoints(
-                  { ...p, cities: result.cities },
-                  factionId,
-                  MANUFACTORUM_BP_COST,
-                );
-                return {
-                  ...spent,
-                  cities: result.cities,
-                  tileClaims: scrubTileClaims(
-                    spent.tileClaims,
-                    result.cities,
-                    spent.structures ?? [],
-                  ),
-                };
+        set((s) => {
+          const planets = s.campaign.planets.map((p) => {
+            if (p.id !== planetId) return p;
+            const structures = [...(p.structures ?? []), structure];
+            const spent = spendBuildingPoints(
+              { ...p, structures },
+              factionId,
+              TRENCH_LINE_BP_COST,
+            );
+            const tileClaims = scrubTileClaims(
+              spent.tileClaims,
+              spent.cities ?? [],
+              structures,
+              spent.independentDistricts ?? [],
+            );
+            return {
+              ...spent,
+              structures,
+              tileClaims,
+              controllingFactionId: planetOwnerFromCities(
+                spent.cities ?? [],
+                tileClaims,
+                structures,
+                spent.independentDistricts ?? [],
+              ),
+            };
+          });
+          const touched = planets.find((p) => p.id === planetId);
+          return {
+            ...withCampaign(
+              s,
+              withHistoryCapture({
+                ...s.campaign,
+                planets,
+                systems: touched
+                  ? syncSystemOwnerInSystems(
+                      s.campaign.systems,
+                      planets,
+                      touched.systemId,
+                    )
+                  : s.campaign.systems,
               }),
-            }),
-          ),
-          selectedCityId: cityId,
-          selectedDistrictId: newDistrict.id,
-          selectedStructureId: null,
-          playBuildMode: null,
-          playMoveHint: null,
-          inspectorOpen: true,
-        }));
-        return newDistrict.id;
+            ),
+            selectedStructureId: structure.id,
+            selectedCityId: null,
+            selectedDistrictId: null,
+            playBuildMode: null,
+            playMoveHint: null,
+            inspectorOpen: true,
+          };
+        });
+        return structure.id;
+      },
+
+      buildOreMineAtTile: (planetId, tileIndex) => {
+        const state = get();
+        const play = normalizeCampaignPlay(state.campaign.play);
+        const factionId = play.activeFactionId;
+        if (!factionId) {
+          set({ playMoveHint: "No active faction" });
+          return null;
+        }
+        const planet = state.campaign.planets.find((p) => p.id === planetId);
+        if (!planet) return null;
+        const check = canBuildOreMine(state.campaign, planet, factionId);
+        if (!check.ok) {
+          set({ playMoveHint: check.message });
+          return null;
+        }
+        const placeErr = canPlaceOreMineAtTile(planet, tileIndex);
+        if (placeErr) {
+          set({ playMoveHint: placeErr });
+          return null;
+        }
+        const structure = createStructureAtTile(
+          planet,
+          tileIndex,
+          "ore_mine",
+          { controllingFactionId: factionId },
+        );
+        if (!structure) {
+          set({ playMoveHint: "Could not place ore mine" });
+          return null;
+        }
+        set((s) => {
+          const planets = s.campaign.planets.map((p) => {
+            if (p.id !== planetId) return p;
+            const structures = [...(p.structures ?? []), structure];
+            const spent = spendBuildingPoints(
+              { ...p, structures },
+              factionId,
+              ORE_MINE_BP_COST,
+            );
+            const tileClaims = scrubTileClaims(
+              spent.tileClaims,
+              spent.cities ?? [],
+              structures,
+              spent.independentDistricts ?? [],
+            );
+            return {
+              ...spent,
+              structures,
+              tileClaims,
+              controllingFactionId: planetOwnerFromCities(
+                spent.cities ?? [],
+                tileClaims,
+                structures,
+                spent.independentDistricts ?? [],
+              ),
+            };
+          });
+          const touched = planets.find((p) => p.id === planetId);
+          return {
+            ...withCampaign(
+              s,
+              withHistoryCapture({
+                ...s.campaign,
+                planets,
+                systems: touched
+                  ? syncSystemOwnerInSystems(
+                      s.campaign.systems,
+                      planets,
+                      touched.systemId,
+                    )
+                  : s.campaign.systems,
+              }),
+            ),
+            selectedStructureId: structure.id,
+            selectedCityId: null,
+            selectedDistrictId: null,
+            playBuildMode: null,
+            playMoveHint: null,
+            inspectorOpen: true,
+          };
+        });
+        return structure.id;
+      },
+
+      demolishSurfaceAtTile: (planetId, tileIndex) => {
+        const state = get();
+        const play = normalizeCampaignPlay(state.campaign.play);
+        const factionId = play.activeFactionId;
+        if (!factionId) {
+          set({ playMoveHint: "No active faction" });
+          return false;
+        }
+        const planet = state.campaign.planets.find((p) => p.id === planetId);
+        if (!planet) return false;
+        const check = canDemolishAtTile(
+          state.campaign,
+          planet,
+          factionId,
+          tileIndex,
+        );
+        if (!check.ok) {
+          set({ playMoveHint: check.message });
+          return false;
+        }
+        const { target } = check;
+        set((s) => {
+          const planets = s.campaign.planets.map((p) => {
+            if (p.id !== planetId) return p;
+            let cities = p.cities ?? [];
+            let independentDistricts = p.independentDistricts ?? [];
+            let structures = p.structures ?? [];
+            if (target.kind === "district") {
+              if (target.cityId) {
+                cities = cities.map((c) =>
+                  c.id === target.cityId
+                    ? {
+                        ...c,
+                        districts: c.districts.filter(
+                          (d) => d.id !== target.district.id,
+                        ),
+                      }
+                    : c,
+                );
+              } else {
+                independentDistricts = independentDistricts.filter(
+                  (d) => d.id !== target.district.id,
+                );
+              }
+            } else {
+              structures = structures.filter(
+                (st) => st.id !== target.structure.id,
+              );
+            }
+            const spent = spendBuildingPoints(
+              { ...p, cities, independentDistricts, structures },
+              factionId,
+              target.cost,
+            );
+            const tileClaims = scrubTileClaims(
+              spent.tileClaims,
+              cities,
+              structures,
+              independentDistricts,
+            );
+            return {
+              ...spent,
+              cities,
+              independentDistricts,
+              structures,
+              tileClaims,
+              controllingFactionId: planetOwnerFromCities(
+                cities,
+                tileClaims,
+                structures,
+                independentDistricts,
+              ),
+            };
+          });
+          const touched = planets.find((p) => p.id === planetId);
+          return {
+            ...withCampaign(
+              s,
+              withHistoryCapture({
+                ...s.campaign,
+                planets,
+                systems: touched
+                  ? syncSystemOwnerInSystems(
+                      s.campaign.systems,
+                      planets,
+                      touched.systemId,
+                    )
+                  : s.campaign.systems,
+              }),
+            ),
+            selectedDistrictId:
+              target.kind === "district" &&
+              s.selectedDistrictId === target.district.id
+                ? null
+                : s.selectedDistrictId,
+            selectedStructureId:
+              target.kind === "structure" &&
+              s.selectedStructureId === target.structure.id
+                ? null
+                : s.selectedStructureId,
+            playBuildMode: null,
+            playMoveHint: `Demolished for ${target.cost} BP`,
+          };
+        });
+        return true;
       },
 
       addCityAtTile: (planetId, tileIndex) => {
@@ -1765,19 +2414,42 @@ export const useCampaignStore = create<CampaignState>()(
         set((s) => {
           const planets = s.campaign.planets.map((p) => {
             if (p.id !== planetId) return p;
-            const cities = [...(p.cities ?? []), city];
+            const assigned = reassignDistrictsToCities(
+              [...(p.cities ?? []), city],
+              p.independentDistricts ?? [],
+            );
+            const tileClaims = scrubTileClaims(
+              p.tileClaims,
+              assigned.cities,
+              p.structures ?? [],
+              assigned.independentDistricts,
+            );
             return {
               ...p,
-              cities,
-              tileClaims: scrubTileClaims(
-                p.tileClaims,
-                cities,
+              cities: assigned.cities,
+              independentDistricts: assigned.independentDistricts,
+              tileClaims,
+              controllingFactionId: planetOwnerFromCities(
+                assigned.cities,
+                tileClaims,
                 p.structures ?? [],
+                assigned.independentDistricts,
               ),
             };
           });
+          const touched = planets.find((p) => p.id === planetId);
           return {
-            ...withCampaign(s, { ...s.campaign, planets }),
+            ...withCampaign(s, {
+              ...s.campaign,
+              planets,
+              systems: touched
+                ? syncSystemOwnerInSystems(
+                    s.campaign.systems,
+                    planets,
+                    touched.systemId,
+                  )
+                : s.campaign.systems,
+            }),
             selectedCityId: city.id,
             selectedDistrictId: null,
             selectedStructureId: null,
@@ -1789,6 +2461,28 @@ export const useCampaignStore = create<CampaignState>()(
       addDistrictAtTile: (planetId, cityId, tileIndex, districtKind) => {
         const planet = get().campaign.planets.find((p) => p.id === planetId);
         if (!planet) return null;
+        const play = normalizeCampaignPlay(get().campaign.play);
+        if (play.active) {
+          if (districtKind === "spire") {
+            const err = canPlaceSpireAtTile(planet, tileIndex);
+            if (err) {
+              set({ playMoveHint: err });
+              return null;
+            }
+          }
+          if (districtKind === "underhive") {
+            const err = canPlaceUnderhiveAtTile(planet, tileIndex);
+            if (err) {
+              set({ playMoveHint: err });
+              return null;
+            }
+          }
+        }
+        const warnings = districtPlacementWarnings(
+          planet,
+          districtKind,
+          tileIndex,
+        );
         const result = createDistrictAtTile(
           planet,
           cityId,
@@ -1796,28 +2490,53 @@ export const useCampaignStore = create<CampaignState>()(
           districtKind,
         );
         if (!result) return null;
-        const newDistrict = result.cities
-          .find((c) => c.id === cityId)
-          ?.districts.slice(-1)[0];
-        if (!newDistrict) return null;
+        const newDistrict = result.district;
+        const parentCity =
+          result.cities.find((c) =>
+            c.districts.some((d) => d.id === newDistrict.id),
+          ) ?? null;
         set((s) => {
           const planets = s.campaign.planets.map((p) => {
             if (p.id !== planetId) return p;
+            const tileClaims = scrubTileClaims(
+              p.tileClaims,
+              result.cities,
+              p.structures ?? [],
+              result.independentDistricts,
+            );
             return {
               ...p,
               cities: result.cities,
-              tileClaims: scrubTileClaims(
-                p.tileClaims,
+              independentDistricts: result.independentDistricts,
+              tileClaims,
+              controllingFactionId: planetOwnerFromCities(
                 result.cities,
+                tileClaims,
                 p.structures ?? [],
+                result.independentDistricts,
               ),
             };
           });
+          const touched = planets.find((p) => p.id === planetId);
           return {
-            ...withCampaign(s, { ...s.campaign, planets }),
-            selectedCityId: cityId,
+            ...withCampaign(s, {
+              ...s.campaign,
+              planets,
+              systems: touched
+                ? syncSystemOwnerInSystems(
+                    s.campaign.systems,
+                    planets,
+                    touched.systemId,
+                  )
+                : s.campaign.systems,
+            }),
+            selectedCityId: parentCity?.id ?? null,
             selectedDistrictId: newDistrict.id,
             selectedStructureId: null,
+            playMoveHint:
+              !play.active && warnings.length > 0
+                ? warnings.join(" · ")
+                : s.playMoveHint,
           };
         });
         return newDistrict.id;
@@ -1832,26 +2551,46 @@ export const useCampaignStore = create<CampaignState>()(
           structureKind,
         );
         if (!structure) return null;
-        set((s) => ({
-          ...withCampaign(s, {
-            ...s.campaign,
-            planets: s.campaign.planets.map((p) =>
-              p.id === planetId
-                ? {
-                    ...p,
-                    structures: [...(p.structures ?? []), structure],
-                    tileClaims: scrubTileClaims(p.tileClaims, p.cities ?? [], [
-                      ...(p.structures ?? []),
-                      structure,
-                    ]),
-                  }
-                : p,
-            ),
-          }),
-          selectedStructureId: structure.id,
-          selectedCityId: null,
-          selectedDistrictId: null,
-        }));
+        set((s) => {
+          const planets = s.campaign.planets.map((p) => {
+            if (p.id !== planetId) return p;
+            const structures = [...(p.structures ?? []), structure];
+            const tileClaims = scrubTileClaims(
+              p.tileClaims,
+              p.cities ?? [],
+              structures,
+              p.independentDistricts ?? [],
+            );
+            return {
+              ...p,
+              structures,
+              tileClaims,
+              controllingFactionId: planetOwnerFromCities(
+                p.cities ?? [],
+                tileClaims,
+                structures,
+                p.independentDistricts ?? [],
+              ),
+            };
+          });
+          const touched = planets.find((p) => p.id === planetId);
+          return {
+            ...withCampaign(s, {
+              ...s.campaign,
+              planets,
+              systems: touched
+                ? syncSystemOwnerInSystems(
+                    s.campaign.systems,
+                    planets,
+                    touched.systemId,
+                  )
+                : s.campaign.systems,
+            }),
+            selectedStructureId: structure.id,
+            selectedCityId: null,
+            selectedDistrictId: null,
+          };
+        });
         return structure.id;
       },
 
@@ -1864,23 +2603,46 @@ export const useCampaignStore = create<CampaignState>()(
         );
         if (cityHit) {
           set((s) => {
-            const cities = (planet.cities ?? []).filter((c) => c.id !== cityHit.id);
+            const remainingCities = (planet.cities ?? []).filter(
+              (c) => c.id !== cityHit.id,
+            );
+            const assigned = reassignDistrictsToCities(
+              remainingCities,
+              [
+                ...(planet.independentDistricts ?? []),
+                ...cityHit.districts,
+              ],
+            );
             const structures = planet.structures ?? [];
+            const tileClaims = scrubTileClaims(
+              planet.tileClaims,
+              assigned.cities,
+              structures,
+              assigned.independentDistricts,
+            );
+            const nextPlanet: Planet = {
+              ...planet,
+              cities: assigned.cities,
+              independentDistricts: assigned.independentDistricts,
+              tileClaims,
+              controllingFactionId: planetOwnerFromCities(
+                assigned.cities,
+                tileClaims,
+                structures,
+                assigned.independentDistricts,
+              ),
+            };
+            const planets = s.campaign.planets.map((p) =>
+              p.id === planetId ? nextPlanet : p,
+            );
             return {
               ...withCampaign(s, {
                 ...s.campaign,
-                planets: s.campaign.planets.map((p) =>
-                  p.id === planetId
-                    ? {
-                        ...p,
-                        cities,
-                        tileClaims: scrubTileClaims(
-                          p.tileClaims,
-                          cities,
-                          structures,
-                        ),
-                      }
-                    : p,
+                planets,
+                systems: syncSystemOwnerInSystems(
+                  s.campaign.systems,
+                  planets,
+                  planet.systemId,
                 ),
               }),
               selectedCityId:
@@ -1902,12 +2664,18 @@ export const useCampaignStore = create<CampaignState>()(
             break;
           }
         }
-        if (districtCityId && districtId) {
+        if (!districtId) {
+          const ind = (planet.independentDistricts ?? []).find(
+            (d) => d.tileIndex === tileIndex,
+          );
+          if (ind) districtId = ind.id;
+        }
+        if (districtId) {
           const removedDistrictId = districtId;
           const parentCityId = districtCityId;
           set((s) => {
             const cities = (planet.cities ?? []).map((c) =>
-              c.id === parentCityId
+              parentCityId && c.id === parentCityId
                 ? {
                     ...c,
                     districts: c.districts.filter(
@@ -1916,22 +2684,39 @@ export const useCampaignStore = create<CampaignState>()(
                   }
                 : c,
             );
+            const independentDistricts = (
+              planet.independentDistricts ?? []
+            ).filter((d) => d.id !== removedDistrictId);
             const structures = planet.structures ?? [];
+            const tileClaims = scrubTileClaims(
+              planet.tileClaims,
+              cities,
+              structures,
+              independentDistricts,
+            );
+            const nextPlanet: Planet = {
+              ...planet,
+              cities,
+              independentDistricts,
+              tileClaims,
+              controllingFactionId: planetOwnerFromCities(
+                cities,
+                tileClaims,
+                structures,
+                independentDistricts,
+              ),
+            };
+            const planets = s.campaign.planets.map((p) =>
+              p.id === planetId ? nextPlanet : p,
+            );
             return {
               ...withCampaign(s, {
                 ...s.campaign,
-                planets: s.campaign.planets.map((p) =>
-                  p.id === planetId
-                    ? {
-                        ...p,
-                        cities,
-                        tileClaims: scrubTileClaims(
-                          p.tileClaims,
-                          cities,
-                          structures,
-                        ),
-                      }
-                    : p,
+                planets,
+                systems: syncSystemOwnerInSystems(
+                  s.campaign.systems,
+                  planets,
+                  planet.systemId,
                 ),
               }),
               selectedDistrictId:
@@ -1949,24 +2734,38 @@ export const useCampaignStore = create<CampaignState>()(
         if (structureHit) {
           set((s) => {
             const cities = planet.cities ?? [];
+            const independentDistricts = planet.independentDistricts ?? [];
             const structures = (planet.structures ?? []).filter(
               (st) => st.id !== structureHit.id,
+            );
+            const tileClaims = scrubTileClaims(
+              planet.tileClaims,
+              cities,
+              structures,
+              independentDistricts,
+            );
+            const nextPlanet: Planet = {
+              ...planet,
+              structures,
+              tileClaims,
+              controllingFactionId: planetOwnerFromCities(
+                cities,
+                tileClaims,
+                structures,
+                independentDistricts,
+              ),
+            };
+            const planets = s.campaign.planets.map((p) =>
+              p.id === planetId ? nextPlanet : p,
             );
             return {
               ...withCampaign(s, {
                 ...s.campaign,
-                planets: s.campaign.planets.map((p) =>
-                  p.id === planetId
-                    ? {
-                        ...p,
-                        structures,
-                        tileClaims: scrubTileClaims(
-                          p.tileClaims,
-                          cities,
-                          structures,
-                        ),
-                      }
-                    : p,
+                planets,
+                systems: syncSystemOwnerInSystems(
+                  s.campaign.systems,
+                  planets,
+                  planet.systemId,
                 ),
               }),
               selectedStructureId:
@@ -1985,38 +2784,34 @@ export const useCampaignStore = create<CampaignState>()(
         set((s) => {
           const planet = s.campaign.planets.find((p) => p.id === planetId);
           if (!planet) return s;
-          const rival = s.campaign.factions.find(
-            (f) => f.id !== planet.controllingFactionId,
-          )?.id;
-          const { cities, structures } = generatePlanetSurface(
-            planet.id,
-            planet.type,
-            {
-              defaultFactionId: planet.controllingFactionId,
-              rivalFactionId: rival,
-              contestedRate: rival ? 0.35 : 0,
-            },
-          );
-          const tileClaims = scrubTileClaims(
-            planet.tileClaims,
-            cities,
-            structures,
-          );
+          // Fresh layout is unowned — do not inherit planet owner, rival
+          // districts, or leftover open-hex paint.
+          const { cities, structures, independentDistricts } =
+            generatePlanetSurface(planet.id, planet.type, {
+              classification: planet.classification,
+            });
           const planets = s.campaign.planets.map((p) =>
             p.id === planetId
               ? {
                   ...p,
                   cities,
+                  independentDistricts,
                   structures,
-                  tileClaims,
-                  controllingFactionId:
-                    planetOwnerFromCities(cities, tileClaims, structures) ??
-                    p.controllingFactionId,
+                  tileClaims: {},
+                  controllingFactionId: undefined,
                 }
               : p,
           );
           return {
-            ...withCampaign(s, { ...s.campaign, planets }),
+            ...withCampaign(s, {
+              ...s.campaign,
+              planets,
+              systems: syncSystemOwnerInSystems(
+                s.campaign.systems,
+                planets,
+                planet.systemId,
+              ),
+            }),
             selectedCityId: null,
             selectedDistrictId: null,
             selectedStructureId: null,
@@ -2028,25 +2823,96 @@ export const useCampaignStore = create<CampaignState>()(
         if (!planet) return null;
         const structure = createStructureOnFreeHex(planet, kind);
         if (!structure) return null;
-        set((s) =>
-          withCampaign(s, {
+        set((s) => {
+          const planets = s.campaign.planets.map((p) => {
+            if (p.id !== planetId) return p;
+            const structures = [...(p.structures ?? []), structure];
+            const tileClaims = scrubTileClaims(
+              p.tileClaims,
+              p.cities ?? [],
+              structures,
+              p.independentDistricts ?? [],
+            );
+            return {
+              ...p,
+              structures,
+              tileClaims,
+              controllingFactionId: planetOwnerFromCities(
+                p.cities ?? [],
+                tileClaims,
+                structures,
+                p.independentDistricts ?? [],
+              ),
+            };
+          });
+          return withCampaign(s, {
             ...s.campaign,
-            planets: s.campaign.planets.map((p) =>
-              p.id === planetId
-                ? {
-                    ...p,
-                    structures: [...(p.structures ?? []), structure],
-                    tileClaims: scrubTileClaims(p.tileClaims, p.cities ?? [], [
-                      ...(p.structures ?? []),
-                      structure,
-                    ]),
-                  }
-                : p,
+            planets,
+            systems: syncSystemOwnerInSystems(
+              s.campaign.systems,
+              planets,
+              planet.systemId,
             ),
-          }),
-        );
+          });
+        });
         return structure.id;
       },
+
+      updateCity: (planetId, cityId, patch) =>
+        set((s) =>
+          withCampaign(
+            s,
+            {
+              ...s.campaign,
+              planets: s.campaign.planets.map((p) =>
+                p.id === planetId
+                  ? {
+                      ...p,
+                      cities: (p.cities ?? []).map((c) =>
+                        c.id === cityId ? { ...c, ...patch } : c,
+                      ),
+                    }
+                  : p,
+              ),
+            },
+            { coalesceKey: `city:${cityId}` },
+          ),
+        ),
+
+      updateDistrict: (planetId, cityId, districtId, patch) =>
+        set((s) =>
+          withCampaign(
+            s,
+            {
+              ...s.campaign,
+              planets: s.campaign.planets.map((p) => {
+                if (p.id !== planetId) return p;
+                if (cityId) {
+                  return {
+                    ...p,
+                    cities: (p.cities ?? []).map((c) =>
+                      c.id === cityId
+                        ? {
+                            ...c,
+                            districts: c.districts.map((d) =>
+                              d.id === districtId ? { ...d, ...patch } : d,
+                            ),
+                          }
+                        : c,
+                    ),
+                  };
+                }
+                return {
+                  ...p,
+                  independentDistricts: (p.independentDistricts ?? []).map(
+                    (d) => (d.id === districtId ? { ...d, ...patch } : d),
+                  ),
+                };
+              }),
+            },
+            { coalesceKey: `district:${districtId}` },
+          ),
+        ),
 
       updateStructure: (planetId, structureId, patch) =>
         set((s) =>
@@ -2185,13 +3051,12 @@ export const useCampaignStore = create<CampaignState>()(
         const id = crypto.randomUUID();
         const faction = get().campaign.factions.find((f) => f.id === factionId);
         const planet = get().campaign.planets.find((p) => p.id === planetId);
-        const city = planet?.cities?.[0];
         const army: Army = {
           id,
           name: `${faction?.name ?? "Army"} Detachment`,
           factionId,
           symbolId: faction?.defaultSymbolId,
-          dir: city?.dir ?? { x: 0, y: 1, z: 0 },
+          dir: preferredDetachmentSpawnDir(planet ?? { cities: [] }, factionId),
           notes: "",
           strengthPercent: 100,
         };
@@ -2542,11 +3407,13 @@ export const useCampaignStore = create<CampaignState>()(
           defenderSupportIds.includes(a.id),
         );
 
-        const attackerCombined = combinedForceStrength(
+        const attackerCombined = combinedForceStrengthWithFortifications(
+          planet,
           attacker,
           attackerSupports,
         );
-        const defenderCombined = combinedForceStrength(
+        const defenderCombined = combinedForceStrengthWithFortifications(
+          planet,
           defender,
           defenderSupports,
         );
@@ -3131,9 +3998,24 @@ export const useCampaignStore = create<CampaignState>()(
             );
             return applyWarpGateOwnership({ ...p, structures });
           });
+          const touched = planets.find((p) => p.id === planetId);
           return {
-            ...withCampaign(s, withHistoryCapture({ ...s.campaign, planets })),
-            playMoveHint: "Relay crown seized — this faction now controls the gate",
+            ...withCampaign(
+              s,
+              withHistoryCapture({
+                ...s.campaign,
+                planets,
+                systems: touched
+                  ? syncSystemOwnerInSystems(
+                      s.campaign.systems,
+                      planets,
+                      touched.systemId,
+                    )
+                  : s.campaign.systems,
+              }),
+            ),
+            playMoveHint:
+              "Relay crown seized — this faction now controls the gate",
           };
         });
         return true;
@@ -3304,6 +4186,58 @@ export const useCampaignStore = create<CampaignState>()(
         return added;
       },
 
+      unloadTransportCargo: (fleetId, amount) => {
+        const state = get();
+        const fleet = (state.campaign.fleets ?? []).find((f) => f.id === fleetId);
+        if (!fleet || fleet.location.kind !== "orbit") {
+          set({ playMoveHint: "Fleet must be in orbit to unload BP" });
+          return 0;
+        }
+        const planet = state.campaign.planets.find(
+          (p) => p.id === fleet.location.planetId,
+        );
+        if (!planet) {
+          set({ playMoveHint: "Orbit world not found" });
+          return 0;
+        }
+        const check = canUnloadTransportCargo(
+          state.campaign,
+          fleet,
+          planet,
+          amount,
+        );
+        if (!check.ok) {
+          set({ playMoveHint: check.message });
+          return 0;
+        }
+        const spentFleet = spendFleetCargo(fleet, check.unload);
+        if (!spentFleet) {
+          set({ playMoveHint: "Could not unload cargo" });
+          return 0;
+        }
+        const credited = creditBuildingPoints(
+          planet,
+          fleet.factionId,
+          check.unload,
+        );
+        set((s) => ({
+          ...withCampaign(
+            s,
+            withHistoryCapture({
+              ...s.campaign,
+              fleets: (s.campaign.fleets ?? []).map((f) =>
+                f.id === fleetId ? spentFleet : f,
+              ),
+              planets: s.campaign.planets.map((p) =>
+                p.id === planet.id ? credited : p,
+              ),
+            }),
+          ),
+          playMoveHint: `Unloaded ${check.unload} BP onto ${planet.name} (${getBuildingPoints(credited, fleet.factionId)} banked)`,
+        }));
+        return check.unload;
+      },
+
       deployFromTransport: (fleetId) => {
         const state = get();
         const fleet = (state.campaign.fleets ?? []).find((f) => f.id === fleetId);
@@ -3399,7 +4333,7 @@ export const useCampaignStore = create<CampaignState>()(
           name: `${faction?.name ?? "Landing"} Detachment`,
           factionId: fleet.factionId,
           symbolId: faction?.defaultSymbolId,
-          dir: { x: 0, y: 1, z: 0 },
+          dir: preferredDetachmentSpawnDir(planet, fleet.factionId),
           notes: "Deployed from transport hold",
           strengthPercent: 100,
         };
@@ -3613,7 +4547,6 @@ export const useCampaignStore = create<CampaignState>()(
           id,
           name: "New Faction",
           color: "#6b8cae",
-          armyType: "infantry",
         };
         set((s) =>
           withCampaign(s, {
@@ -3647,37 +4580,64 @@ export const useCampaignStore = create<CampaignState>()(
         }),
 
       deleteFaction: (id) =>
-        set((s) =>
-          withCampaign(s, {
+        set((s) => {
+          const planets = s.campaign.planets.map((p) => {
+            const cities = (p.cities ?? []).map((c) => ({
+              ...c,
+              controllingFactionId:
+                c.controllingFactionId === id
+                  ? undefined
+                  : c.controllingFactionId,
+              districts: c.districts.map((d) =>
+                d.controllingFactionId === id
+                  ? { ...d, controllingFactionId: undefined }
+                  : d,
+              ),
+            }));
+            const independentDistricts = (p.independentDistricts ?? []).map(
+              (d) =>
+                d.controllingFactionId === id
+                  ? { ...d, controllingFactionId: undefined }
+                  : d,
+            );
+            const structures = (p.structures ?? []).map((st) =>
+              st.controllingFactionId === id
+                ? { ...st, controllingFactionId: undefined }
+                : st,
+            );
+            const tileClaims: Record<string, string> = {};
+            for (const [key, factionId] of Object.entries(p.tileClaims ?? {})) {
+              if (factionId && factionId !== id) tileClaims[key] = factionId;
+            }
+            return {
+              ...p,
+              cities,
+              independentDistricts,
+              structures,
+              tileClaims,
+              controllingFactionId: planetOwnerFromCities(
+                cities,
+                tileClaims,
+                structures,
+                independentDistricts,
+              ),
+              armies: (p.armies ?? []).filter((a) => a.factionId !== id),
+            };
+          });
+          return withCampaign(s, {
             ...s.campaign,
             factions: s.campaign.factions.filter((f) => f.id !== id),
             fleets: (s.campaign.fleets ?? []).filter((f) => f.factionId !== id),
             characters: (s.campaign.characters ?? []).map((c) =>
               c.factionId === id ? { ...c, factionId: undefined } : c,
             ),
-            planets: s.campaign.planets.map((p) => ({
-              ...p,
-              controllingFactionId:
-                p.controllingFactionId === id
-                  ? undefined
-                  : p.controllingFactionId,
-              cities: (p.cities ?? []).map((c) => ({
-                ...c,
-                districts: c.districts.map((d) =>
-                  d.controllingFactionId === id
-                    ? { ...d, controllingFactionId: undefined }
-                    : d,
-                ),
-              })),
-              structures: (p.structures ?? []).map((st) =>
-                st.controllingFactionId === id
-                  ? { ...st, controllingFactionId: undefined }
-                  : st,
-              ),
-              armies: (p.armies ?? []).filter((a) => a.factionId !== id),
+            planets,
+            systems: s.campaign.systems.map((sys) => ({
+              ...sys,
+              controllingFactionId: deriveSystemOwnerId(planets, sys.id),
             })),
-          }),
-        ),
+          });
+        }),
 
       addCharacter: (seed) => {
         const id = crypto.randomUUID();
@@ -3949,13 +4909,24 @@ export const useCampaignStore = create<CampaignState>()(
         const camps = ownedCamps(planet, factionId);
         const camp = camps[0]!;
         const faction = state.campaign.factions.find((f) => f.id === factionId);
+        const campCity = camp.cityId
+          ? (planet.cities ?? []).find((c) => c.id === camp.cityId)
+          : undefined;
+        const preferCityDir =
+          campCity?.controllingFactionId === factionId
+            ? campCity.dir
+            : undefined;
         const id = crypto.randomUUID();
         const army: Army = {
           id,
           name: `${faction?.name ?? "Army"} Detachment`,
           factionId,
           symbolId: faction?.defaultSymbolId,
-          dir: { ...camp.district.dir },
+          dir: preferredDetachmentSpawnDir(
+            planet,
+            factionId,
+            preferCityDir ?? camp.district.dir,
+          ),
           notes: "",
           strengthPercent: 100,
         };

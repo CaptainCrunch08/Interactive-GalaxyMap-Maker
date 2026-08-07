@@ -1,14 +1,10 @@
 import { useRef, useState } from "react";
-import {
-  FACTION_ARMY_TYPE_LABELS,
-  FACTION_ARMY_TYPE_ORDER,
-  type FactionArmyType,
-} from "../../types/campaign";
 import { getSymbolCatalog } from "../../lib/symbolCatalog";
 import {
   factionSymbolIds,
   symbolOwnerMap,
 } from "../../lib/factionSymbols";
+import { factionsSortedByName } from "../../lib/territory";
 import { useCampaignStore } from "../../store/useCampaignStore";
 
 const inputClass = "hud-input";
@@ -67,8 +63,8 @@ export function EditGalaxyFactionsPanel() {
             Factions
           </h3>
           <p className="text-xs text-muted mt-1">
-            Create factions, set colors, army types, and symbols. Each symbol
-            can belong to only one faction; mark one as the primary emblem.
+            Create factions, set colors, leaders, and symbols. Each symbol can
+            belong to only one faction; mark one as the primary emblem.
           </p>
         </div>
         <button
@@ -84,7 +80,7 @@ export function EditGalaxyFactionsPanel() {
         <p className="text-sm text-muted">No factions yet.</p>
       ) : (
         <ul className="space-y-4 max-w-3xl">
-          {campaign.factions.map((f) => {
+          {factionsSortedByName(campaign.factions).map((f) => {
             const ownedIds = factionSymbolIds(f);
             const owned = ownedIds
               .map((id) => (campaign.symbols ?? []).find((s) => s.id === id))
@@ -141,25 +137,6 @@ export function EditGalaxyFactionsPanel() {
                       updateFaction(f.id, { leader: e.target.value })
                     }
                   />
-                </label>
-
-                <label className="block text-[10px] uppercase tracking-wider text-muted">
-                  Army type
-                  <select
-                    className={inputClass + " mt-1"}
-                    value={f.armyType ?? "infantry"}
-                    onChange={(e) =>
-                      updateFaction(f.id, {
-                        armyType: e.target.value as FactionArmyType,
-                      })
-                    }
-                  >
-                    {FACTION_ARMY_TYPE_ORDER.map((t) => (
-                      <option key={t} value={t}>
-                        {FACTION_ARMY_TYPE_LABELS[t]}
-                      </option>
-                    ))}
-                  </select>
                 </label>
 
                 <div>

@@ -6,6 +6,7 @@ import {
   stationArmiesAreAdjacent,
 } from "./battleResolve";
 import { districtOwnedBy } from "./buildingPoints";
+import { isDistrictActivated } from "./activation";
 import { buildHexSphere, nearestTileIndex } from "./hexSphere";
 import {
   armyMovementRemaining,
@@ -49,9 +50,11 @@ export function isOnFriendlyWarCamp(planet: Planet, army: Army): boolean {
       if (d.kind !== "camp") continue;
       if (d.tileIndex !== tile) continue;
       if (!districtOwnedBy(d, army.factionId)) continue;
+      if (!isDistrictActivated(planet, d.id)) continue;
       return true;
     }
   }
+  // Independent camps never activate
   return false;
 }
 

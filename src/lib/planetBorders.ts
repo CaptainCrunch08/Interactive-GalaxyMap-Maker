@@ -1,4 +1,9 @@
-import type { City, Faction, PlanetStructure } from "../types/campaign";
+import type {
+  City,
+  District,
+  Faction,
+  PlanetStructure,
+} from "../types/campaign";
 import type { HexSphere, Vec3 } from "./hexSphere";
 import { tileOwnerMap } from "./settlements";
 
@@ -32,8 +37,14 @@ export function buildFactionBorders(
   radius: number,
   tileClaims?: Record<string, string>,
   structures: PlanetStructure[] = [],
+  independentDistricts: District[] = [],
 ): { positions: Float32Array; colors: Float32Array } {
-  const owners = tileOwnerMap(cities, tileClaims, structures);
+  const owners = tileOwnerMap(
+    cities,
+    tileClaims,
+    structures,
+    independentDistricts,
+  );
   const positions: number[] = [];
   const colors: number[] = [];
 

@@ -19,18 +19,28 @@ function withCities(
     contestedRate?: number;
   },
 ): Planet {
-  const { cities, structures } = generatePlanetSurface(planet.id, planet.type, {
-    defaultFactionId: opts?.defaultFactionId ?? planet.controllingFactionId,
-    rivalFactionId: opts?.rivalFactionId,
-    contestedRate: opts?.contestedRate,
-  });
+  const { cities, structures, independentDistricts } = generatePlanetSurface(
+    planet.id,
+    planet.type,
+    {
+      defaultFactionId: opts?.defaultFactionId ?? planet.controllingFactionId,
+      rivalFactionId: opts?.rivalFactionId,
+      contestedRate: opts?.contestedRate,
+      classification: planet.classification,
+    },
+  );
   return {
     ...planet,
     cities,
+    independentDistricts,
     structures,
     controllingFactionId:
-      planetOwnerFromCities(cities, undefined, structures) ??
-      planet.controllingFactionId,
+      planetOwnerFromCities(
+        cities,
+        undefined,
+        structures,
+        independentDistricts,
+      ) ?? planet.controllingFactionId,
     armies: [],
   };
 }
@@ -91,8 +101,8 @@ export function createDemoCampaign(): Campaign {
     version: 1,
     name: "Segmentum Obscurus",
     factions: [
-      { id: imperiumId, name: "Imperium", color: "#c9a227", armyType: "infantry" },
-      { id: chaosId, name: "Forces of Chaos", color: "#8b1538", armyType: "elite" },
+      { id: imperiumId, name: "Imperium", color: "#c9a227" },
+      { id: chaosId, name: "Forces of Chaos", color: "#8b1538" },
     ],
     symbols: [],
     systems: [

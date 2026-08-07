@@ -12,6 +12,8 @@ type SelectAllTilesDialogProps = {
   open: boolean;
   classification: PlanetClassification;
   initialKind?: TerrainKind | null;
+  reservedTiles?: number[];
+  cityHubTiles?: number[];
   onCancel: () => void;
   onConfirm: (tileTerrain: Record<string, string>) => void;
 };
@@ -20,6 +22,8 @@ export function SelectAllTilesDialog({
   open,
   classification,
   initialKind = null,
+  reservedTiles = [],
+  cityHubTiles = [],
   onCancel,
   onConfirm,
 }: SelectAllTilesDialogProps) {
@@ -55,7 +59,9 @@ export function SelectAllTilesDialog({
               Select all
             </h2>
             <p className="text-[11px] text-muted mt-1 leading-relaxed">
-              Cover every hex on this world with one tile type.
+              Cover every hex on this world with one tile type. Cities,
+              districts, and structures stay on land if you pick ocean, lava,
+              or chem spill.
             </p>
           </div>
           <button
@@ -94,7 +100,14 @@ export function SelectAllTilesDialog({
           <button
             type="button"
             className="hud-btn hud-btn-active flex-1"
-            onClick={() => onConfirm(fillAllTileTerrain(kind))}
+            onClick={() =>
+              onConfirm(
+                fillAllTileTerrain(kind, undefined, {
+                  reservedTiles,
+                  cityHubTiles,
+                }),
+              )
+            }
           >
             Apply {TERRAIN_KIND_LABELS[kind]}
           </button>

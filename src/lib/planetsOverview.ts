@@ -39,6 +39,9 @@ function presentFactionIds(planet: Planet): Set<string> {
       if (d.controllingFactionId) ids.add(d.controllingFactionId);
     }
   }
+  for (const d of planet.independentDistricts ?? []) {
+    if (d.controllingFactionId) ids.add(d.controllingFactionId);
+  }
   for (const st of planet.structures ?? []) {
     if (st.controllingFactionId) ids.add(st.controllingFactionId);
   }
@@ -116,6 +119,11 @@ export function computePlanetStrength(planet: Planet): number {
       if (d.kind === "fortress" || d.kind === "bastion") score += 5;
       if (d.kind === "ruins") score -= 4;
     }
+  }
+  for (const d of planet.independentDistricts ?? []) {
+    score += 4;
+    if (d.kind === "fortress" || d.kind === "bastion") score += 5;
+    if (d.kind === "ruins") score -= 4;
   }
 
   const claims = Object.keys(planet.tileClaims ?? {}).length;

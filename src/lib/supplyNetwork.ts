@@ -11,11 +11,11 @@ import { SETTLEMENT_HEX_FREQUENCY } from "./settlements";
  */
 export const SUPPLY_LINK_RANGE = 3;
 
-type SupplyPlanet = Pick<Planet, "cities" | "structures">;
+type SupplyPlanet = Pick<Planet, "cities" | "structures" | "independentDistricts">;
 
 export type SupplyStationRef = {
   id: string;
-  cityId: string;
+  cityId: string | null;
   name: string;
   tileIndex: number;
   controllingFactionId?: string;
@@ -59,6 +59,16 @@ export function collectSupplyStations(planet: SupplyPlanet): SupplyStationRef[] 
       });
     }
   }
+  for (const d of planet.independentDistricts ?? []) {
+    if (d.kind !== "supply_station") continue;
+    out.push({
+      id: d.id,
+      cityId: null,
+      name: d.name,
+      tileIndex: d.tileIndex,
+      controllingFactionId: d.controllingFactionId,
+    });
+  }
   return out;
 }
 
@@ -84,8 +94,16 @@ function withinSupplyRange(a: number, b: number): boolean {
 }
 
 /** Build full adjacency: station↔station, station↔network, network↔network. */
-function buildSupplyAdjacency(planet: SupplyPlanet): Map<string, Set<string>> {
-  const stations = collectSupplyStations(planet);
+function buildSupplyAdjacency(
+  planet: SupplyPlanet,
+  opts?: { onlyActivatedStationIds?: ReadonlySet<string> },
+): Map<string, Set<string>> {
+  let stations = collectSupplyStations(planet);
+  if (opts?.onlyActivatedStationIds) {
+    stations = stations.filter((s) =>
+      opts.onlyActivatedStationIds!.has(s.id),
+    );
+  }
   const networks = collectSupplyNetworks(planet);
   const adj = new Map<string, Set<string>>();
   const touch = (a: string, b: string) => {
@@ -234,6 +252,63 @@ export function stationsInNetworkComponent(
     .filter((s): s is SupplyStationRef => s != null);
 }
 
+/** Hex-neighbor check on the settlement sphere. */
+export function tilesAreHexAdjacent(a: number, b: number): boolean {
+  if (a === b) return false;
+  return (supplySphere().neighbors[a] ?? []).includes(b);
+}
+
+/**
+ * Supply graph keys (`s:id` / `n:id`) for stations/networks hex-adjacent
+ * to this tile — how mines and manufactorums tap into logistics.
+ */
+export function supplyNodeKeysAdjacentToTile(
+  planet: SupplyPlanet,
+  tileIndex: number,
+  opts?: { onlyActivatedStationIds?: ReadonlySet<string> },
+): string[] {
+  const keys: string[] = [];
+  for (const s of collectSupplyStations(planet)) {
+    if (
+      opts?.onlyActivatedStationIds &&
+      !opts.onlyActivatedStationIds.has(s.id)
+    ) {
+      continue;
+    }
+    if (tilesAreHexAdjacent(tileIndex, s.tileIndex)) keys.push(`s:${s.id}`);
+  }
+  for (const n of collectSupplyNetworks(planet)) {
+    if (tilesAreHexAdjacent(tileIndex, n.tileIndex)) keys.push(`n:${n.id}`);
+  }
+  return keys;
+}
+
+/**
+ * True when two tiles tap the same logistics component
+ * (each hex-adjacent to a station/network that share a supply chain).
+ */
+export function tilesShareSupplyComponent(
+  planet: SupplyPlanet,
+  tileA: number,
+  tileB: number,
+  opts?: { onlyActivatedStationIds?: ReadonlySet<string> },
+): boolean {
+  const hooksA = supplyNodeKeysAdjacentToTile(planet, tileA, opts);
+  const hooksB = supplyNodeKeysAdjacentToTile(planet, tileB, opts);
+  if (hooksA.length === 0 || hooksB.length === 0) return false;
+
+  const adj = buildSupplyAdjacency(planet, opts);
+  const want = new Set(hooksB);
+  for (const start of hooksA) {
+    if (!adj.has(start) && want.has(start)) return true;
+    const reached = bfsReachable(adj, start);
+    for (const k of want) {
+      if (reached.has(k) || k === start) return true;
+    }
+  }
+  return false;
+}
+
 /** All direct links within range (for map visuals). */
 export function supplyLinkSegments(planet: SupplyPlanet): SupplyLinkSegment[] {
   const stations = collectSupplyStations(planet);
@@ -286,12 +361,13 @@ export function areInSameSupplyNetwork(
 export function findSupplyStation(
   cities: City[] | undefined,
   districtId: string,
+  independentDistricts: District[] = [],
 ): District | null {
   for (const city of cities ?? []) {
     const d = city.districts.find((x) => x.id === districtId);
     if (d) return d;
   }
-  return null;
+  return independentDistricts.find((d) => d.id === districtId) ?? null;
 }
 
 export function isSupplyNetworkStructure(

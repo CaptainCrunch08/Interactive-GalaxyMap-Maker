@@ -5,7 +5,7 @@ import type {
   CampaignCharacter,
   CharacterStatus,
 } from "../../types/campaign";
-import { getFactionById } from "../../lib/territory";
+import { factionsSortedByName, getFactionById } from "../../lib/territory";
 import {
   characterLocationDisplay,
   characterPlacementLabel,
@@ -637,7 +637,7 @@ export function CharactersOverviewPanel() {
           title="Create Character"
           draft={draft}
           campaign={campaign}
-          factions={campaign.factions}
+          factions={factionsSortedByName(campaign.factions)}
           onChange={(patch) => setDraft((d) => ({ ...d, ...patch }))}
           onSave={saveCreate}
           onCancel={cancelForm}
@@ -649,7 +649,7 @@ export function CharactersOverviewPanel() {
           title="Edit Character"
           draft={draft}
           campaign={campaign}
-          factions={campaign.factions}
+          factions={factionsSortedByName(campaign.factions)}
           onChange={(patch) => setDraft((d) => ({ ...d, ...patch }))}
           onSave={saveEdit}
           onCancel={cancelForm}

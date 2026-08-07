@@ -1,5 +1,4 @@
 import type { Campaign, Faction } from "../types/campaign";
-import { FACTION_ARMY_TYPE_LABELS } from "../types/campaign";
 import {
   countOwnedManufactorums,
   getBuildingPoints,
@@ -50,7 +49,7 @@ export type FactionPowerRow = {
   factionId: string;
   name: string;
   color: string;
-  /** Secondary line (doctrine / army type). */
+  /** Secondary line (leader name when set). */
   subtitle: string;
   scores: FactionPowerScores;
   raw: FactionPowerScores;
@@ -159,6 +158,11 @@ function rawTerritory(campaign: Campaign, factionId: string): number {
       }
       if (ownedDistricts > 0) score += 6 + ownedDistricts * 3;
     }
+    let ownedIndependent = 0;
+    for (const d of planet.independentDistricts ?? []) {
+      if (d.controllingFactionId === factionId) ownedIndependent += 1;
+    }
+    if (ownedIndependent > 0) score += ownedIndependent * 3;
     for (const [tile, owner] of Object.entries(planet.tileClaims ?? {})) {
       if (owner === factionId) score += 0.35;
       void tile;
@@ -442,7 +446,7 @@ export function computeStrategicOverview(
       factionId: f.id,
       name: f.name,
       color: f.color,
-      subtitle: FACTION_ARMY_TYPE_LABELS[f.armyType] ?? f.armyType,
+      subtitle: f.leader?.trim() ?? "",
       scores,
       raw,
     };

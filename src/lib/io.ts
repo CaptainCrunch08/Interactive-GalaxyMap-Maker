@@ -15,17 +15,6 @@ const factionSchema = z.object({
   name: z.string(),
   color: z.string(),
   leader: z.string().optional(),
-  armyType: z
-    .enum([
-      "infantry",
-      "armored",
-      "mechanized",
-      "artillery",
-      "airborne",
-      "elite",
-      "irregular",
-    ])
-    .default("infantry"),
   defaultSymbolId: z.string().optional(),
   symbolIds: z.array(z.string()).optional().default([]),
 });
@@ -34,6 +23,11 @@ const hyperlaneSchema = z.object({
   id: z.string(),
   a: z.string(),
   b: z.string(),
+});
+
+const hyperlaneEditsSchema = z.object({
+  added: z.array(hyperlaneSchema).default([]),
+  removed: z.array(z.string()).default([]),
 });
 
 const armySymbolSchema = z.object({
@@ -107,6 +101,7 @@ const districtSchema = z.object({
   kind: z.enum([
     "spire",
     "underhive",
+    "domed_habitat",
     "docks",
     "bastion",
     "manufactorum",
@@ -369,6 +364,7 @@ const planetSchema = z.object({
   notes: z.string(),
   battles: z.array(battleEntrySchema),
   cities: z.array(citySchema).default([]),
+  independentDistricts: z.array(districtSchema).optional().default([]),
   structures: z.array(structureSchema).default([]),
   tileClaims: z.record(z.string(), z.string()).optional().default({}),
   tileTerrain: z.record(z.string(), z.string()).optional().default({}),
@@ -401,6 +397,7 @@ const campaignSchema = z.object({
   fleets: z.array(fleetSchema).default([]),
   characters: z.array(characterSchema).default([]),
   hyperlanes: z.array(hyperlaneSchema).optional(),
+  hyperlaneEdits: hyperlaneEditsSchema.optional(),
   timeline: campaignTimelineSchema.optional(),
   mapSize: z.number().positive().optional(),
   play: campaignPlaySchema.optional(),
@@ -434,12 +431,8 @@ export function parseCampaignJson(json: string): Campaign {
     })),
     characters: campaign.characters ?? [],
     hyperlanes: campaign.hyperlanes,
-    factions: enforceUniqueSymbolOwnership(
-      campaign.factions.map((f) => ({
-        ...f,
-        armyType: f.armyType ?? "infantry",
-      })),
-    ),
+    hyperlaneEdits: campaign.hyperlaneEdits,
+    factions: enforceUniqueSymbolOwnership(campaign.factions),
     timeline: {
       frames: campaign.timeline?.frames ?? [],
       events: campaign.timeline?.events ?? [],
@@ -468,6 +461,7 @@ export function parseCampaignJson(json: string): Campaign {
         ),
         structures: p.structures ?? [],
         cities: p.cities ?? [],
+        independentDistricts: p.independentDistricts ?? [],
         armies: p.armies ?? [],
       });
       return {
@@ -484,6 +478,7 @@ export function parseCampaignJson(json: string): Campaign {
         ),
         famousBattleSites: p.famousBattleSites ?? [],
         structures: ensured.structures ?? [],
+        independentDistricts: ensured.independentDistricts ?? [],
         buildingPoints: p.buildingPoints ?? {},
       };
     }),

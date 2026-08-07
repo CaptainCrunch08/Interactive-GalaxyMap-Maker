@@ -5,13 +5,17 @@ import type {
   Army,
   ArmySymbol,
   City,
+  District,
   Faction,
   FamousBattleSite,
+  Planet,
   PlanetClassification,
   PlanetStructure,
   PlanetType,
   SphereDir,
 } from "../../types/campaign";
+import { DISTRICT_KIND_LABELS } from "../../types/campaign";
+import { districtRuleViolations } from "../../lib/activation";
 import { buildHexSphere, nearestTileIndex } from "../../lib/hexSphere";
 import { engageTargetsForArmy } from "../../lib/battleResolve";
 import { buildFactionBorders } from "../../lib/planetBorders";
@@ -23,6 +27,7 @@ import {
 } from "../../lib/planetTerrain";
 import {
   SETTLEMENT_HEX_FREQUENCY,
+  featureAtTileIndex,
   settlementTileSet,
   tileOwnerMap,
 } from "../../lib/settlements";
@@ -57,6 +62,7 @@ type HexPlanetProps = {
   classification: PlanetClassification;
   accentColor: string;
   cities: City[];
+  independentDistricts?: District[];
   structures: PlanetStructure[];
   tileClaims: Record<string, string>;
   armies: Army[];
@@ -69,6 +75,11 @@ type HexPlanetProps = {
   selectedArmyId: string | null;
   selectedFamousBattleId?: string | null;
   placingArmyId: string | null;
+  /**
+   * Edit / setup (Play inactive): show orange ! over districts that break
+   * placement / activation rules.
+   */
+  showDistrictRuleWarnings?: boolean;
   /**
    * Play-mode: when set, highlight hexes this detachment can fight on
    * and click those hexes (or rival markers there) to open battle resolve.
@@ -84,7 +95,10 @@ type HexPlanetProps = {
   surfaceEraseActive?: boolean;
   /** Manual biome overrides by tile index. */
   tileTerrain?: Record<string, string>;
-  onSelectSettlement: (cityId: string, districtId: string | null) => void;
+  onSelectSettlement: (
+    cityId: string | null,
+    districtId: string | null,
+  ) => void;
   onSelectStructure: (structureId: string) => void;
   onSelectArmy: (armyId: string) => void;
   onSelectFamousBattle?: (siteId: string | null) => void;
@@ -112,26 +126,6 @@ function displayRgb(r: number, g: number, b: number): [number, number, number] {
     Math.min(255, Math.round(g * lift + 14)),
     Math.min(255, Math.round(b * lift + 12)),
   ];
-}
-
-function majorityFactionId(city: City): string | undefined {
-  const counts = new Map<string, number>();
-  for (const d of city.districts) {
-    if (!d.controllingFactionId) continue;
-    counts.set(
-      d.controllingFactionId,
-      (counts.get(d.controllingFactionId) ?? 0) + 1,
-    );
-  }
-  let best: string | undefined;
-  let n = 0;
-  for (const [id, c] of counts) {
-    if (c > n) {
-      best = id;
-      n = c;
-    }
-  }
-  return best;
 }
 
 function factionColor(
@@ -246,31 +240,18 @@ function featureAtTile(
   tileIndex: number,
   cities: City[],
   structures: PlanetStructure[],
+  independentDistricts: District[] = [],
 ):
   | { kind: "city"; cityId: string }
-  | { kind: "district"; cityId: string; districtId: string }
+  | { kind: "district"; cityId: string | null; districtId: string }
   | { kind: "structure"; structureId: string }
   | null {
-  for (const city of cities) {
-    if (city.tileIndex === tileIndex) {
-      return { kind: "city", cityId: city.id };
-    }
-    for (const d of city.districts) {
-      if (d.tileIndex === tileIndex) {
-        return {
-          kind: "district",
-          cityId: city.id,
-          districtId: d.id,
-        };
-      }
-    }
-  }
-  for (const s of structures) {
-    if (s.tileIndex === tileIndex) {
-      return { kind: "structure", structureId: s.id };
-    }
-  }
-  return null;
+  return featureAtTileIndex(
+    tileIndex,
+    cities,
+    structures,
+    independentDistricts,
+  );
 }
 
 function buildPlanetMeshes(
@@ -282,9 +263,15 @@ function buildPlanetMeshes(
   tileClaims?: Record<string, string>,
   structures: PlanetStructure[] = [],
   tileTerrain?: Record<string, string>,
+  independentDistricts: District[] = [],
 ): { surface: THREE.Mesh; seams: THREE.LineSegments } {
   const { tiles } = planetSphere();
-  const owners = tileOwnerMap(cities, tileClaims, structures);
+  const owners = tileOwnerMap(
+    cities,
+    tileClaims,
+    structures,
+    independentDistricts,
+  );
   const positions: number[] = [];
   const normals: number[] = [];
   const colors: number[] = [];
@@ -407,6 +394,7 @@ function buildBorderLines(
   factions: Faction[],
   tileClaims?: Record<string, string>,
   structures: PlanetStructure[] = [],
+  independentDistricts: District[] = [],
 ): THREE.LineSegments {
   const sphere = planetSphere();
   const { positions, colors } = buildFactionBorders(
@@ -416,6 +404,7 @@ function buildBorderLines(
     PLANET_RADIUS,
     tileClaims,
     structures,
+    independentDistricts,
   );
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
@@ -439,21 +428,187 @@ function placeOnSphere(
     .multiplyScalar(radius);
 }
 
+function makeDistrictHudSprite(
+  text: string,
+  opts: {
+    textColor: string;
+    bgColor: string;
+    borderColor: string;
+    fontPx: number;
+    bold?: boolean;
+  },
+): THREE.Sprite {
+  const padX = 18;
+  const padY = 10;
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d")!;
+  ctx.font = `${opts.bold ? "bold " : ""}${opts.fontPx}px system-ui, sans-serif`;
+  const metrics = ctx.measureText(text);
+  const w = Math.ceil(metrics.width + padX * 2);
+  const h = Math.ceil(opts.fontPx + padY * 2);
+  canvas.width = w;
+  canvas.height = h;
+  ctx.font = `${opts.bold ? "bold " : ""}${opts.fontPx}px system-ui, sans-serif`;
+  ctx.fillStyle = opts.bgColor;
+  ctx.strokeStyle = opts.borderColor;
+  ctx.lineWidth = 3;
+  roundRect(ctx, 1.5, 1.5, w - 3, h - 3, 8);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = opts.textColor;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, w / 2, h / 2 + 1);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  const mat = new THREE.SpriteMaterial({
+    map: tex,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const sprite = new THREE.Sprite(mat);
+  const worldH = 0.055 * (h / 36);
+  const worldW = worldH * (w / h);
+  sprite.scale.set(worldW, worldH, 1);
+  sprite.center.set(0.5, 0);
+  sprite.raycast = () => {};
+  sprite.userData = { kind: "decor" };
+  return sprite;
+}
+
+function makeWarningBangSprite(): THREE.Sprite {
+  const size = 64;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  ctx.clearRect(0, 0, size, size);
+  // Orange disc
+  ctx.beginPath();
+  ctx.arc(size / 2, size / 2, 26, 0, Math.PI * 2);
+  ctx.fillStyle = "#f07820";
+  ctx.fill();
+  ctx.strokeStyle = "#2a1408";
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  // Bang
+  ctx.fillStyle = "#1a0c04";
+  ctx.font = "bold 42px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("!", size / 2, size / 2 + 2);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  const mat = new THREE.SpriteMaterial({
+    map: tex,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(0.07, 0.07, 1);
+  sprite.center.set(0.5, 0);
+  sprite.raycast = () => {};
+  sprite.userData = { kind: "decor" };
+  return sprite;
+}
+
 function buildSettlementMarkers(
   cities: City[],
   factions: Faction[],
   selectedCityId: string | null,
   selectedDistrictId: string | null,
   accentColor: string,
+  independentDistricts: District[] = [],
+  opts?: {
+    showRuleWarnings?: boolean;
+    planet?: Pick<Planet, "cities" | "independentDistricts" | "structures">;
+  },
 ): THREE.Group {
   const group = new THREE.Group();
   const cityGeo = new THREE.CylinderGeometry(0.035, 0.05, 0.12, 6);
   const districtGeo = new THREE.SphereGeometry(0.028, 10, 10);
   const supplyStationGeo = new THREE.BoxGeometry(0.045, 0.045, 0.045);
+  const planetForRules = opts?.planet;
+  const showWarnings = Boolean(opts?.showRuleWarnings && planetForRules);
+
+  const addDistrictMarker = (
+    district: District,
+    cityId: string | null,
+  ) => {
+    const dCol = factionColor(
+      factions,
+      district.controllingFactionId,
+      district.kind === "supply_station" ? "#5ec8a0" : "#6a8296",
+    );
+    const selected = selectedDistrictId === district.id;
+    const dMesh = new THREE.Mesh(
+      district.kind === "supply_station" ? supplyStationGeo : districtGeo,
+      new THREE.MeshStandardMaterial({
+        color: new THREE.Color(dCol),
+        emissive: new THREE.Color(dCol),
+        emissiveIntensity: selected ? 0.65 : 0.15,
+        roughness: 0.5,
+        metalness: district.kind === "supply_station" ? 0.45 : 0.15,
+      }),
+    );
+    dMesh.position.copy(placeOnSphere(district.dir, PLANET_RADIUS * 1.04));
+    if (district.kind === "supply_station") {
+      dMesh.lookAt(0, 0, 0);
+      dMesh.rotateX(Math.PI / 2);
+    }
+    dMesh.userData = {
+      kind: "district",
+      cityId,
+      districtId: district.id,
+    };
+    group.add(dMesh);
+
+    const violations =
+      showWarnings && planetForRules
+        ? districtRuleViolations(planetForRules as Planet, district, cityId)
+        : [];
+    if (violations.length > 0) {
+      const bang = makeWarningBangSprite();
+      bang.position.copy(placeOnSphere(district.dir, PLANET_RADIUS * 1.085));
+      bang.userData = {
+        kind: "decor",
+        warningText: violations.join(" · "),
+      };
+      group.add(bang);
+    }
+
+    if (selected) {
+      const kindTag = makeDistrictHudSprite(
+        DISTRICT_KIND_LABELS[district.kind],
+        {
+          textColor: "#f2f6fa",
+          bgColor: "rgba(10, 18, 28, 0.92)",
+          borderColor: "#4fd2ff",
+          fontPx: 28,
+          bold: true,
+        },
+      );
+      // Sit above the bang when both are present
+      const tagRadius =
+        violations.length > 0 ? PLANET_RADIUS * 1.12 : PLANET_RADIUS * 1.09;
+      kindTag.position.copy(placeOnSphere(district.dir, tagRadius));
+      group.add(kindTag);
+    }
+  };
 
   for (const city of cities) {
-    const cityOwner = majorityFactionId(city);
-    const cityCol = factionColor(factions, cityOwner, accentColor);
+    // City hub color is its own owner — not majority of districts.
+    const cityCol = factionColor(
+      factions,
+      city.controllingFactionId,
+      "#6a8296",
+    );
     const selectedCity = selectedCityId === city.id && !selectedDistrictId;
     const cityMesh = new THREE.Mesh(
       cityGeo,
@@ -489,34 +644,12 @@ function buildSettlementMarkers(
     }
 
     for (const district of city.districts) {
-      const dCol = factionColor(
-        factions,
-        district.controllingFactionId,
-        district.kind === "supply_station" ? "#5ec8a0" : "#6a8296",
-      );
-      const selected = selectedDistrictId === district.id;
-      const dMesh = new THREE.Mesh(
-        district.kind === "supply_station" ? supplyStationGeo : districtGeo,
-        new THREE.MeshStandardMaterial({
-          color: new THREE.Color(dCol),
-          emissive: new THREE.Color(dCol),
-          emissiveIntensity: selected ? 0.65 : 0.15,
-          roughness: 0.5,
-          metalness: district.kind === "supply_station" ? 0.45 : 0.15,
-        }),
-      );
-      dMesh.position.copy(placeOnSphere(district.dir, PLANET_RADIUS * 1.04));
-      if (district.kind === "supply_station") {
-        dMesh.lookAt(0, 0, 0);
-        dMesh.rotateX(Math.PI / 2);
-      }
-      dMesh.userData = {
-        kind: "district",
-        cityId: city.id,
-        districtId: district.id,
-      };
-      group.add(dMesh);
+      addDistrictMarker(district, city.id);
     }
+  }
+
+  for (const district of independentDistricts) {
+    addDistrictMarker(district, null);
   }
 
   return group;
@@ -525,15 +658,23 @@ function buildSettlementMarkers(
 function buildSupplyLinkLines(
   cities: City[],
   structures: PlanetStructure[],
+  independentDistricts: District[] = [],
 ): THREE.Group {
   const group = new THREE.Group();
-  const segments = supplyLinkSegments({ cities, structures });
+  const segments = supplyLinkSegments({
+    cities,
+    structures,
+    independentDistricts,
+  });
 
   const stationDir = new Map<string, SphereDir>();
   for (const city of cities) {
     for (const d of city.districts) {
       if (d.kind === "supply_station") stationDir.set(d.id, d.dir);
     }
+  }
+  for (const d of independentDistricts) {
+    if (d.kind === "supply_station") stationDir.set(d.id, d.dir);
   }
   const networkDir = new Map<string, SphereDir>();
   for (const s of structures) {
@@ -708,7 +849,7 @@ function buildStructureMarkers(
     const col = factionColor(
       factions,
       structure.controllingFactionId,
-      accentColor,
+      "#6a8296",
     );
     const selected = selectedStructureId === structure.id;
     const mesh = new THREE.Mesh(
@@ -1028,6 +1169,7 @@ function buildArmyMarkers(
 
 type OverlayState = {
   cities: City[];
+  independentDistricts: District[];
   structures: PlanetStructure[];
   tileClaims: Record<string, string>;
   tileTerrain: Record<string, string>;
@@ -1041,6 +1183,7 @@ type OverlayState = {
   selectedArmyId: string | null;
   selectedFamousBattleId: string | null;
   engageArmyId: string | null;
+  showDistrictRuleWarnings: boolean;
 };
 
 export function HexPlanet({
@@ -1049,6 +1192,7 @@ export function HexPlanet({
   classification,
   accentColor,
   cities,
+  independentDistricts = [],
   structures,
   tileClaims,
   tileTerrain = {},
@@ -1062,6 +1206,7 @@ export function HexPlanet({
   selectedArmyId,
   selectedFamousBattleId = null,
   placingArmyId,
+  showDistrictRuleWarnings = false,
   engageArmyId = null,
   terrainPaintFactionId,
   terrainPaintKind = null,
@@ -1095,11 +1240,13 @@ export function HexPlanet({
   const surfacePlaceRef = useRef(surfacePlaceActive);
   const surfaceEraseRef = useRef(surfaceEraseActive);
   const citiesRef = useRef(cities);
+  const independentDistrictsRef = useRef(independentDistricts);
   const structuresRef = useRef(structures);
   const armiesRef = useRef(armies);
   const selectedArmyIdRef = useRef(selectedArmyId);
   const engageArmyIdRef = useRef(engageArmyId);
   const engageTargetsRef = useRef<Map<number, string[]>>(new Map());
+  const accentRef = useRef(accentColor);
   onSelectSettlementRef.current = onSelectSettlement;
   onSelectStructureRef.current = onSelectStructure;
   onSelectArmyRef.current = onSelectArmy;
@@ -1116,13 +1263,19 @@ export function HexPlanet({
   surfacePlaceRef.current = surfacePlaceActive;
   surfaceEraseRef.current = surfaceEraseActive;
   citiesRef.current = cities;
+  independentDistrictsRef.current = independentDistricts;
   structuresRef.current = structures;
   armiesRef.current = armies;
   selectedArmyIdRef.current = selectedArmyId;
   engageArmyIdRef.current = engageArmyId;
+  accentRef.current = accentColor;
 
   const occupiedTilesRef = useRef<Set<number>>(new Set());
-  occupiedTilesRef.current = settlementTileSet(cities, structures);
+  occupiedTilesRef.current = settlementTileSet(
+    cities,
+    structures,
+    independentDistricts,
+  );
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -1151,7 +1304,10 @@ export function HexPlanet({
     key.position.set(3.5, 2.2, 4);
     const fillLight = new THREE.DirectionalLight(0xa8c4d8, 0.45);
     fillLight.position.set(-3, -0.5, 2);
-    const rim = new THREE.DirectionalLight(new THREE.Color(accentColor), 0.35);
+    const rim = new THREE.DirectionalLight(
+      new THREE.Color(accentRef.current),
+      0.35,
+    );
     rim.position.set(-2.5, 1.5, -3);
     scene.add(ambient, key, fillLight, rim);
 
@@ -1177,10 +1333,17 @@ export function HexPlanet({
       tileClaims,
       structures,
       tileTerrain,
+      independentDistricts,
     ));
     planet.add(surface, seams);
 
-    let borders = buildBorderLines(cities, factions, tileClaims, structures);
+    let borders = buildBorderLines(
+      cities,
+      factions,
+      tileClaims,
+      structures,
+      independentDistricts,
+    );
     planet.add(borders);
 
     let settlements = buildSettlementMarkers(
@@ -1188,7 +1351,16 @@ export function HexPlanet({
       factions,
       selectedCityId,
       selectedDistrictId,
-      accentColor,
+      accentRef.current,
+      independentDistricts,
+      {
+        showRuleWarnings: showDistrictRuleWarnings,
+        planet: {
+          cities,
+          independentDistricts,
+          structures,
+        },
+      },
     );
     planet.add(settlements);
 
@@ -1196,11 +1368,15 @@ export function HexPlanet({
       structures,
       factions,
       selectedStructureId,
-      accentColor,
+      accentRef.current,
     );
     planet.add(structureMarkers);
 
-    let supplyLinks = buildSupplyLinkLines(cities, structures);
+    let supplyLinks = buildSupplyLinkLines(
+      cities,
+      structures,
+      independentDistricts,
+    );
     planet.add(supplyLinks);
 
     let armyMarkers = buildArmyMarkers(
@@ -1359,7 +1535,7 @@ export function HexPlanet({
       }
       clearTileHighlight();
       if (tileIndex == null) return;
-      tileHighlight = buildTileHighlight(tileIndex, accentColor);
+      tileHighlight = buildTileHighlight(tileIndex, accentRef.current);
       planet.add(tileHighlight);
     };
 
@@ -1396,11 +1572,6 @@ export function HexPlanet({
       if (terrainPaint.mode === "faction") {
         const brush = paintRef.current;
         if (brush == null) return;
-        const occupied = settlementTileSet(
-          citiesRef.current,
-          structuresRef.current,
-        );
-        if (occupied.has(tileIndex)) return;
         terrainPaint.lastTile = tileIndex;
         const factionId = brush === TERRAIN_PAINT_ERASE ? null : brush;
         terrainPaint.pending.set(tileIndex, factionId);
@@ -1656,7 +1827,7 @@ export function HexPlanet({
       if (settleHit) {
         onSelectFamousBattleRef.current?.(null);
         const { cityId, districtId } = settleHit.object.userData as {
-          cityId: string;
+          cityId: string | null;
           districtId: string | null;
         };
         onSelectSettlementRef.current(cityId, districtId);
@@ -1675,6 +1846,7 @@ export function HexPlanet({
           tileIndex,
           citiesRef.current,
           structuresRef.current,
+          independentDistrictsRef.current,
         );
         if (!feature) {
           onSelectFamousBattleRef.current?.(null);
@@ -1804,27 +1976,42 @@ export function HexPlanet({
         state.tileClaims,
         state.structures,
         state.tileTerrain,
+        state.independentDistricts,
       ));
       borders = buildBorderLines(
         state.cities,
         state.factions,
         state.tileClaims,
         state.structures,
+        state.independentDistricts,
       );
       settlements = buildSettlementMarkers(
         state.cities,
         state.factions,
         state.selectedCityId,
         state.selectedDistrictId,
-        accentColor,
+        accentRef.current,
+        state.independentDistricts,
+        {
+          showRuleWarnings: state.showDistrictRuleWarnings,
+          planet: {
+            cities: state.cities,
+            independentDistricts: state.independentDistricts,
+            structures: state.structures,
+          },
+        },
       );
       structureMarkers = buildStructureMarkers(
         state.structures,
         state.factions,
         state.selectedStructureId,
-        accentColor,
+        accentRef.current,
       );
-      supplyLinks = buildSupplyLinkLines(state.cities, state.structures);
+      supplyLinks = buildSupplyLinkLines(
+        state.cities,
+        state.structures,
+        state.independentDistricts,
+      );
       armyMarkers = buildArmyMarkers(
         state.armies,
         state.symbols,
@@ -1852,6 +2039,7 @@ export function HexPlanet({
       mount as HTMLDivElement & {
         __refreshOverlays?: typeof refreshOverlays;
         __faceFeature?: typeof faceFeature;
+        __setAccent?: (color: string) => void;
       }
     ).__refreshOverlays = refreshOverlays;
     (
@@ -1859,6 +2047,13 @@ export function HexPlanet({
         __faceFeature?: typeof faceFeature;
       }
     ).__faceFeature = faceFeature;
+    (
+      mount as HTMLDivElement & {
+        __setAccent?: (color: string) => void;
+      }
+    ).__setAccent = (color: string) => {
+      rim.color.set(color);
+    };
 
     return () => {
       cancelAnimationFrame(frame);
@@ -1873,6 +2068,7 @@ export function HexPlanet({
         .__refreshOverlays;
       delete (mount as HTMLDivElement & { __faceFeature?: unknown })
         .__faceFeature;
+      delete (mount as HTMLDivElement & { __setAccent?: unknown }).__setAccent;
       clearTileHighlight();
       clearEngageHighlights();
       core.geometry.dispose();
@@ -1891,7 +2087,7 @@ export function HexPlanet({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [planetId, planetType, classification, accentColor]);
+  }, [planetId, planetType, classification]);
 
   useEffect(() => {
     const mount = mountRef.current as
@@ -1901,6 +2097,7 @@ export function HexPlanet({
       | null;
     mount?.__refreshOverlays?.({
       cities,
+      independentDistricts,
       structures,
       tileClaims,
       tileTerrain,
@@ -1914,9 +2111,11 @@ export function HexPlanet({
       selectedArmyId,
       selectedFamousBattleId: selectedFamousBattleId ?? null,
       engageArmyId: engageArmyId ?? null,
+      showDistrictRuleWarnings,
     });
   }, [
     cities,
+    independentDistricts,
     structures,
     tileClaims,
     tileTerrain,
@@ -1930,7 +2129,16 @@ export function HexPlanet({
     selectedArmyId,
     selectedFamousBattleId,
     engageArmyId,
+    showDistrictRuleWarnings,
   ]);
+
+  // Update rim light without remounting (remount was resetting the camera).
+  useEffect(() => {
+    const mount = mountRef.current as
+      | (HTMLDivElement & { __setAccent?: (color: string) => void })
+      | null;
+    mount?.__setAccent?.(accentColor);
+  }, [accentColor]);
 
   // Rotate so the selected army / city / district / structure / battle faces the user
   const lastFacedKeyRef = useRef<string | null>(null);
@@ -1938,6 +2146,9 @@ export function HexPlanet({
     lastFacedKeyRef.current = null;
   }, [planetId]);
   useEffect(() => {
+    // Don't spin the globe while painting — keeps the camera stable.
+    if (terrainPaintFactionId != null || terrainPaintKind != null) return;
+
     const mount = mountRef.current as
       | (HTMLDivElement & {
           __faceFeature?: (dir: SphereDir) => void;
@@ -1986,6 +2197,12 @@ export function HexPlanet({
           break;
         }
       }
+      if (!dir) {
+        dir =
+          independentDistrictsRef.current.find(
+            (d) => d.id === selectedDistrictId,
+          )?.dir ?? null;
+      }
     } else if (selectedCityId) {
       dir =
         citiesRef.current.find((c) => c.id === selectedCityId)?.dir ?? null;
@@ -2000,6 +2217,8 @@ export function HexPlanet({
     selectedStructureId,
     armies,
     famousBattleSites,
+    terrainPaintFactionId,
+    terrainPaintKind,
   ]);
 
   return (

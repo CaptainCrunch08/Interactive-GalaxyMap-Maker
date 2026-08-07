@@ -130,14 +130,9 @@ function FactionCard({
   );
 }
 
-function matchesQuery(
-  name: string,
-  leader: string,
-  doctrine: string,
-  q: string,
-): boolean {
+function matchesQuery(name: string, leader: string, q: string): boolean {
   if (!q) return true;
-  return `${name} ${leader} ${doctrine}`.toLowerCase().includes(q);
+  return `${name} ${leader}`.toLowerCase().includes(q);
 }
 
 function primarySymbolUrl(
@@ -166,14 +161,11 @@ export function FactionsOverviewPanel() {
     return overview.factions
       .map((row) => {
         const faction = campaign.factions.find((f) => f.id === row.factionId);
-        const leader =
-          faction?.leader?.trim() ||
-          row.subtitle ||
-          "Unknown command";
+        const leader = faction?.leader?.trim() || "Unknown command";
         const symbolUrl = primarySymbolUrl(campaign, row.factionId);
-        return { row, leader, doctrine: row.subtitle, symbolUrl };
+        return { row, leader, symbolUrl };
       })
-      .filter((x) => matchesQuery(x.row.name, x.leader, x.doctrine, q));
+      .filter((x) => matchesQuery(x.row.name, x.leader, q));
   }, [overview.factions, campaign, q]);
 
   return (

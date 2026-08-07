@@ -15,6 +15,10 @@ import type { PlanetClassification } from "../../types/campaign";
 type RegenerateTilesDialogProps = {
   open: boolean;
   classification: PlanetClassification;
+  /** City / district / structure tiles to keep off ocean/lava/toxic. */
+  reservedTiles?: number[];
+  /** City hub tiles — prefer urban. */
+  cityHubTiles?: number[];
   onCancel: () => void;
   onConfirm: (tileTerrain: Record<string, string>) => void;
 };
@@ -22,6 +26,8 @@ type RegenerateTilesDialogProps = {
 export function RegenerateTilesDialog({
   open,
   classification,
+  reservedTiles = [],
+  cityHubTiles = [],
   onCancel,
   onConfirm,
 }: RegenerateTilesDialogProps) {
@@ -38,8 +44,8 @@ export function RegenerateTilesDialog({
 
   if (!open) return null;
 
-  const setPercent = (kind: TerrainKind, raw: string) => {
-    const n = Math.max(0, Math.min(100, Number(raw) || 0));
+  const setPercent = (kind: TerrainKind, value: number) => {
+    const n = Math.max(0, Math.min(100, Math.round(value)));
     setPercents((prev) => ({ ...prev, [kind]: n }));
   };
 
@@ -71,7 +77,7 @@ export function RegenerateTilesDialog({
       aria-modal="true"
       aria-labelledby="regen-tiles-title"
     >
-      <div className="hud-panel w-full max-w-md max-h-[min(92vh,720px)] overflow-y-auto p-4 shadow-xl space-y-3">
+      <div className="hud-panel w-full max-w-lg max-h-[min(92vh,760px)] overflow-y-auto p-4 shadow-xl space-y-3">
         <div className="flex items-start justify-between gap-3">
           <div>
             <h2
@@ -81,8 +87,12 @@ export function RegenerateTilesDialog({
               Regenerate tiles
             </h2>
             <p className="text-[11px] text-muted mt-1 leading-relaxed">
-              Set a percentage for each tile type. Weights are normalized when
-              generating — they do not need to sum to exactly 100.
+              Higher % makes larger continuous regions (oceans, continents);
+              lower % makes more scattered smaller patches (lakes, groves).
+              Ice and tundra seed from the poles; jungle takes the equator
+              before forest; agri/forest/jungle prefer coasts near water.
+              Cities, districts, and structures stay on land (no ocean, lava,
+              or chem spill). Weights need not sum to 100.
             </p>
           </div>
           <button
@@ -99,7 +109,7 @@ export function RegenerateTilesDialog({
           <span>
             Total weight:{" "}
             <span className={total === 100 ? "text-cyan" : "text-brass"}>
-              {total}
+              {total}%
             </span>
           </span>
           <div className="flex gap-1">
@@ -116,32 +126,53 @@ export function RegenerateTilesDialog({
           </div>
         </div>
 
-        <ul className="space-y-1.5">
-          {TERRAIN_KIND_ORDER.map((kind) => (
-            <li
-              key={kind}
-              className="flex items-center gap-2 text-xs"
-            >
-              <span
-                className="inline-block w-2.5 h-2.5 rounded-sm border border-white/20 shrink-0"
-                style={{ background: legendSwatch(kind, classification) }}
-              />
-              <span className="flex-1 text-star truncate">
-                {TERRAIN_KIND_LABELS[kind]}
-              </span>
-              <input
-                type="number"
-                min={0}
-                max={100}
-                step={1}
-                className="hud-input w-16 text-right tabular-nums"
-                value={percents[kind] ?? 0}
-                onChange={(e) => setPercent(kind, e.target.value)}
-                aria-label={`${TERRAIN_KIND_LABELS[kind]} percent`}
-              />
-              <span className="text-muted w-3">%</span>
-            </li>
-          ))}
+        <ul className="space-y-3">
+          {TERRAIN_KIND_ORDER.map((kind) => {
+            const label = TERRAIN_KIND_LABELS[kind];
+            const color = legendSwatch(kind, classification);
+            const value = percents[kind] ?? 0;
+            const sliderId = `regen-tile-${kind}`;
+            return (
+              <li key={kind} className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <span
+                    className="inline-block w-3.5 h-3.5 rounded-sm border border-white/25 shrink-0 shadow-sm"
+                    style={{ background: color }}
+                    title={label}
+                    aria-hidden
+                  />
+                  <label
+                    htmlFor={sliderId}
+                    className="flex-1 text-xs text-star font-medium truncate"
+                  >
+                    {label}
+                  </label>
+                  <span className="text-[11px] text-cyan tabular-nums w-10 text-right">
+                    {value}%
+                  </span>
+                </div>
+                <input
+                  id={sliderId}
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={value}
+                  onChange={(e) => setPercent(kind, Number(e.target.value))}
+                  className="hud-range w-full"
+                  style={{
+                    // Accent the filled track with the tile's own color.
+                    accentColor: color,
+                  }}
+                  aria-label={`${label} tile percentage`}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={value}
+                  aria-valuetext={`${label} ${value} percent`}
+                />
+              </li>
+            );
+          })}
         </ul>
 
         <div className="flex gap-2 pt-1">
@@ -153,7 +184,12 @@ export function RegenerateTilesDialog({
             className="hud-btn hud-btn-active flex-1"
             disabled={!valid}
             onClick={() =>
-              onConfirm(generateTileTerrainByPercents(percents))
+              onConfirm(
+                generateTileTerrainByPercents(percents, undefined, undefined, {
+                  reservedTiles,
+                  cityHubTiles,
+                }),
+              )
             }
           >
             Generate

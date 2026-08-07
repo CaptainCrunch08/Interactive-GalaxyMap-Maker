@@ -3,10 +3,14 @@ import { useCampaignStore } from "../store/useCampaignStore";
 import {
   armyStrength,
   classifyBattleVictory,
-  combinedForceStrength,
   eligibleSupportArmies,
   VICTORY_KIND_LABELS,
 } from "../lib/battleResolve";
+import {
+  armyStrengthWithFortifications,
+  combinedForceStrengthWithFortifications,
+  describeFortificationBonus,
+} from "../lib/fortificationBonus";
 import { buildHexSphere } from "../lib/hexSphere";
 import { SETTLEMENT_HEX_FREQUENCY } from "../lib/settlements";
 import { getFactionById } from "../lib/territory";
@@ -158,13 +162,23 @@ export function BattleResolveModal() {
     defenderSupportIds.includes(a.id),
   );
 
-  const atkCombined = combinedForceStrength(
+  const atkCombined = combinedForceStrengthWithFortifications(
+    context.planet,
     context.attacker,
     selectedAtkSupports,
   );
-  const defCombined = combinedForceStrength(
+  const defCombined = combinedForceStrengthWithFortifications(
+    context.planet,
     context.defender,
     selectedDefSupports,
+  );
+  const atkFort = describeFortificationBonus(
+    context.planet,
+    context.attacker,
+  );
+  const defFort = describeFortificationBonus(
+    context.planet,
+    context.defender,
   );
 
   const aVp = numOrEmpty(attackerVp);
@@ -201,7 +215,9 @@ export function BattleResolveModal() {
     [primary, ...supports].map((a) => ({
       id: a.id,
       name: a.name,
-      next: Math.round(armyStrength(a) * (1 - lost / 100)),
+      next: Math.round(
+        armyStrengthWithFortifications(context.planet, a) * (1 - lost / 100),
+      ),
     }));
 
   const nextAtk = nextForce(context.attacker, selectedAtkSupports, aLost);
@@ -262,6 +278,7 @@ export function BattleResolveModal() {
             <p className="text-muted truncate">
               {context.attackerFaction?.name ?? "Unknown"} · STR{" "}
               {armyStrength(context.attacker)}%
+              {atkFort ? ` (${atkFort})` : ""}
             </p>
             <p className="text-brass tabular-nums">
               Combined STR {atkCombined}
@@ -285,6 +302,7 @@ export function BattleResolveModal() {
             <p className="text-muted truncate">
               {context.defenderFaction?.name ?? "Unknown"} · STR{" "}
               {armyStrength(context.defender)}%
+              {defFort ? ` (${defFort})` : ""}
             </p>
             <p className="text-brass tabular-nums">
               Combined STR {defCombined}

@@ -15,8 +15,10 @@ import { useMapCamera } from "../hooks/useMapCamera";
 import {
   SYSTEM_VIEW_SIZE,
   maxOrbitRadius,
+  orbitFleetAnchor,
   orbitPosition,
   orbitRadiusForIndex,
+  STAR_FLEET_OFFSET,
 } from "../lib/systemLayout";
 import {
   fleetsAtSystemStar,
@@ -366,13 +368,13 @@ export function SystemView() {
                   typeof planet.orbitIndex === "number"
                     ? planet.orbitIndex
                     : planets.findIndex((p) => p.id === planet.id);
-                const pos = orbitPosition(Math.max(0, orbitIndex));
-                ax = center + pos.x + 28;
-                ay = center + pos.y - 30;
+                const anchor = orbitFleetAnchor(Math.max(0, orbitIndex), center);
+                ax = anchor.x;
+                ay = anchor.y;
                 peers = fleetsInOrbit(fleets, system.id, planetId);
               } else {
-                ax = center + 36;
-                ay = center - 34;
+                ax = center + STAR_FLEET_OFFSET.x;
+                ay = center + STAR_FLEET_OFFSET.y;
                 peers = starFleets;
               }
               const i = peers.findIndex((f) => f.id === fleet.id);

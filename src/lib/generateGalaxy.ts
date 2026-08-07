@@ -423,7 +423,8 @@ export function generateGalaxyCampaign(
       const planetId = crypto.randomUUID();
       const classification =
         type === "asteroid_belt" ? "barren" : pickRandomClassification(rng);
-      const { cities, structures } = generatePlanetSurface(planetId, type, {});
+      const { cities, structures, independentDistricts } =
+        generatePlanetSurface(planetId, type, { classification });
       planets.push({
         id: planetId,
         systemId,
@@ -439,10 +440,12 @@ export function generateGalaxyCampaign(
           cities,
           undefined,
           structures,
+          independentDistricts,
         ),
         notes: "",
         battles: [],
         cities,
+        independentDistricts,
         structures,
         tileClaims: {},
         armies: [],
@@ -464,6 +467,7 @@ export function generateGalaxyCampaign(
     characters: [],
     timeline: { frames: [], events: [] },
     mapSize,
+    hyperlanes: buildHyperlanes(systems),
   };
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   DISTRICT_KIND_LABELS,
   DISTRICT_KIND_ORDER,
@@ -7,6 +7,7 @@ import {
   STRUCTURE_KIND_LABELS,
   STRUCTURE_KIND_ORDER,
 } from "../types/campaign";
+import type { District } from "../types/campaign";
 import {
   legendSwatch,
   TERRAIN_KIND_ERASE,
@@ -23,10 +24,13 @@ import { RegenerateTilesDialog } from "../components/strategic/RegenerateTilesDi
 import { SelectAllTilesDialog } from "../components/strategic/SelectAllTilesDialog";
 import { useCampaignStore } from "../store/useCampaignStore";
 import { playMoveBlockReason } from "../lib/play";
+import { districtRuleViolations } from "../lib/activation";
+import { factionsPresentOnPlanet } from "../lib/territory";
 import { normalizeCampaignPlay } from "../types/campaign";
 import { VICTORY_KIND_LABELS } from "../lib/battleResolve";
 import { StationMapView } from "./StationMapView";
 import { supportsStrategicSurface } from "../lib/planetClass";
+import { settlementTileSet } from "../lib/settlements";
 
 export function StrategicView() {
   const campaign = useCampaignStore((s) => s.campaign);
@@ -69,6 +73,16 @@ export function StrategicView() {
   const buildManufactorumAtTile = useCampaignStore(
     (s) => s.buildManufactorumAtTile,
   );
+  const buildBastionAtTile = useCampaignStore((s) => s.buildBastionAtTile);
+  const buildOutpostAtTile = useCampaignStore((s) => s.buildOutpostAtTile);
+  const buildSpireAtTile = useCampaignStore((s) => s.buildSpireAtTile);
+  const buildUnderhiveAtTile = useCampaignStore((s) => s.buildUnderhiveAtTile);
+  const buildDomedHabitatAtTile = useCampaignStore(
+    (s) => s.buildDomedHabitatAtTile,
+  );
+  const buildTrenchLineAtTile = useCampaignStore((s) => s.buildTrenchLineAtTile);
+  const buildOreMineAtTile = useCampaignStore((s) => s.buildOreMineAtTile);
+  const demolishSurfaceAtTile = useCampaignStore((s) => s.demolishSurfaceAtTile);
   const enterSystem = useCampaignStore((s) => s.enterSystem);
   const enterPlanet = useCampaignStore((s) => s.enterPlanet);
   const setViewLevel = useCampaignStore((s) => s.setViewLevel);
@@ -91,6 +105,15 @@ export function StrategicView() {
   const faction = planet?.controllingFactionId
     ? campaign.factions.find((f) => f.id === planet.controllingFactionId)
     : undefined;
+  const surfaceFactions = planet ? factionsPresentOnPlanet(planet) : new Set();
+  const controlLabel = faction
+    ? faction.name
+    : surfaceFactions.size >= 2
+      ? "Contested surface"
+      : surfaceFactions.size === 1
+        ? (campaign.factions.find((f) => f.id === [...surfaceFactions][0])
+            ?.name ?? "Contested surface")
+        : "Unclaimed";
 
   useEffect(() => {
     setSelectedFamousBattleId(null);
@@ -143,6 +166,20 @@ export function StrategicView() {
   const legend = terrainLegend(planet.classification, planet.type);
   const cities = planet.cities ?? [];
   const structures = planet.structures ?? [];
+  const settlementReservedTiles = useMemo(
+    () => [
+      ...settlementTileSet(
+        cities,
+        structures,
+        planet.independentDistricts ?? [],
+      ),
+    ],
+    [cities, structures, planet.independentDistricts],
+  );
+  const cityHubTiles = useMemo(
+    () => cities.map((c) => c.tileIndex),
+    [cities],
+  );
   const tileClaims = planet.tileClaims ?? {};
   const tileTerrain = planet.tileTerrain ?? {};
   const armies = planet.armies ?? [];
@@ -160,7 +197,36 @@ export function StrategicView() {
     }
     return army.id;
   })();
-  const districtCount = cities.reduce((n, c) => n + c.districts.length, 0);
+  const showDistrictRuleWarnings = !normalizeCampaignPlay(campaign.play).active;
+  let selectedDistrict: District | null = null;
+  let selectedDistrictCityId: string | null = null;
+  if (selectedDistrictId) {
+    for (const city of cities) {
+      const d = city.districts.find((x) => x.id === selectedDistrictId);
+      if (d) {
+        selectedDistrict = d;
+        selectedDistrictCityId = city.id;
+        break;
+      }
+    }
+    if (!selectedDistrict) {
+      selectedDistrict =
+        (planet.independentDistricts ?? []).find(
+          (d) => d.id === selectedDistrictId,
+        ) ?? null;
+    }
+  }
+  const selectedDistrictWarnings =
+    showDistrictRuleWarnings && selectedDistrict
+      ? districtRuleViolations(
+          planet,
+          selectedDistrict,
+          selectedDistrictCityId,
+        )
+      : [];
+  const districtCount =
+    cities.reduce((n, c) => n + c.districts.length, 0) +
+    (planet.independentDistricts?.length ?? 0);
   const paintFaction =
     terrainPaintFactionId && terrainPaintFactionId !== TERRAIN_PAINT_ERASE
       ? campaign.factions.find((f) => f.id === terrainPaintFactionId)
@@ -177,8 +243,30 @@ export function StrategicView() {
   let hint =
     "Drag to rotate · right-click drag armies · click cities, districts, or structures";
   if (playMoveHint) hint = playMoveHint;
+  else if (selectedDistrictWarnings.length > 0)
+    hint = selectedDistrictWarnings.join(" · ");
   else if (playBuildMode?.kind === "manufactorum")
-    hint = "Click a free hex next to the selected city to build a manufactorum";
+    hint = "Click a free hex within 2 of the city to build a manufactorum";
+  else if (playBuildMode?.kind === "bastion")
+    hint = "Click a free hex within 2 of the city to build a bastion (+2% STR)";
+  else if (playBuildMode?.kind === "outpost")
+    hint = "Click a free hex within 2 of the city to build an outpost (+1% STR)";
+  else if (playBuildMode?.kind === "spire")
+    hint =
+      "Click a free hex within 2 of the city to build a Hive Spire (+2 AP; not next to another spire)";
+  else if (playBuildMode?.kind === "underhive")
+    hint =
+      "Click a free hex within 2 of the city, adjacent to a Hive Spire, to build an Underhive (+1 AP)";
+  else if (playBuildMode?.kind === "domed_habitat")
+    hint =
+      "Click a free hex within 2 of the city to build a Domed Habitat (+1 AP)";
+  else if (playBuildMode?.kind === "trench_line")
+    hint = "Click a free hex to dig a trench line (+1% STR to any faction)";
+  else if (playBuildMode?.kind === "ore_mine")
+    hint =
+      "Click a free crater hex to build an ore mine (+5 BP when linked to a manufactorum)";
+  else if (playBuildMode?.kind === "demolish")
+    hint = "Click an owned district/structure to demolish it for half its build cost";
   else if (placingArmyId) hint = "Click a hex to place the army";
   else if (engageArmyId) {
     hint =
@@ -188,8 +276,15 @@ export function StrategicView() {
   else if (surfacePlaceMode?.kind === "erase")
     hint = "Click a city, district, or structure hex to delete it";
   else if (surfacePlaceMode?.kind === "district") {
+    const kindLabel = DISTRICT_KIND_LABELS[surfacePlaceMode.districtKind];
+    const rule =
+      surfacePlaceMode.districtKind === "spire"
+        ? " (not adjacent to another Hive Spire)"
+        : surfacePlaceMode.districtKind === "underhive"
+          ? " (must be adjacent to a Hive Spire)"
+          : "";
     hint = districtParent
-      ? `Click a free hex to place ${DISTRICT_KIND_LABELS[surfacePlaceMode.districtKind]} for ${districtParent.name}`
+      ? `Click a free hex to place ${kindLabel} for ${districtParent.name}${rule}`
       : "Select a parent city, then click a free hex";
   } else if (surfacePlaceMode?.kind === "structure")
     hint = `Click a free hex to place ${STRUCTURE_KIND_LABELS[surfacePlaceMode.structureKind]}`;
@@ -200,7 +295,7 @@ export function StrategicView() {
   else if (terrainPaintFactionId === TERRAIN_PAINT_ERASE)
     hint = "Paint open hexes to clear claims";
   else if (terrainPaintFactionId)
-    hint = `Paint open hexes for ${paintFaction?.name ?? "faction"}`;
+    hint = `Paint hexes for ${paintFaction?.name ?? "faction"}`;
 
   const placeCityActive = surfacePlaceMode?.kind === "city";
   const placeDistrictKind =
@@ -232,7 +327,7 @@ export function StrategicView() {
           {PLANET_TYPE_LABELS[planet.type]} ·{" "}
           {PLANET_CLASSIFICATION_LABELS[planet.classification] ??
             PLANET_CLASSIFICATION_LABELS.earthlike}
-          {faction ? ` · ${faction.name}` : " · Contested surface"}
+          {` · ${controlLabel}`}
           {` · ${cities.length} cities · ${districtCount} districts · ${structures.length} structures · ${armies.length} armies`}
         </p>
       </div>
@@ -244,6 +339,7 @@ export function StrategicView() {
           classification={planet.classification}
           accentColor={accent}
           cities={cities}
+          independentDistricts={planet.independentDistricts ?? []}
           structures={structures}
           tileClaims={tileClaims}
           tileTerrain={tileTerrain}
@@ -258,6 +354,7 @@ export function StrategicView() {
           selectedFamousBattleId={selectedFamousBattleId}
           placingArmyId={placingArmyId}
           engageArmyId={engageArmyId}
+          showDistrictRuleWarnings={showDistrictRuleWarnings}
           terrainPaintFactionId={terrainPaintFactionId}
           terrainPaintKind={terrainPaintKind}
           surfacePlaceActive={
@@ -302,6 +399,58 @@ export function StrategicView() {
                 playBuildMode.cityId,
                 tileIndex,
               );
+              return;
+            }
+            if (playBuildMode?.kind === "bastion") {
+              buildBastionAtTile(
+                playBuildMode.planetId,
+                playBuildMode.cityId,
+                tileIndex,
+              );
+              return;
+            }
+            if (playBuildMode?.kind === "outpost") {
+              buildOutpostAtTile(
+                playBuildMode.planetId,
+                playBuildMode.cityId,
+                tileIndex,
+              );
+              return;
+            }
+            if (playBuildMode?.kind === "spire") {
+              buildSpireAtTile(
+                playBuildMode.planetId,
+                playBuildMode.cityId,
+                tileIndex,
+              );
+              return;
+            }
+            if (playBuildMode?.kind === "underhive") {
+              buildUnderhiveAtTile(
+                playBuildMode.planetId,
+                playBuildMode.cityId,
+                tileIndex,
+              );
+              return;
+            }
+            if (playBuildMode?.kind === "domed_habitat") {
+              buildDomedHabitatAtTile(
+                playBuildMode.planetId,
+                playBuildMode.cityId,
+                tileIndex,
+              );
+              return;
+            }
+            if (playBuildMode?.kind === "trench_line") {
+              buildTrenchLineAtTile(playBuildMode.planetId, tileIndex);
+              return;
+            }
+            if (playBuildMode?.kind === "ore_mine") {
+              buildOreMineAtTile(playBuildMode.planetId, tileIndex);
+              return;
+            }
+            if (playBuildMode?.kind === "demolish") {
+              demolishSurfaceAtTile(playBuildMode.planetId, tileIndex);
               return;
             }
             if (!surfacePlaceMode) return;
@@ -627,6 +776,8 @@ export function StrategicView() {
       <RegenerateTilesDialog
         open={regenTilesOpen}
         classification={planet.classification}
+        reservedTiles={settlementReservedTiles}
+        cityHubTiles={cityHubTiles}
         onCancel={() => setRegenTilesOpen(false)}
         onConfirm={(next) => {
           replaceTileTerrain(planet.id, next);
@@ -636,6 +787,8 @@ export function StrategicView() {
       <SelectAllTilesDialog
         open={selectAllTilesOpen}
         classification={planet.classification}
+        reservedTiles={settlementReservedTiles}
+        cityHubTiles={cityHubTiles}
         initialKind={
           terrainPaintKind &&
           (TERRAIN_KIND_ORDER as string[]).includes(terrainPaintKind)

@@ -70,14 +70,14 @@ export function FleetMarker({
   y,
   selected,
   moving,
-  mapScale = 1,
+  mapScale: _mapScale = 1,
   offsetIndex = 0,
   stackCount,
   appearance = "badge",
   onSelect,
 }: FleetMarkerProps) {
   const n = shipCount(fleet);
-  const showLabel = mapScale >= 0.55 || selected || moving;
+  const showLabel = selected;
   const isShip = appearance === "ship";
 
   const colGap = isShip ? SHIP_COL_GAP : BADGE_COL_GAP;

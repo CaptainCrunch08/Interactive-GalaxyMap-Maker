@@ -38,7 +38,7 @@ export function TimelineView() {
   const [playing, setPlaying] = useState(false);
   const [activeEventId, setActiveEventId] = useState<string | null>(null);
   const [panelEventId, setPanelEventId] = useState<string | null>(null);
-  const [fadeKey, setFadeKey] = useState(0);
+  const [frameFlash, setFrameFlash] = useState(false);
 
   const timeline = campaign.timeline ?? { frames: [], events: [] };
   const frames = useMemo(
@@ -58,7 +58,10 @@ export function TimelineView() {
   );
 
   useEffect(() => {
-    setFadeKey((k) => k + 1);
+    // Brief flash only — do not remount the map (that resets zoom/pan).
+    setFrameFlash(true);
+    const t = window.setTimeout(() => setFrameFlash(false), 180);
+    return () => window.clearTimeout(t);
   }, [activeFrame?.id]);
 
   useEffect(() => {
@@ -151,9 +154,13 @@ export function TimelineView() {
             ) : (
               <>
                 <div className="relative flex-1 min-h-0 rounded overflow-hidden">
-                  <div key={fadeKey} className="absolute inset-0">
-                    <GalaxyChronicleMap campaign={viewCampaign} />
-                  </div>
+                  <GalaxyChronicleMap campaign={viewCampaign} />
+                  <div
+                    className={`pointer-events-none absolute inset-0 bg-void/35 transition-opacity duration-150 ${
+                      frameFlash ? "opacity-100" : "opacity-0"
+                    }`}
+                    aria-hidden
+                  />
                 </div>
                 {(activeFrame?.label || activeEvent) && !panelEventId && (
                   <div className="shrink-0 mt-2 px-2 py-1.5 border-t border-panel-border/60">

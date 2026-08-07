@@ -1,4 +1,9 @@
-import type { Campaign, CampaignHyperlane, StarSystem } from "../types/campaign";
+import type {
+  Campaign,
+  CampaignHyperlane,
+  HyperlaneEdits,
+  StarSystem,
+} from "../types/campaign";
 import { CLAIM_RADIUS } from "./territory";
 
 export type Hyperlane = CampaignHyperlane;
@@ -212,19 +217,334 @@ export function buildHyperlanes(systems: StarSystem[]): Hyperlane[] {
   }
 
   return accepted.map((e) => ({
-    id: edgeKey(e.a, e.b),
+    id: laneKey(e.a, e.b),
     a: e.a,
     b: e.b,
   }));
 }
 
-/** Prefer persisted manual lanes; otherwise auto-generate. */
-export function getCampaignHyperlanes(campaign: Campaign): Hyperlane[] {
-  if (campaign.hyperlanes) {
-    const ids = new Set(campaign.systems.map((s) => s.id));
-    return campaign.hyperlanes.filter((l) => ids.has(l.a) && ids.has(l.b));
+function pruneEdits(
+  edits: HyperlaneEdits,
+  systems: StarSystem[],
+): HyperlaneEdits {
+  const ids = new Set(systems.map((s) => s.id));
+  const added = edits.added.filter(
+    (l) =>
+      l.a !== l.b &&
+      ids.has(l.a) &&
+      ids.has(l.b),
+  );
+  const addedKeys = new Set(added.map((l) => laneKey(l.a, l.b)));
+  const removed = edits.removed.filter((k) => {
+    const [a, b] = k.split("__");
+    if (!a || !b) return false;
+    // Drop removals for missing systems; keep if both still exist.
+    return ids.has(a) && ids.has(b) && !addedKeys.has(k);
+  });
+  return { added, removed };
+}
+
+function normalizeLane(a: string, b: string): Hyperlane {
+  const k = laneKey(a, b);
+  return a < b ? { id: k, a, b } : { id: k, a: b, b: a };
+}
+
+function dedupeLanes(lanes: Hyperlane[]): Hyperlane[] {
+  const have = new Set<string>();
+  const out: Hyperlane[] = [];
+  for (const lane of lanes) {
+    if (lane.a === lane.b) continue;
+    const n = normalizeLane(lane.a, lane.b);
+    if (have.has(n.id)) continue;
+    have.add(n.id);
+    out.push(n);
   }
-  return buildHyperlanes(campaign.systems);
+  return out;
+}
+
+function filterLanesToSystems(
+  lanes: Hyperlane[],
+  systems: StarSystem[],
+): Hyperlane[] {
+  const ids = new Set(systems.map((s) => s.id));
+  return dedupeLanes(
+    lanes.filter((l) => ids.has(l.a) && ids.has(l.b) && l.a !== l.b),
+  );
+}
+
+/**
+ * New lanes that attach `newSystemId` to the existing network without
+ * removing or rewriting any prior edges.
+ */
+export function lanesConnectingNewSystem(
+  existingLanes: Hyperlane[],
+  systems: StarSystem[],
+  newSystemId: string,
+): Hyperlane[] {
+  const byId = new Map(systems.map((s) => [s.id, s]));
+  const neu = byId.get(newSystemId);
+  if (!neu || systems.length < 2) return [];
+
+  const degree = new Map<string, number>();
+  for (const s of systems) degree.set(s.id, 0);
+
+  const accepted: Edge[] = [];
+  const acceptedKeys = new Set<string>();
+
+  for (const lane of existingLanes) {
+    const a = byId.get(lane.a);
+    const b = byId.get(lane.b);
+    if (!a || !b || lane.a === lane.b) continue;
+    const key = laneKey(lane.a, lane.b);
+    if (acceptedKeys.has(key)) continue;
+    accepted.push({
+      a: lane.a,
+      b: lane.b,
+      ax: a.x,
+      ay: a.y,
+      bx: b.x,
+      by: b.y,
+      dist: Math.hypot(b.x - a.x, b.y - a.y),
+    });
+    acceptedKeys.add(key);
+    degree.set(lane.a, (degree.get(lane.a) ?? 0) + 1);
+    degree.set(lane.b, (degree.get(lane.b) ?? 0) + 1);
+  }
+
+  const candidates: Edge[] = [];
+  for (const other of systems) {
+    if (other.id === newSystemId) continue;
+    const dist = Math.hypot(other.x - neu.x, other.y - neu.y);
+    if (dist < HYPERLANE_MIN_DIST || dist > HYPERLANE_MAX_DIST) continue;
+    candidates.push({
+      a: newSystemId,
+      b: other.id,
+      ax: neu.x,
+      ay: neu.y,
+      bx: other.x,
+      by: other.y,
+      dist,
+    });
+  }
+  candidates.sort((e1, e2) => e1.dist - e2.dist);
+
+  const created: Hyperlane[] = [];
+
+  const tryAdd = (
+    edge: Edge,
+    opts: { allowCross: boolean; ignoreDegree: boolean; maxDegree?: number },
+  ) => {
+    const key = edgeKey(edge.a, edge.b);
+    if (acceptedKeys.has(key)) return false;
+    const da = degree.get(edge.a) ?? 0;
+    const db = degree.get(edge.b) ?? 0;
+    const cap = opts.maxDegree ?? HYPERLANE_MAX_DEGREE;
+    if (!opts.ignoreDegree && (da >= cap || db >= cap)) return false;
+    if (!opts.allowCross && crossesAny(edge, accepted)) return false;
+    accepted.push(edge);
+    acceptedKeys.add(key);
+    degree.set(edge.a, da + 1);
+    degree.set(edge.b, db + 1);
+    created.push(normalizeLane(edge.a, edge.b));
+    return true;
+  };
+
+  // Guarantee a link when anything is in range (even if neighbors are full).
+  for (const edge of candidates) {
+    if (tryAdd(edge, { allowCross: true, ignoreDegree: true })) break;
+  }
+  for (const edge of candidates) {
+    tryAdd(edge, {
+      allowCross: true,
+      ignoreDegree: false,
+      maxDegree: HYPERLANE_TARGET_DEGREE,
+    });
+  }
+  for (const edge of candidates) {
+    tryAdd(edge, {
+      allowCross: false,
+      ignoreDegree: false,
+      maxDegree: HYPERLANE_MAX_DEGREE,
+    });
+  }
+  return created;
+}
+
+/** Bake a sticky lane list onto the campaign (clears incremental edits). */
+export function campaignWithBakedHyperlanes(
+  campaign: Campaign,
+  lanes: Hyperlane[],
+): Campaign {
+  const next: Campaign = {
+    ...campaign,
+    hyperlanes: filterLanesToSystems(lanes, campaign.systems),
+  };
+  delete next.hyperlaneEdits;
+  return next;
+}
+
+/**
+ * Place a star: keep every existing lane, only append links for the new system.
+ */
+export function campaignWithSystemPlaced(
+  campaign: Campaign,
+  system: StarSystem,
+): Campaign {
+  const priorLanes = getCampaignHyperlanes(campaign);
+  const systems = [...campaign.systems, system];
+  const extra = lanesConnectingNewSystem(priorLanes, systems, system.id);
+  const next: Campaign = {
+    ...campaign,
+    systems,
+    hyperlanes: dedupeLanes([...priorLanes, ...extra]),
+  };
+  delete next.hyperlaneEdits;
+  return next;
+}
+
+/** True when the campaign has any persistent lane overrides / bake. */
+export function hasHyperlaneEdits(
+  campaign: Pick<Campaign, "hyperlanes" | "hyperlaneEdits">,
+): boolean {
+  if (campaign.hyperlaneEdits) {
+    const e = campaign.hyperlaneEdits;
+    return e.added.length > 0 || e.removed.length > 0;
+  }
+  return campaign.hyperlanes !== undefined;
+}
+
+/**
+ * Convert a legacy full `hyperlanes` bake into incremental edits vs current auto.
+ * Prefer baking sticky graphs instead; kept for older saves.
+ */
+export function migrateLegacyHyperlanes(
+  systems: StarSystem[],
+  baked: Hyperlane[],
+): HyperlaneEdits {
+  const auto = buildHyperlanes(systems);
+  const autoKeys = new Set(auto.map((l) => laneKey(l.a, l.b)));
+  const bakedNorm = filterLanesToSystems(baked, systems);
+  const bakedKeys = new Set(bakedNorm.map((l) => l.id));
+  const added = bakedNorm.filter((l) => !autoKeys.has(l.id));
+  const removed = auto
+    .map((l) => laneKey(l.a, l.b))
+    .filter((k) => !bakedKeys.has(k));
+  return pruneEdits({ added, removed }, systems);
+}
+
+/**
+ * Sticky network: baked `hyperlanes` when present, else live auto.
+ * Optional `hyperlaneEdits` still layer on top for older incremental saves.
+ */
+export function getCampaignHyperlanes(campaign: Campaign): Hyperlane[] {
+  const systems = campaign.systems;
+  const ids = new Set(systems.map((s) => s.id));
+
+  const base: Hyperlane[] = campaign.hyperlanes
+    ? filterLanesToSystems(campaign.hyperlanes, systems)
+    : buildHyperlanes(systems);
+
+  const edits = campaign.hyperlaneEdits
+    ? pruneEdits(campaign.hyperlaneEdits, systems)
+    : null;
+  if (!edits) return base;
+
+  const removed = new Set(edits.removed);
+  const result: Hyperlane[] = [];
+  const have = new Set<string>();
+
+  for (const lane of base) {
+    const k = laneKey(lane.a, lane.b);
+    if (removed.has(k)) continue;
+    result.push({ id: k, a: lane.a, b: lane.b });
+    have.add(k);
+  }
+  for (const lane of edits.added) {
+    const k = laneKey(lane.a, lane.b);
+    if (!ids.has(lane.a) || !ids.has(lane.b) || lane.a === lane.b) continue;
+    if (have.has(k) || removed.has(k)) continue;
+    result.push({ id: k, a: lane.a, b: lane.b });
+    have.add(k);
+  }
+  return result;
+}
+
+/** Apply a user-drawn lane (bake sticky network). */
+export function campaignWithHyperlaneAdded(
+  campaign: Campaign,
+  a: string,
+  b: string,
+): Campaign | null {
+  if (a === b) return null;
+  const ids = new Set(campaign.systems.map((s) => s.id));
+  if (!ids.has(a) || !ids.has(b)) return null;
+  const resolved = getCampaignHyperlanes(campaign);
+  const k = laneKey(a, b);
+  if (resolved.some((l) => laneKey(l.a, l.b) === k)) return null;
+  return campaignWithBakedHyperlanes(campaign, [
+    ...resolved,
+    normalizeLane(a, b),
+  ]);
+}
+
+/** Remove a lane from the sticky network (bakes if needed). */
+export function campaignWithHyperlaneRemoved(
+  campaign: Campaign,
+  laneId: string,
+): Campaign {
+  const resolved = getCampaignHyperlanes(campaign);
+  const lane = resolved.find(
+    (l) => l.id === laneId || laneKey(l.a, l.b) === laneId,
+  );
+  if (!lane) return campaign;
+  const k = laneKey(lane.a, lane.b);
+  return campaignWithBakedHyperlanes(
+    campaign,
+    resolved.filter((l) => laneKey(l.a, l.b) !== k),
+  );
+}
+
+/** Clear bake/edits so lanes rebuild from current star positions. */
+export function campaignWithHyperlanesReset(campaign: Campaign): Campaign {
+  const next = { ...campaign };
+  delete next.hyperlanes;
+  delete next.hyperlaneEdits;
+  return next;
+}
+
+/** Drop edits that reference a deleted system. */
+export function campaignWithSystemHyperlanesPruned(
+  campaign: Campaign,
+  deletedSystemId: string,
+): Campaign {
+  return campaignWithSystemsHyperlanesPruned(campaign, [deletedSystemId]);
+}
+
+/** Drop lanes / edits that reference any of the deleted systems. */
+export function campaignWithSystemsHyperlanesPruned(
+  campaign: Campaign,
+  deletedSystemIds: Iterable<string>,
+): Campaign {
+  const deleted = new Set(deletedSystemIds);
+  if (deleted.size === 0) return campaign;
+  if (!campaign.hyperlaneEdits && !campaign.hyperlanes) return campaign;
+
+  const systems = campaign.systems.filter((s) => !deleted.has(s.id));
+  const next: Campaign = { ...campaign, systems };
+
+  if (campaign.hyperlanes) {
+    next.hyperlanes = filterLanesToSystems(campaign.hyperlanes, systems);
+  }
+
+  if (campaign.hyperlaneEdits) {
+    const nextEdits = pruneEdits(campaign.hyperlaneEdits, systems);
+    next.hyperlaneEdits =
+      nextEdits.added.length > 0 || nextEdits.removed.length > 0
+        ? nextEdits
+        : undefined;
+  }
+
+  return next;
 }
 
 /** Adjacency list from hyperlane endpoints. */
