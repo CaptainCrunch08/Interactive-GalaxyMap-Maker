@@ -6,6 +6,7 @@ import { GalaxyMapsSidebar } from "./GalaxyMapsSidebar";
 import { InspectorPanel } from "./InspectorPanel";
 import { PlayTurnHud } from "./PlayTurnHud";
 import { SiteTitle } from "./SiteTitle";
+import { ViewErrorBoundary } from "./ViewErrorBoundary";
 import { useCampaignStore } from "../store/useCampaignStore";
 import { GalaxyView } from "../views/GalaxyView";
 import { PlanetView } from "../views/PlanetView";
@@ -89,11 +90,28 @@ export function AppShell() {
 
       <div className="flex-1 flex min-h-0">
         <main className="flex-1 min-w-0 relative">
-          {viewLevel === "galaxy" && <GalaxyView />}
-          {viewLevel === "timeline" && <TimelineView />}
-          {viewLevel === "system" && <SystemView />}
-          {viewLevel === "planet" && <PlanetView />}
-          {viewLevel === "strategic" && <StrategicView />}
+          <ViewErrorBoundary
+            key={viewLevel}
+            label={
+              viewLevel === "galaxy"
+                ? "Galaxy map"
+                : viewLevel === "system"
+                  ? "System map"
+                  : viewLevel === "planet"
+                    ? "Planet view"
+                    : viewLevel === "strategic"
+                      ? "Strategic map"
+                      : viewLevel === "timeline"
+                        ? "Timeline"
+                        : "View"
+            }
+          >
+            {viewLevel === "galaxy" && <GalaxyView />}
+            {viewLevel === "timeline" && <TimelineView />}
+            {viewLevel === "system" && <SystemView />}
+            {viewLevel === "planet" && <PlanetView />}
+            {viewLevel === "strategic" && <StrategicView />}
+          </ViewErrorBoundary>
         </main>
         {inspectorOpen && <InspectorPanel />}
       </div>

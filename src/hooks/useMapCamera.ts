@@ -22,6 +22,8 @@ const PAN_REF_SCALE = 0.45;
 const PAN_OUT_BOOST_MAX = 3.25;
 /** Ignore sub-pixel scale chatter before notifying React. */
 const SCALE_NOTIFY_EPS = 0.002;
+/** Min ms between React scale notifications during continuous zoom/pan. */
+const SCALE_NOTIFY_MIN_MS = 80;
 
 function isTypingTarget(target: EventTarget | null) {
   return (
@@ -76,16 +78,48 @@ export function useMapCamera(
   const worldSizeRef = useRef(worldSize);
   worldSizeRef.current = worldSize;
   const lastNotifiedScaleRef = useRef<number | null>(null);
+  const lastNotifyAtRef = useRef(0);
+  const pendingScaleRef = useRef<number | null>(null);
+  const notifyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wasPanningRef = useRef(false);
   const [minScale, setMinScale] = useState(ABSOLUTE_MIN_SCALE);
   const onScaleChangeRef = useRef(onScaleChange);
   onScaleChangeRef.current = onScaleChange;
 
+  const flushPendingScale = () => {
+    notifyTimerRef.current = null;
+    const pending = pendingScaleRef.current;
+    if (pending == null) return;
+    pendingScaleRef.current = null;
+    lastNotifiedScaleRef.current = pending;
+    lastNotifyAtRef.current = performance.now();
+    onScaleChangeRef.current?.(pending);
+  };
+
   const notifyScale = (scale: number) => {
     const prev = lastNotifiedScaleRef.current;
     if (prev !== null && Math.abs(prev - scale) < SCALE_NOTIFY_EPS) return;
-    lastNotifiedScaleRef.current = scale;
-    onScaleChangeRef.current?.(scale);
+
+    const now = performance.now();
+    const elapsed = now - lastNotifyAtRef.current;
+    if (elapsed >= SCALE_NOTIFY_MIN_MS) {
+      if (notifyTimerRef.current != null) {
+        clearTimeout(notifyTimerRef.current);
+        notifyTimerRef.current = null;
+      }
+      pendingScaleRef.current = null;
+      lastNotifiedScaleRef.current = scale;
+      lastNotifyAtRef.current = now;
+      onScaleChangeRef.current?.(scale);
+      return;
+    }
+
+    pendingScaleRef.current = scale;
+    if (notifyTimerRef.current != null) return;
+    notifyTimerRef.current = setTimeout(
+      flushPendingScale,
+      Math.max(0, SCALE_NOTIFY_MIN_MS - elapsed),
+    );
   };
 
   useEffect(() => {
@@ -307,6 +341,12 @@ export function useMapCamera(
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [enabled, transformRef]);
+
+  useEffect(() => {
+    return () => {
+      if (notifyTimerRef.current != null) clearTimeout(notifyTimerRef.current);
+    };
+  }, []);
 
   return {
     minScale,

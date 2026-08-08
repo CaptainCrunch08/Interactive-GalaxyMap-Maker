@@ -89,6 +89,7 @@ import {
   playMoveBlockReason,
 } from "../lib/play";
 import { armyStrength, VICTORY_KIND_LABELS } from "../lib/battleResolve";
+import { charactersOnArmy } from "../lib/characterLocation";
 import { factionSymbolIds } from "../lib/factionSymbols";
 import {
   normalizeCampaignPlay,
@@ -1876,6 +1877,11 @@ export function InspectorPanel() {
                       ? armyMovementRemaining(play, army.id)
                       : null;
                     const str = armyStrength(army);
+                    const aboard = charactersOnArmy(
+                      campaign.characters,
+                      planet.id,
+                      army.id,
+                    );
                     return (
                       <li
                         key={army.id}
@@ -1929,6 +1935,36 @@ export function InspectorPanel() {
                             ×
                           </button>
                         </div>
+                        {aboard.length > 0 && (
+                          <p className="text-[10px] text-muted leading-snug pl-0.5">
+                            Characters:{" "}
+                            {aboard.map((c, i) => {
+                              const color =
+                                c.status === "deceased"
+                                  ? "#e85a4f"
+                                  : c.status === "lost"
+                                    ? "#e8a045"
+                                    : undefined;
+                              return (
+                                <span key={c.id}>
+                                  {i > 0 ? ", " : ""}
+                                  <span
+                                    style={color ? { color } : undefined}
+                                    className={color ? undefined : "text-star"}
+                                  >
+                                    {c.name}
+                                  </span>
+                                  {c.title.trim() ? (
+                                    <span className="text-muted">
+                                      {" "}
+                                      ({c.title.trim()})
+                                    </span>
+                                  ) : null}
+                                </span>
+                              );
+                            })}
+                          </p>
+                        )}
                         <div className="flex items-center gap-2">
                           <span className="text-[10px] uppercase tracking-wider text-muted shrink-0">
                             STR

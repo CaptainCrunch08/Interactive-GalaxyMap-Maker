@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { devtools, persist } from "zustand/middleware";
 import { createDemoCampaign, createEmptyCampaign } from "../lib/seed";
 import {
   generateGalaxyCampaign,
@@ -92,7 +92,10 @@ import {
   mergeArmiesInto,
   playAfterArmyMoved,
 } from "../lib/armyActions";
-import { scrubCharacterPlacements } from "../lib/characterLocation";
+import {
+  markCharactersDeceased,
+  scrubCharacterPlacements,
+} from "../lib/characterLocation";
 import {
   applyStrengthLoss,
   armiesAreAdjacent,
@@ -112,6 +115,11 @@ import {
 import { combinedForceStrengthWithFortifications } from "../lib/fortificationBonus";
 import { SETTLEMENT_HEX_FREQUENCY } from "../lib/settlements";
 import { withHistoryCapture } from "../lib/galaxyHistory";
+import {
+  isPerfDebugEnabled,
+  reportPersistSize,
+  utf8ByteLength,
+} from "../lib/perfDebug";
 import {
   applyTurnIncome,
   BASTION_BP_COST,
@@ -881,7 +889,8 @@ type PersistedMaps = {
 };
 
 export const useCampaignStore = create<CampaignState>()(
-  persist(
+  devtools(
+    persist(
     (set, get) => ({
       ...createInitialMaps(),
       sideMenuOpen: false,
@@ -3472,6 +3481,21 @@ export const useCampaignStore = create<CampaignState>()(
           ...defenderSupportIds,
         ]);
 
+        const eligibleKillIds = new Set(
+          (state.campaign.characters ?? [])
+            .filter(
+              (c) =>
+                c.placement?.kind === "army" &&
+                c.placement.planetId === pending.planetId &&
+                participantIds.has(c.placement.armyId) &&
+                c.status !== "deceased",
+            )
+            .map((c) => c.id),
+        );
+        const killedCharacterIds = [
+          ...new Set(input.killedCharacterIds ?? []),
+        ].filter((id) => eligibleKillIds.has(id));
+
         const destroyedNames: string[] = [];
         for (const id of participantIds) {
           const next = strengthAfter.get(id) ?? 0;
@@ -3617,7 +3641,10 @@ export const useCampaignStore = create<CampaignState>()(
           campaign = {
             ...campaign,
             characters: scrubCharacterPlacements(
-              campaign.characters ?? [],
+              markCharactersDeceased(
+                campaign.characters ?? [],
+                killedCharacterIds,
+              ),
               campaign,
             ),
           };
@@ -3637,13 +3664,24 @@ export const useCampaignStore = create<CampaignState>()(
             selectedArmyId: selectedGone ? null : s.selectedArmyId,
             placingArmyId: placingGone ? null : s.placingArmyId,
             playMoveHint: (() => {
+              const killedNames = killedCharacterIds
+                .map(
+                  (id) =>
+                    (state.campaign.characters ?? []).find((c) => c.id === id)
+                      ?.name,
+                )
+                .filter(Boolean) as string[];
               const base = destroyedNames.length
                 ? `Battle recorded. Destroyed: ${destroyedNames.join(", ")}`
                 : `Battle recorded — ${battle.outcome}`;
+              const withKills =
+                killedNames.length > 0
+                  ? `${base} · Fallen: ${killedNames.join(", ")}`
+                  : base;
               if (victoryKind === "heroic" || victoryKind === "epochal") {
-                return `${base} · Crossed swords mark the site`;
+                return `${withKills} · Crossed swords mark the site`;
               }
-              return base;
+              return withKills;
             })(),
           };
         });
@@ -5107,11 +5145,20 @@ export const useCampaignStore = create<CampaignState>()(
           dirty: false,
           skipUndo: true,
         }).maps;
-        return {
+        const sliced = {
           maps,
           mapOrder: state.mapOrder,
           activeMapId: state.activeMapId,
         };
+        try {
+          reportPersistSize(
+            utf8ByteLength(JSON.stringify(sliced)),
+            "localStorage.partialize",
+          );
+        } catch {
+          /* ignore size probe failures */
+        }
+        return sliced;
       },
       merge: (persistedState, currentState) => {
         const p = persistedState as PersistedMaps | undefined;
@@ -5152,6 +5199,11 @@ export const useCampaignStore = create<CampaignState>()(
 
         return currentState;
       },
+    },
+    ),
+    {
+      name: "galaxy-campaign-map",
+      enabled: isPerfDebugEnabled(),
     },
   ),
 );

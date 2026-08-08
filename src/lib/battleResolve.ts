@@ -31,6 +31,8 @@ export type BattleResolveInput = {
   attackerSupportArmyIds?: string[];
   /** Same-faction detachments adjacent to the defender that join the fight. */
   defenderSupportArmyIds?: string[];
+  /** Characters on either side (incl. supports) marked killed in this battle. */
+  killedCharacterIds?: string[];
 };
 
 export type BattleResolvePending = {

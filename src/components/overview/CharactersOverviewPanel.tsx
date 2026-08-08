@@ -42,6 +42,7 @@ const STATUS_STYLE: Record<
 };
 
 type StatusFilter = "all" | CharacterStatus;
+type SortMode = "name_asc" | "name_desc" | "faction_asc";
 
 type Draft = {
   name: string;
@@ -128,22 +129,31 @@ function CharacterCard({
   character,
   locationLabel,
   factionName,
+  factionColor,
   onEdit,
   onDelete,
 }: {
   character: CampaignCharacter;
   locationLabel: string;
   factionName?: string;
+  factionColor?: string;
   onEdit: () => void;
   onDelete: () => void;
 }) {
   const style = STATUS_STYLE[character.status] ?? STATUS_STYLE.alive;
   const locationPrefix =
     character.status === "lost" ? "Last known" : "Location";
+  const outline = factionColor ?? style.border;
+  const nameColor =
+    character.status === "deceased"
+      ? "#e85a4f"
+      : character.status === "lost"
+        ? "#e8a045"
+        : undefined;
   return (
     <article
       className="hud-panel relative p-4 border text-left transition-colors hover:bg-panel/80"
-      style={{ borderColor: `${style.border}88` }}
+      style={{ borderColor: `${outline}99` }}
     >
       <div className="absolute top-2 right-2 flex gap-1">
         <button
@@ -168,9 +178,14 @@ function CharacterCard({
         onClick={onEdit}
       >
         <div className="flex items-start gap-3">
-          <PersonIcon color={style.icon} />
+          <PersonIcon color={factionColor ?? style.icon} />
           <div className="min-w-0 flex-1">
-            <h4 className="font-display text-base text-star tracking-wide truncate">
+            <h4
+              className={`font-display text-base tracking-wide truncate ${
+                nameColor ? "" : "text-star"
+              }`}
+              style={nameColor ? { color: nameColor } : undefined}
+            >
               {character.name}
             </h4>
             <p className="text-[11px] text-muted truncate mt-0.5">
@@ -506,6 +521,7 @@ export function CharactersOverviewPanel() {
 
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [sortMode, setSortMode] = useState<SortMode>("name_asc");
   const [mode, setMode] = useState<"idle" | "create" | "edit">("idle");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
@@ -514,7 +530,7 @@ export function CharactersOverviewPanel() {
   const q = query.trim().toLowerCase();
 
   const filtered = useMemo(() => {
-    return characters.filter((c) => {
+    const list = characters.filter((c) => {
       if (statusFilter !== "all" && c.status !== statusFilter) return false;
       if (!q) return true;
       const faction = getFactionById(campaign, c.factionId)?.name ?? "";
@@ -533,7 +549,34 @@ export function CharactersOverviewPanel() {
         .toLowerCase();
       return hay.includes(q);
     });
-  }, [characters, campaign, q, statusFilter]);
+
+    const byName = (a: CampaignCharacter, b: CampaignCharacter) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+
+    const sorted = [...list];
+    if (sortMode === "name_asc") {
+      sorted.sort(byName);
+    } else if (sortMode === "name_desc") {
+      sorted.sort((a, b) => byName(b, a));
+    } else {
+      sorted.sort((a, b) => {
+        const fa =
+          getFactionById(campaign, a.factionId)?.name ??
+          a.affiliation?.trim() ??
+          "\uffff";
+        const fb =
+          getFactionById(campaign, b.factionId)?.name ??
+          b.affiliation?.trim() ??
+          "\uffff";
+        const factionCmp = fa.localeCompare(fb, undefined, {
+          sensitivity: "base",
+        });
+        if (factionCmp !== 0) return factionCmp;
+        return byName(a, b);
+      });
+    }
+    return sorted;
+  }, [characters, campaign, q, statusFilter, sortMode]);
 
   const openCreate = () => {
     setMode("create");
@@ -600,7 +643,7 @@ export function CharactersOverviewPanel() {
         </button>
       </div>
 
-      <div className="flex flex-col sm:flex-row gap-3">
+      <div className="flex flex-col sm:flex-row gap-3 sm:items-end">
         <label className="relative block flex-1">
           <span className="sr-only">Search characters</span>
           <span
@@ -617,19 +660,34 @@ export function CharactersOverviewPanel() {
             className="hud-input w-full pl-9"
           />
         </label>
-        <label className="block sm:w-44 shrink-0">
-          <span className="sr-only">Filter by status</span>
-          <select
-            className="hud-input w-full"
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
-          >
-            <option value="all">All Status</option>
-            <option value="alive">Alive</option>
-            <option value="lost">Lost</option>
-            <option value="deceased">Deceased</option>
-          </select>
-        </label>
+        <div className="flex flex-col gap-2 sm:w-44 shrink-0">
+          <label className="block">
+            <span className="sr-only">Organize by</span>
+            <select
+              className="hud-input w-full"
+              value={sortMode}
+              onChange={(e) => setSortMode(e.target.value as SortMode)}
+              title="Organize characters"
+            >
+              <option value="name_asc">Name A → Z</option>
+              <option value="name_desc">Name Z → A</option>
+              <option value="faction_asc">Faction A → Z</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="sr-only">Filter by status</span>
+            <select
+              className="hud-input w-full"
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+            >
+              <option value="all">All Status</option>
+              <option value="alive">Alive</option>
+              <option value="lost">Lost</option>
+              <option value="deceased">Deceased</option>
+            </select>
+          </label>
+        </div>
       </div>
 
       {mode === "create" && (
@@ -665,16 +723,20 @@ export function CharactersOverviewPanel() {
         <p className="text-sm text-muted">No characters match that filter.</p>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {filtered.map((c) => (
-            <CharacterCard
-              key={c.id}
-              character={c}
-              locationLabel={characterLocationDisplay(campaign, c)}
-              factionName={getFactionById(campaign, c.factionId)?.name}
-              onEdit={() => openEdit(c)}
-              onDelete={() => handleDelete(c)}
-            />
-          ))}
+          {filtered.map((c) => {
+            const faction = getFactionById(campaign, c.factionId);
+            return (
+              <CharacterCard
+                key={c.id}
+                character={c}
+                locationLabel={characterLocationDisplay(campaign, c)}
+                factionName={faction?.name}
+                factionColor={faction?.color}
+                onEdit={() => openEdit(c)}
+                onDelete={() => handleDelete(c)}
+              />
+            );
+          })}
         </div>
       )}
     </div>

@@ -20,11 +20,18 @@ import {
 } from "../lib/buildingPoints";
 import { playMoveBlockReason } from "../lib/play";
 import { factionSymbolIds } from "../lib/factionSymbols";
+import { charactersOnFleet } from "../lib/characterLocation";
 import { factionsSortedByName, getFactionById } from "../lib/territory";
 import { normalizeCampaignPlay } from "../types/campaign";
 import { useCampaignStore } from "../store/useCampaignStore";
 
 const inputClass = "hud-input";
+
+function characterNameColor(status: string): string | undefined {
+  if (status === "deceased") return "#e85a4f";
+  if (status === "lost") return "#e8a045";
+  return undefined;
+}
 
 function FactionSwatch({ color }: { color?: string }) {
   return (
@@ -120,6 +127,29 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
         <p className="text-[10px] text-muted">
           {locationLabel(campaign, fleet.location)} · {shipCount(fleet)} ships
         </p>
+        {(() => {
+          const aboard = charactersOnFleet(campaign.characters, fleet.id);
+          if (aboard.length === 0) return null;
+          return (
+            <p className="text-[10px] text-muted leading-snug">
+              Characters:{" "}
+              {aboard.map((c, i) => {
+                const color = characterNameColor(c.status);
+                return (
+                  <span key={c.id}>
+                    {i > 0 ? ", " : ""}
+                    <span style={color ? { color } : undefined} className={color ? undefined : "text-star"}>
+                      {c.name}
+                    </span>
+                    {c.title.trim() ? (
+                      <span className="text-muted"> ({c.title.trim()})</span>
+                    ) : null}
+                  </span>
+                );
+              })}
+            </p>
+          );
+        })()}
         {viewLevel === "galaxy" && (
           <button
             type="button"

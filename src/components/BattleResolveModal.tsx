@@ -11,11 +11,12 @@ import {
   combinedForceStrengthWithFortifications,
   describeFortificationBonus,
 } from "../lib/fortificationBonus";
+import { charactersOnArmies } from "../lib/characterLocation";
 import { buildHexSphere } from "../lib/hexSphere";
 import { SETTLEMENT_HEX_FREQUENCY } from "../lib/settlements";
 import { getFactionById } from "../lib/territory";
 import { normalizeCampaignPlay } from "../types/campaign";
-import type { Army } from "../types/campaign";
+import type { Army, CampaignCharacter } from "../types/campaign";
 
 function numOrEmpty(v: string): number {
   if (v.trim() === "") return 0;
@@ -79,6 +80,79 @@ function SupportPicker({
   );
 }
 
+function CharacterKillPicker({
+  label,
+  accent,
+  characters,
+  selectedIds,
+  onToggle,
+}: {
+  label: string;
+  accent: string;
+  characters: CampaignCharacter[];
+  selectedIds: string[];
+  onToggle: (id: string) => void;
+}) {
+  if (characters.length === 0) {
+    return (
+      <div className="rounded border border-panel-border/60 px-3 py-2 text-[10px] text-muted">
+        {label}: none present
+      </div>
+    );
+  }
+  return (
+    <div
+      className="rounded border px-3 py-2 space-y-1.5"
+      style={{ borderColor: `${accent}55` }}
+    >
+      <p className="font-display uppercase tracking-wider text-[10px] text-muted">
+        {label}
+      </p>
+      <p className="text-[10px] text-muted leading-snug">
+        Check characters killed in this battle (primary + supporting
+        detachments).
+      </p>
+      <ul className="space-y-1">
+        {characters.map((c) => {
+          const checked = selectedIds.includes(c.id);
+          const alreadyDead = c.status === "deceased";
+          return (
+            <li key={c.id}>
+              <label
+                className={`flex items-center gap-2 text-xs ${
+                  alreadyDead
+                    ? "opacity-50 cursor-not-allowed"
+                    : "cursor-pointer"
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked || alreadyDead}
+                  disabled={alreadyDead}
+                  onChange={() => {
+                    if (!alreadyDead) onToggle(c.id);
+                  }}
+                />
+                <span className="truncate flex-1 text-star">
+                  {c.name}
+                  {c.title.trim() ? (
+                    <span className="text-muted"> · {c.title.trim()}</span>
+                  ) : null}
+                </span>
+                {alreadyDead ? (
+                  <span className="text-[10px] shrink-0" style={{ color: "#e85a4f" }}>
+                    Deceased
+                  </span>
+                ) : null}
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 export function BattleResolveModal() {
   const pending = useCampaignStore((s) => s.battleResolve);
   const campaign = useCampaignStore((s) => s.campaign);
@@ -93,6 +167,7 @@ export function BattleResolveModal() {
   const [defenderLost, setDefenderLost] = useState("0");
   const [attackerSupportIds, setAttackerSupportIds] = useState<string[]>([]);
   const [defenderSupportIds, setDefenderSupportIds] = useState<string[]>([]);
+  const [killedCharacterIds, setKilledCharacterIds] = useState<string[]>([]);
 
   const pendingKey = pending
     ? `${pending.planetId}:${pending.attackerArmyId}:${pending.defenderArmyId}`
@@ -108,6 +183,7 @@ export function BattleResolveModal() {
     setDefenderLost("0");
     setAttackerSupportIds([]);
     setDefenderSupportIds([]);
+    setKilledCharacterIds([]);
   }, [pendingKey]);
 
   const context = useMemo(() => {
@@ -160,6 +236,17 @@ export function BattleResolveModal() {
   );
   const selectedDefSupports = context.defenderSupports.filter((a) =>
     defenderSupportIds.includes(a.id),
+  );
+
+  const attackerCharacters = charactersOnArmies(
+    campaign.characters,
+    context.planet.id,
+    [context.attacker.id, ...selectedAtkSupports.map((a) => a.id)],
+  );
+  const defenderCharacters = charactersOnArmies(
+    campaign.characters,
+    context.planet.id,
+    [context.defender.id, ...selectedDefSupports.map((a) => a.id)],
   );
 
   const atkCombined = combinedForceStrengthWithFortifications(
@@ -233,6 +320,7 @@ export function BattleResolveModal() {
       defenderStrengthLostPct: dLost,
       attackerSupportArmyIds: attackerSupportIds,
       defenderSupportArmyIds: defenderSupportIds,
+      killedCharacterIds,
     });
   };
 
@@ -327,6 +415,27 @@ export function BattleResolveModal() {
             selectedIds={defenderSupportIds}
             onToggle={(id) =>
               setDefenderSupportIds((ids) => toggleId(ids, id))
+            }
+          />
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <CharacterKillPicker
+            label="Attacker characters killed"
+            accent={context.attackerFaction?.color ?? "#c9a227"}
+            characters={attackerCharacters}
+            selectedIds={killedCharacterIds}
+            onToggle={(id) =>
+              setKilledCharacterIds((ids) => toggleId(ids, id))
+            }
+          />
+          <CharacterKillPicker
+            label="Defender characters killed"
+            accent={context.defenderFaction?.color ?? "#c9a227"}
+            characters={defenderCharacters}
+            selectedIds={killedCharacterIds}
+            onToggle={(id) =>
+              setKilledCharacterIds((ids) => toggleId(ids, id))
             }
           />
         </div>

@@ -10,6 +10,7 @@ import { HyperlaneLayer } from "../galaxy/HyperlaneLayer";
 import { hasHyperlaneEdits } from "../../lib/hyperlanes";
 import { StarNode } from "../galaxy/StarNode";
 import { useMapCamera } from "../../hooks/useMapCamera";
+import { useThrottledMapScale } from "../../hooks/useThrottledMapScale";
 import {
   getDominantFactionForSystem,
   useCampaignStore,
@@ -92,7 +93,7 @@ function ContentsChrome({
 
 export function EditGalaxyContentsPanel() {
   const transformRef = useRef<ReactZoomPanPinchRef>(null);
-  const [mapScale, setMapScale] = useState(0.4);
+  const [mapScale, setMapScale] = useThrottledMapScale(0.4);
   const [connectFromId, setConnectFromId] = useState<string | null>(null);
   const [selectedLaneId, setSelectedLaneId] = useState<string | null>(null);
   const [marquee, setMarquee] = useState<MarqueeRect | null>(null);

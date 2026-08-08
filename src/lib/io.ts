@@ -9,6 +9,7 @@ import { enforceUniqueSymbolOwnership } from "./factionSymbols";
 import { armyStrength, pruneDestroyedArmies } from "./battleResolve";
 import { normalizeShipCargo, normalizeShipChassis } from "./fleets";
 import { normalizeTerrainKind } from "./planetTerrain";
+import { reportPersistSize, utf8ByteLength } from "./perfDebug";
 
 const factionSchema = z.object({
   id: z.string(),
@@ -486,7 +487,9 @@ export function parseCampaignJson(json: string): Campaign {
 }
 
 export function serializeCampaign(campaign: Campaign): string {
-  return JSON.stringify(campaign, null, 2);
+  const json = JSON.stringify(campaign, null, 2);
+  reportPersistSize(utf8ByteLength(json), "serializeCampaign");
+  return json;
 }
 
 export function downloadCampaign(campaign: Campaign, filename?: string) {

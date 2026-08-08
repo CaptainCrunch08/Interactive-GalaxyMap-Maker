@@ -1,4 +1,4 @@
-import { useRef, useMemo, useState } from "react";
+import { useRef, useMemo } from "react";
 import {
   TransformWrapper,
   TransformComponent,
@@ -11,6 +11,7 @@ import { StarNode } from "../components/galaxy/StarNode";
 import { FleetMarker } from "../components/fleet/FleetMarker";
 import { resolveFleetSymbolUrl } from "../lib/fleetSymbols";
 import { useMapCamera } from "../hooks/useMapCamera";
+import { useThrottledMapScale } from "../hooks/useThrottledMapScale";
 import {
   getDominantFactionForSystem,
   useCampaignStore,
@@ -26,7 +27,7 @@ import { campaignMapSize } from "../types/campaign";
 
 export function GalaxyView() {
   const transformRef = useRef<ReactZoomPanPinchRef>(null);
-  const [mapScale, setMapScale] = useState(0.45);
+  const [mapScale, setMapScale] = useThrottledMapScale(0.45);
   const campaign = useCampaignStore((s) => s.campaign);
   const editMode = useCampaignStore((s) => s.editMode);
   const selectedSystemId = useCampaignStore((s) => s.selectedSystemId);

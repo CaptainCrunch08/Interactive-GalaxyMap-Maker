@@ -33,6 +33,7 @@ import {
 } from "../../lib/settlements";
 import { getStructureGeometry } from "../../lib/structureMeshes";
 import { supplyLinkSegments } from "../../lib/supplyNetwork";
+import { perfMark, perfMeasure, perfTime } from "../../lib/perfDebug";
 
 const FREQUENCY = SETTLEMENT_HEX_FREQUENCY;
 /** Combat target hex glow (distinct from selection / paint accent). */
@@ -1942,97 +1943,141 @@ export function HexPlanet({
     const ro = new ResizeObserver(onResize);
     ro.observe(mount);
 
+    let lastOverlayState: OverlayState | null = null;
+
     const refreshOverlays = (state: OverlayState) => {
+      perfMark("hex-refresh-start");
       if (armyDrag) {
         endArmyDrag(false);
       }
       // Keep paint stroke state; only clear highlight when idle.
       if (!terrainPaint) clearTileHighlight();
-      planet.remove(
-        surface,
-        seams,
-        borders,
-        settlements,
-        structureMarkers,
-        supplyLinks,
-        armyMarkers,
-        famousBattleMarkers,
-      );
-      disposeGroup(surface);
-      disposeGroup(seams);
-      disposeGroup(borders);
-      disposeGroup(settlements);
-      disposeGroup(structureMarkers);
-      disposeGroup(supplyLinks);
-      disposeGroup(armyMarkers);
-      disposeGroup(famousBattleMarkers);
 
-      ({ surface, seams } = buildPlanetMeshes(
-        planetId,
-        planetType,
-        classification,
-        state.cities,
-        state.factions,
-        state.tileClaims,
-        state.structures,
-        state.tileTerrain,
-        state.independentDistricts,
-      ));
-      borders = buildBorderLines(
-        state.cities,
-        state.factions,
-        state.tileClaims,
-        state.structures,
-        state.independentDistricts,
-      );
-      settlements = buildSettlementMarkers(
-        state.cities,
-        state.factions,
-        state.selectedCityId,
-        state.selectedDistrictId,
-        accentRef.current,
-        state.independentDistricts,
-        {
-          showRuleWarnings: state.showDistrictRuleWarnings,
-          planet: {
-            cities: state.cities,
-            independentDistricts: state.independentDistricts,
-            structures: state.structures,
+      const prev = lastOverlayState;
+      const meshDirty =
+        !prev ||
+        prev.cities !== state.cities ||
+        prev.independentDistricts !== state.independentDistricts ||
+        prev.structures !== state.structures ||
+        prev.tileClaims !== state.tileClaims ||
+        prev.tileTerrain !== state.tileTerrain ||
+        prev.factions !== state.factions;
+
+      const markersDirty =
+        meshDirty ||
+        !prev ||
+        prev.selectedCityId !== state.selectedCityId ||
+        prev.selectedDistrictId !== state.selectedDistrictId ||
+        prev.selectedStructureId !== state.selectedStructureId ||
+        prev.selectedArmyId !== state.selectedArmyId ||
+        prev.selectedFamousBattleId !== state.selectedFamousBattleId ||
+        prev.showDistrictRuleWarnings !== state.showDistrictRuleWarnings ||
+        prev.armies !== state.armies ||
+        prev.famousBattleSites !== state.famousBattleSites ||
+        prev.symbols !== state.symbols;
+
+      if (meshDirty) {
+        planet.remove(surface, seams, borders, supplyLinks);
+        disposeGroup(surface);
+        disposeGroup(seams);
+        disposeGroup(borders);
+        disposeGroup(supplyLinks);
+
+        ({ surface, seams } = perfTime("buildPlanetMeshes", () =>
+          buildPlanetMeshes(
+            planetId,
+            planetType,
+            classification,
+            state.cities,
+            state.factions,
+            state.tileClaims,
+            state.structures,
+            state.tileTerrain,
+            state.independentDistricts,
+          ),
+        ));
+        borders = buildBorderLines(
+          state.cities,
+          state.factions,
+          state.tileClaims,
+          state.structures,
+          state.independentDistricts,
+        );
+        supplyLinks = buildSupplyLinkLines(
+          state.cities,
+          state.structures,
+          state.independentDistricts,
+        );
+        planet.add(surface, seams, borders, supplyLinks);
+      }
+
+      if (markersDirty) {
+        planet.remove(
+          settlements,
+          structureMarkers,
+          armyMarkers,
+          famousBattleMarkers,
+        );
+        disposeGroup(settlements);
+        disposeGroup(structureMarkers);
+        disposeGroup(armyMarkers);
+        disposeGroup(famousBattleMarkers);
+
+        settlements = buildSettlementMarkers(
+          state.cities,
+          state.factions,
+          state.selectedCityId,
+          state.selectedDistrictId,
+          accentRef.current,
+          state.independentDistricts,
+          {
+            showRuleWarnings: state.showDistrictRuleWarnings,
+            planet: {
+              cities: state.cities,
+              independentDistricts: state.independentDistricts,
+              structures: state.structures,
+            },
           },
-        },
+        );
+        structureMarkers = buildStructureMarkers(
+          state.structures,
+          state.factions,
+          state.selectedStructureId,
+          accentRef.current,
+        );
+        armyMarkers = buildArmyMarkers(
+          state.armies,
+          state.symbols,
+          state.factions,
+          state.selectedArmyId,
+        );
+        famousBattleMarkers = buildFamousBattleMarkers(
+          state.famousBattleSites,
+          state.selectedFamousBattleId,
+        );
+        planet.add(
+          settlements,
+          structureMarkers,
+          armyMarkers,
+          famousBattleMarkers,
+        );
+      }
+
+      if (
+        meshDirty ||
+        markersDirty ||
+        !prev ||
+        prev.engageArmyId !== state.engageArmyId ||
+        prev.armies !== state.armies
+      ) {
+        refreshEngageHighlights(state.armies, state.engageArmyId);
+      }
+
+      lastOverlayState = state;
+      perfMeasure(
+        meshDirty ? "refreshOverlays(mesh)" : "refreshOverlays(markers)",
+        "hex-refresh-start",
       );
-      structureMarkers = buildStructureMarkers(
-        state.structures,
-        state.factions,
-        state.selectedStructureId,
-        accentRef.current,
-      );
-      supplyLinks = buildSupplyLinkLines(
-        state.cities,
-        state.structures,
-        state.independentDistricts,
-      );
-      armyMarkers = buildArmyMarkers(
-        state.armies,
-        state.symbols,
-        state.factions,
-        state.selectedArmyId,
-      );
-      famousBattleMarkers = buildFamousBattleMarkers(
-        state.famousBattleSites,
-        state.selectedFamousBattleId,
-      );
-      planet.add(
-        surface,
-        seams,
-        borders,
-        settlements,
-        structureMarkers,
-        supplyLinks,
-        armyMarkers,
-        famousBattleMarkers,
-      );
-      refreshEngageHighlights(state.armies, state.engageArmyId);
     };
 
     (

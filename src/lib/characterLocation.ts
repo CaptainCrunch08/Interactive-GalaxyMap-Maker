@@ -168,6 +168,57 @@ export function fleetsForLocationDraft(
   return fleetsInSystem(sameFaction, systemId);
 }
 
+/** Characters assigned to a fleet (any status). */
+export function charactersOnFleet(
+  characters: CampaignCharacter[] | undefined,
+  fleetId: string,
+): CampaignCharacter[] {
+  return (characters ?? []).filter(
+    (c) => c.placement?.kind === "fleet" && c.placement.fleetId === fleetId,
+  );
+}
+
+/** Characters assigned to a planet detachment. */
+export function charactersOnArmy(
+  characters: CampaignCharacter[] | undefined,
+  planetId: string,
+  armyId: string,
+): CampaignCharacter[] {
+  return (characters ?? []).filter(
+    (c) =>
+      c.placement?.kind === "army" &&
+      c.placement.planetId === planetId &&
+      c.placement.armyId === armyId,
+  );
+}
+
+/** Characters on any of the given detachments (primary + supports). */
+export function charactersOnArmies(
+  characters: CampaignCharacter[] | undefined,
+  planetId: string,
+  armyIds: Iterable<string>,
+): CampaignCharacter[] {
+  const ids = new Set(armyIds);
+  return (characters ?? []).filter(
+    (c) =>
+      c.placement?.kind === "army" &&
+      c.placement.planetId === planetId &&
+      ids.has(c.placement.armyId),
+  );
+}
+
+/** Mark selected characters deceased (battle casualties). */
+export function markCharactersDeceased(
+  characters: CampaignCharacter[],
+  killedIds: Iterable<string>,
+): CampaignCharacter[] {
+  const killed = new Set(killedIds);
+  if (killed.size === 0) return characters;
+  return characters.map((c) =>
+    killed.has(c.id) ? { ...c, status: "deceased" as const } : c,
+  );
+}
+
 /** Clear placements that reference deleted map entities. */
 export function scrubCharacterPlacements(
   characters: CampaignCharacter[],

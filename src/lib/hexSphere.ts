@@ -166,8 +166,14 @@ function subdivideIcosahedron(frequency: number): {
 /**
  * Build hex/pent tiles as the dual of a subdivided icosahedron.
  * Frequency 4 → ~162 tiles, 5 → ~252, 6 → ~362.
+ * Results are cached per frequency (immutable geometry).
  */
+const sphereCache = new Map<number, HexSphere>();
+
 export function buildHexSphere(frequency = 5): HexSphere {
+  const cached = sphereCache.get(frequency);
+  if (cached) return cached;
+
   const { vertices, faces } = subdivideIcosahedron(frequency);
 
   // face centroids on the sphere
@@ -234,7 +240,9 @@ export function buildHexSphere(frequency = 5): HexSphere {
     }
   }
 
-  return { tiles, neighbors };
+  const sphere: HexSphere = { tiles, neighbors };
+  sphereCache.set(frequency, sphere);
+  return sphere;
 }
 
 /** Graph distance (BFS) between two tiles on the hex sphere. */
@@ -245,9 +253,10 @@ export function hexTileDistance(
 ): number {
   if (start === goal) return 0;
   const q = [start];
+  let head = 0;
   const dist = new Map<number, number>([[start, 0]]);
-  while (q.length) {
-    const cur = q.shift()!;
+  while (head < q.length) {
+    const cur = q[head++]!;
     const d = dist.get(cur)!;
     for (const n of sphere.neighbors[cur] ?? []) {
       if (dist.has(n)) continue;

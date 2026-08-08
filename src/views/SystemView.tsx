@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import {
   TransformWrapper,
   TransformComponent,
@@ -12,6 +12,7 @@ import { SystemStar } from "../components/system/SystemStar";
 import { FleetMarker } from "../components/fleet/FleetMarker";
 import { resolveFleetSymbolUrl } from "../lib/fleetSymbols";
 import { useMapCamera } from "../hooks/useMapCamera";
+import { useThrottledMapScale } from "../hooks/useThrottledMapScale";
 import {
   SYSTEM_VIEW_SIZE,
   maxOrbitRadius,
@@ -32,7 +33,7 @@ const INITIAL_SCALE = 0.85;
 
 export function SystemView() {
   const transformRef = useRef<ReactZoomPanPinchRef>(null);
-  const [mapScale, setMapScale] = useState(INITIAL_SCALE);
+  const [mapScale, setMapScale] = useThrottledMapScale(INITIAL_SCALE);
   const campaign = useCampaignStore((s) => s.campaign);
   const focusedSystemId = useCampaignStore((s) => s.focusedSystemId);
   const selectedPlanetId = useCampaignStore((s) => s.selectedPlanetId);

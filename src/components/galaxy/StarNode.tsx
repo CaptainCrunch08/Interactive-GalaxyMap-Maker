@@ -9,6 +9,7 @@ import {
   starGlowShadow,
   starSystemLabel,
 } from "../../lib/stars";
+import { beginSystemDrag, endSystemDrag } from "../../lib/systemDrag";
 import { PulsarJets, pulsarJetAngle } from "./PulsarJets";
 
 interface StarNodeProps {
@@ -65,6 +66,7 @@ export function StarNode({
     const startY = e.clientY;
     const origX = system.x;
     const origY = system.y;
+    beginSystemDrag();
 
     const onMove = (ev: PointerEvent) => {
       const dx = (ev.clientX - startX) / mapScale;
@@ -75,6 +77,7 @@ export function StarNode({
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      endSystemDrag();
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);

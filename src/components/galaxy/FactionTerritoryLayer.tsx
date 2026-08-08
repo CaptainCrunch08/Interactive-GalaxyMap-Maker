@@ -1,4 +1,4 @@
-import { useId, useMemo } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Campaign, Faction } from "../../types/campaign";
 import { campaignMapSize } from "../../types/campaign";
 import {
@@ -6,6 +6,11 @@ import {
   type FactionInfluence,
   type InfluenceSource,
 } from "../../lib/metaball";
+import { perfTime } from "../../lib/perfDebug";
+import {
+  isSystemDragging,
+  subscribeSystemDrag,
+} from "../../lib/systemDrag";
 import {
   CLAIM_RADIUS,
   getSystemOwnership,
@@ -31,61 +36,79 @@ function contestedKey(factions: Faction[]) {
   return [...factions.map((f) => f.id)].sort().join("|");
 }
 
+type TerritoryRegions = ReturnType<typeof buildCompetitiveTerritories>;
+
+function computeRegions(campaign: Campaign): TerritoryRegions {
+  const claims: FactionInfluence[] = [];
+  const byFaction = new Map<string, FactionInfluence>();
+  const byContested = new Map<string, FactionInfluence>();
+
+  for (const system of campaign.systems) {
+    const ownership = getSystemOwnership(campaign, system.id);
+    if (ownership.status === "unowned") continue;
+    const source: InfluenceSource = {
+      x: system.x,
+      y: system.y,
+      radius: CLAIM_RADIUS,
+    };
+
+    if (ownership.status === "owned") {
+      const faction = ownership.factions[0];
+      const entry = byFaction.get(faction.id) ?? {
+        id: faction.id,
+        color: faction.color,
+        sources: [],
+        kind: "owned" as const,
+      };
+      entry.sources.push(source);
+      byFaction.set(faction.id, entry);
+    } else {
+      const a = ownership.factions[0]!;
+      const b = ownership.factions[1]!;
+      const key = contestedKey(ownership.factions);
+      const id = `contested:${key}`;
+      const entry = byContested.get(id) ?? {
+        id,
+        color: a.color,
+        sources: [],
+        kind: "contested" as const,
+        stripeColors: [a.color, b.color] as [string, string],
+      };
+      entry.sources.push(source);
+      byContested.set(id, entry);
+    }
+  }
+
+  claims.push(...byFaction.values(), ...byContested.values());
+  return perfTime("buildCompetitiveTerritories", () =>
+    buildCompetitiveTerritories(claims, {
+      cellSize: 16,
+      threshold: 0.4,
+    }),
+  );
+}
+
 /**
  * Stellaris-style territories:
  * - owned + contested claims all compete in one influence field (no overlap)
  * - borders clipped to each region's fill so neighbors meet flush
+ * - deferred while a star is being dragged (rebuild on pointer-up)
  */
 export function FactionTerritoryLayer({ campaign }: FactionTerritoryLayerProps) {
   const uid = useId().replace(/:/g, "");
+  const [dragging, setDragging] = useState(() => isSystemDragging());
+  const lastRegionsRef = useRef<TerritoryRegions | null>(null);
+
+  useEffect(() => subscribeSystemDrag(() => setDragging(isSystemDragging())), []);
 
   const regions = useMemo(() => {
-    const claims: FactionInfluence[] = [];
-    const byFaction = new Map<string, FactionInfluence>();
-    const byContested = new Map<string, FactionInfluence>();
-
-    for (const system of campaign.systems) {
-      const ownership = getSystemOwnership(campaign, system.id);
-      if (ownership.status === "unowned") continue;
-      const source: InfluenceSource = {
-        x: system.x,
-        y: system.y,
-        radius: CLAIM_RADIUS,
-      };
-
-      if (ownership.status === "owned") {
-        const faction = ownership.factions[0];
-        const entry = byFaction.get(faction.id) ?? {
-          id: faction.id,
-          color: faction.color,
-          sources: [],
-          kind: "owned" as const,
-        };
-        entry.sources.push(source);
-        byFaction.set(faction.id, entry);
-      } else {
-        const a = ownership.factions[0]!;
-        const b = ownership.factions[1]!;
-        const key = contestedKey(ownership.factions);
-        const id = `contested:${key}`;
-        const entry = byContested.get(id) ?? {
-          id,
-          color: a.color,
-          sources: [],
-          kind: "contested" as const,
-          stripeColors: [a.color, b.color] as [string, string],
-        };
-        entry.sources.push(source);
-        byContested.set(id, entry);
-      }
+    if (dragging && lastRegionsRef.current) {
+      return lastRegionsRef.current;
     }
-
-    claims.push(...byFaction.values(), ...byContested.values());
-    return buildCompetitiveTerritories(claims, {
-      cellSize: 16,
-      threshold: 0.4,
-    });
-  }, [campaign]);
+    const next = computeRegions(campaign);
+    lastRegionsRef.current = next;
+    return next;
+  }, [campaign, dragging]);
 
   if (regions.fills.length === 0) return null;
 
