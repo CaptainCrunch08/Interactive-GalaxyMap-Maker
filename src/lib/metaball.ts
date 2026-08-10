@@ -6,10 +6,21 @@ export type InfluenceSource = {
   radius: number;
 };
 
+/** Capsule kernel along a friendly link — smooth peanut merges, no bead waist. */
+export type InfluenceSegment = {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  radius: number;
+};
+
 export type FactionInfluence = {
   id: string;
   color: string;
   sources: InfluenceSource[];
+  /** Optional corridors between same-claim systems (hyperlane / near-miss). */
+  segments?: InfluenceSegment[];
   kind?: "owned" | "contested";
   /** For contested fills — the two faction colors used in diagonal stripes. */
   stripeColors?: [string, string];
@@ -31,7 +42,42 @@ export type TerritoryBorder = {
   stripeColors?: [string, string];
 };
 
-/** Soft kernel — overlapping same-faction sources blend into one blob. */
+function kernelFromDist(dist: number, radius: number): number {
+  const maxR = radius * 1.4;
+  if (dist > maxR) return 0;
+  const t = dist / radius;
+  if (t <= 1) {
+    const u = 1 - t * t;
+    return u * u;
+  }
+  const u = 1 - (t - 1) / 0.4;
+  return 0.2 * Math.max(0, u * u);
+}
+
+function distToSegment(
+  px: number,
+  py: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): { dist: number; cx: number; cy: number } {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len2 = dx * dx + dy * dy;
+  if (len2 < 1e-8) {
+    return { dist: Math.hypot(px - x1, py - y1), cx: x1, cy: y1 };
+  }
+  const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / len2));
+  const cx = x1 + dx * t;
+  const cy = y1 + dy * t;
+  return { dist: Math.hypot(px - cx, py - cy), cx, cy };
+}
+
+/**
+ * Soft kernel union (max, not sum). Summing stacked multi-star claims and
+ * shoved frontiers toward smaller neighbors; max keeps midpoints fair.
+ */
 export function influenceAt(
   x: number,
   y: number,
@@ -39,35 +85,41 @@ export function influenceAt(
 ): number {
   let v = 0;
   for (const s of sources) {
-    const dx = x - s.x;
-    const dy = y - s.y;
-    const d2 = dx * dx + dy * dy;
-    const r = s.radius;
-    const maxR = r * 1.4;
-    if (d2 > maxR * maxR) continue;
-    const t = Math.sqrt(d2) / r;
-    if (t <= 1) {
-      const u = 1 - t * t;
-      v += u * u;
-    } else {
-      const u = 1 - (t - 1) / 0.4;
-      v += 0.2 * Math.max(0, u * u);
-    }
+    const dist = Math.hypot(x - s.x, y - s.y);
+    v = Math.max(v, kernelFromDist(dist, s.radius));
   }
   return v;
 }
 
-function boundsForSources(sources: InfluenceSource[], pad: number) {
+export function influenceForFaction(
+  x: number,
+  y: number,
+  faction: FactionInfluence,
+): number {
+  let v = influenceAt(x, y, faction.sources);
+  for (const seg of faction.segments ?? []) {
+    const { dist } = distToSegment(x, y, seg.x1, seg.y1, seg.x2, seg.y2);
+    v = Math.max(v, kernelFromDist(dist, seg.radius));
+  }
+  return v;
+}
+
+function boundsForFaction(faction: FactionInfluence, pad: number) {
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
-  for (const s of sources) {
-    const extent = s.radius * 1.45;
-    minX = Math.min(minX, s.x - extent);
-    minY = Math.min(minY, s.y - extent);
-    maxX = Math.max(maxX, s.x + extent);
-    maxY = Math.max(maxY, s.y + extent);
+  const grow = (x: number, y: number, radius: number) => {
+    const extent = radius * 1.45;
+    minX = Math.min(minX, x - extent);
+    minY = Math.min(minY, y - extent);
+    maxX = Math.max(maxX, x + extent);
+    maxY = Math.max(maxY, y + extent);
+  };
+  for (const s of faction.sources) grow(s.x, s.y, s.radius);
+  for (const seg of faction.segments ?? []) {
+    grow(seg.x1, seg.y1, seg.radius);
+    grow(seg.x2, seg.y2, seg.radius);
   }
   return {
     minX: minX - pad,
@@ -75,6 +127,10 @@ function boundsForSources(sources: InfluenceSource[], pad: number) {
     maxX: maxX + pad,
     maxY: maxY + pad,
   };
+}
+
+function boundsForSources(sources: InfluenceSource[], pad: number) {
+  return boundsForFaction({ id: "", color: "", sources }, pad);
 }
 
 function resolveGrid(
@@ -87,7 +143,7 @@ function resolveGrid(
   let resolvedCell = cellSize;
   let cols = Math.ceil((maxX - minX) / resolvedCell) + 1;
   let rows = Math.ceil((maxY - minY) / resolvedCell) + 1;
-  const maxDim = 220;
+  const maxDim = 300;
   if (cols > maxDim || rows > maxDim) {
     resolvedCell = Math.max(
       cellSize,
@@ -242,7 +298,6 @@ function stitchSegments(
     ) {
       rings.push(ring.slice(0, -1));
     } else if (ring.length >= 8) {
-      // Nearly-closed noisy ring — force close
       rings.push(ring);
     }
   }
@@ -250,12 +305,14 @@ function stitchSegments(
   return rings;
 }
 
-function smoothClosedRing(ring: Point[]): Point[] {
+/**
+ * Chaikin + Laplacian — rounds grid stair-steps into organic curves.
+ */
+function smoothClosedRing(ring: Point[], passes = 4): Point[] {
   let pts = ring.slice();
   if (pts.length < 6) return pts;
 
-  // Chaikin corner-cutting — more passes = rounder Stellaris-like blobs
-  for (let pass = 0; pass < 4; pass++) {
+  for (let pass = 0; pass < passes; pass++) {
     const next: Point[] = [];
     const n = pts.length;
     for (let i = 0; i < n; i++) {
@@ -269,8 +326,7 @@ function smoothClosedRing(ring: Point[]): Point[] {
     pts = next;
   }
 
-  // Light Laplacian relax to knock down remaining ripples
-  for (let pass = 0; pass < 2; pass++) {
+  for (let pass = 0; pass < 3; pass++) {
     const next: Point[] = [];
     const n = pts.length;
     for (let i = 0; i < n; i++) {
@@ -278,8 +334,8 @@ function smoothClosedRing(ring: Point[]): Point[] {
       const cur = pts[i]!;
       const nxt = pts[(i + 1) % n]!;
       next.push({
-        x: cur.x * 0.5 + (prev.x + nxt.x) * 0.25,
-        y: cur.y * 0.5 + (prev.y + nxt.y) * 0.25,
+        x: cur.x * 0.55 + (prev.x + nxt.x) * 0.225,
+        y: cur.y * 0.55 + (prev.y + nxt.y) * 0.225,
       });
     }
     pts = next;
@@ -288,12 +344,12 @@ function smoothClosedRing(ring: Point[]): Point[] {
   return pts;
 }
 
-/** Soften a binary occupancy field so marching-squares edges aren't stair-stepped. */
+/** Box blur — softens hard occupancy edges into organic fronts. */
 function blurScalarField(
   values: Float32Array,
   cols: number,
   rows: number,
-  passes = 2,
+  passes = 5,
 ): Float32Array {
   let cur = values;
   for (let pass = 0; pass < passes; pass++) {
@@ -327,7 +383,11 @@ function filterClosedRings(rings: Point[][], minArea: number, minLen: number) {
 }
 
 /** Marching squares → closed rings where value >= threshold. */
-export function contourPaths(grid: Grid, threshold: number): Point[][] {
+export function contourPaths(
+  grid: Grid,
+  threshold: number,
+  smoothPasses = 2,
+): Point[][] {
   const { cols, rows, values, originX, originY, cellSize } = grid;
   const segments: Array<[Point, Point]> = [];
   const eps = Math.max(0.75, cellSize * 0.25);
@@ -361,7 +421,6 @@ export function contourPaths(grid: Grid, threshold: number): Point[][] {
       const bottom = () => edgePoint(x0, y1, x1, y1, v01, v11, threshold);
       const left = () => edgePoint(x0, y0, x0, y1, v00, v01, threshold);
 
-      // Ambiguous saddles: pick one consistent diagonal to avoid fragments
       switch (code) {
         case 1:
         case 14:
@@ -380,8 +439,7 @@ export function contourPaths(grid: Grid, threshold: number): Point[][] {
           segments.push([right(), bottom()]);
           break;
         case 5: {
-          const center =
-            (v00 + v10 + v01 + v11) * 0.25 >= threshold;
+          const center = (v00 + v10 + v01 + v11) * 0.25 >= threshold;
           if (center) {
             segments.push([left(), bottom()]);
             segments.push([top(), right()]);
@@ -400,8 +458,7 @@ export function contourPaths(grid: Grid, threshold: number): Point[][] {
           segments.push([left(), bottom()]);
           break;
         case 10: {
-          const center =
-            (v00 + v10 + v01 + v11) * 0.25 >= threshold;
+          const center = (v00 + v10 + v01 + v11) * 0.25 >= threshold;
           if (center) {
             segments.push([left(), top()]);
             segments.push([right(), bottom()]);
@@ -417,53 +474,41 @@ export function contourPaths(grid: Grid, threshold: number): Point[][] {
     }
   }
 
-  return stitchSegments(segments, eps).map(smoothClosedRing);
+  return stitchSegments(segments, eps).map((r) =>
+    smoothClosedRing(r, smoothPasses),
+  );
 }
 
 export function ringsToPath(rings: Point[][]): string {
   return rings
     .map((ring) => {
       if (ring.length === 0) return "";
-      const [first, ...rest] = ring;
-      let d = `M ${first!.x.toFixed(1)} ${first!.y.toFixed(1)}`;
-      for (const p of rest) {
-        d += ` L ${p.x.toFixed(1)} ${p.y.toFixed(1)}`;
+      if (ring.length < 3) {
+        const [first, ...rest] = ring;
+        let d = `M ${first!.x.toFixed(1)} ${first!.y.toFixed(1)}`;
+        for (const p of rest) {
+          d += ` L ${p.x.toFixed(1)} ${p.y.toFixed(1)}`;
+        }
+        return `${d} Z`;
+      }
+      // Midpoint quadratics — continuous curve without reshaping contacts.
+      const n = ring.length;
+      const mid = (a: Point, b: Point) => ({
+        x: (a.x + b.x) * 0.5,
+        y: (a.y + b.y) * 0.5,
+      });
+      const start = mid(ring[n - 1]!, ring[0]!);
+      let d = `M ${start.x.toFixed(1)} ${start.y.toFixed(1)}`;
+      for (let i = 0; i < n; i++) {
+        const curr = ring[i]!;
+        const next = ring[(i + 1) % n]!;
+        const m = mid(curr, next);
+        d += ` Q ${curr.x.toFixed(1)} ${curr.y.toFixed(1)} ${m.x.toFixed(1)} ${m.y.toFixed(1)}`;
       }
       return `${d} Z`;
     })
     .filter(Boolean)
     .join(" ");
-}
-
-function denoiseWinners(
-  winners: Int16Array,
-  cols: number,
-  rows: number,
-): Int16Array {
-  const out = new Int16Array(winners);
-  for (let j = 1; j < rows - 1; j++) {
-    for (let i = 1; i < cols - 1; i++) {
-      const idx = j * cols + i;
-      const self = winners[idx]!;
-      const counts = new Map<number, number>();
-      for (let dj = -1; dj <= 1; dj++) {
-        for (let di = -1; di <= 1; di++) {
-          const w = winners[(j + dj) * cols + (i + di)]!;
-          counts.set(w, (counts.get(w) ?? 0) + 1);
-        }
-      }
-      let best = self;
-      let bestN = -1;
-      for (const [w, n] of counts) {
-        if (n > bestN) {
-          bestN = n;
-          best = w;
-        }
-      }
-      if ((counts.get(self) ?? 0) <= 2) out[idx] = best;
-    }
-  }
-  return out;
 }
 
 export function buildMergedTerritoryPath(
@@ -478,7 +523,7 @@ export function buildMergedTerritoryPath(
   const minArea = grid.cellSize * grid.cellSize * 10;
   const minLen = grid.cellSize * 10;
   const rings = filterClosedRings(
-    contourPaths(grid, threshold),
+    contourPaths(grid, threshold, 3),
     minArea,
     minLen,
   );
@@ -486,9 +531,11 @@ export function buildMergedTerritoryPath(
 }
 
 /**
- * Competitive territories: fills meet cleanly; each faction gets its own
- * inset border stroke so contact zones show two parallel faction colors
- * (Stellaris-style), never a mixed/alternating midline.
+ * Competitive territories with Stellaris-like soft borders:
+ * 1) Hard influence winners (loosened ~halfway reach from callers)
+ * 2) Blur each faction occupancy so Voronoi flats become organic curves
+ * 3) Contour the soft field — neighbors naturally leave a slim gap
+ * Optional `neutralSources` (unclaimed) compete invisibly.
  */
 export function buildCompetitiveTerritories(
   factions: FactionInfluence[],
@@ -496,20 +543,49 @@ export function buildCompetitiveTerritories(
     cellSize?: number;
     threshold?: number;
     pad?: number;
+    /** Unclaimed systems — compete for space, never rendered. */
+    neutralSources?: InfluenceSource[];
+    /** Occupancy blur passes — higher = rounder, slightly gappier contacts. */
+    blurPasses?: number;
   },
 ): {
   fills: TerritoryFill[];
   borders: TerritoryBorder[];
 } {
-  const active = factions.filter((f) => f.sources.length > 0);
+  const active = factions.filter(
+    (f) => f.sources.length > 0 || (f.segments?.length ?? 0) > 0,
+  );
   if (active.length === 0) return { fills: [], borders: [] };
 
-  const cellSize = options?.cellSize ?? 24;
+  const cellSize = options?.cellSize ?? 14;
   const threshold = options?.threshold ?? 0.4;
-  const pad = options?.pad ?? 40;
+  const pad = options?.pad ?? 56;
+  const blurPasses = options?.blurPasses ?? 6;
+  const neutralSources = options?.neutralSources ?? [];
+  const neutralFaction: FactionInfluence | null =
+    neutralSources.length > 0
+      ? { id: "__void__", color: "transparent", sources: neutralSources }
+      : null;
 
-  const allSources = active.flatMap((f) => f.sources);
-  const { minX, minY, maxX, maxY } = boundsForSources(allSources, pad);
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const f of active) {
+    const b = boundsForFaction(f, pad);
+    minX = Math.min(minX, b.minX);
+    minY = Math.min(minY, b.minY);
+    maxX = Math.max(maxX, b.maxX);
+    maxY = Math.max(maxY, b.maxY);
+  }
+  if (neutralFaction) {
+    const b = boundsForFaction(neutralFaction, pad);
+    minX = Math.min(minX, b.minX);
+    minY = Math.min(minY, b.minY);
+    maxX = Math.max(maxX, b.maxX);
+    maxY = Math.max(maxY, b.maxY);
+  }
+
   const { resolvedCell, cols, rows } = resolveGrid(
     minX,
     minY,
@@ -518,42 +594,50 @@ export function buildCompetitiveTerritories(
     cellSize,
   );
 
-  const winnersRaw = new Int16Array(cols * rows);
-  winnersRaw.fill(-1);
+  const competitors = neutralFaction ? [...active, neutralFaction] : active;
+  const inflByFaction = competitors.map(() => new Float32Array(cols * rows));
 
   for (let j = 0; j < rows; j++) {
     const y = minY + j * resolvedCell;
     for (let i = 0; i < cols; i++) {
       const x = minX + i * resolvedCell;
       const idx = j * cols + i;
-      let best = -1;
-      let bestVal = threshold;
-      for (let f = 0; f < active.length; f++) {
-        const v = influenceAt(x, y, active[f]!.sources);
-        if (v > bestVal) {
-          bestVal = v;
-          best = f;
-        }
+      for (let f = 0; f < competitors.length; f++) {
+        inflByFaction[f]![idx] = influenceForFaction(x, y, competitors[f]!);
       }
-      winnersRaw[idx] = best;
     }
   }
 
-  const winners = denoiseWinners(winnersRaw, cols, rows);
-  const minArea = resolvedCell * resolvedCell * 14;
-  const minLen = resolvedCell * 12;
+  // Hard winners first (includes void). Empty space stays -1.
+  const winners = new Int16Array(cols * rows);
+  winners.fill(-1);
+  for (let idx = 0; idx < winners.length; idx++) {
+    let best = -1;
+    let bestVal = threshold;
+    for (let f = 0; f < competitors.length; f++) {
+      const v = inflByFaction[f]![idx]!;
+      if (v > bestVal) {
+        bestVal = v;
+        best = f;
+      }
+    }
+    winners[idx] = best;
+  }
 
+  const minArea = resolvedCell * resolvedCell * 10;
+  const minLen = resolvedCell * 8;
   const fills: TerritoryFill[] = [];
   const borders: TerritoryBorder[] = [];
 
   for (let f = 0; f < active.length; f++) {
-    const faction = active[f]!;
-    const values = new Float32Array(cols * rows);
-    for (let idx = 0; idx < winners.length; idx++) {
-      values[idx] = winners[idx] === f ? 1 : 0;
+    const occupancy = new Float32Array(cols * rows);
+    for (let idx = 0; idx < occupancy.length; idx++) {
+      occupancy[idx] = winners[idx] === f ? 1 : 0;
     }
-    // Blur occupancy before contouring → organic smooth borders
-    const soft = blurScalarField(values, cols, rows, 3);
+    // Blur rounds straight midlines into soft complementary curves and
+    // pulls neighbors slightly apart (Stellaris-style dark crease).
+    const soft = blurScalarField(occupancy, cols, rows, blurPasses);
+
     const grid: Grid = {
       originX: minX,
       originY: minY,
@@ -563,12 +647,13 @@ export function buildCompetitiveTerritories(
       cellSize: resolvedCell,
     };
     const rings = filterClosedRings(
-      contourPaths(grid, 0.45),
+      contourPaths(grid, 0.48, 5),
       minArea,
       minLen,
     );
     if (rings.length === 0) continue;
 
+    const faction = active[f]!;
     const path = ringsToPath(rings);
     const kind = faction.kind ?? "owned";
     fills.push({
@@ -578,8 +663,6 @@ export function buildCompetitiveTerritories(
       kind,
       stripeColors: faction.stripeColors,
     });
-    // Same path as fill — stroke is clipped to the fill in the renderer so
-    // adjacent borders meet flush instead of overlapping across the edge.
     borders.push({
       id: faction.id,
       color: faction.color,

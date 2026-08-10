@@ -127,7 +127,8 @@ export function systemOwnerSelectValue(
 }
 
 /**
- * Sphere of influence for every controlled system (world units).
- * Larger values merge same-faction blobs across wider gaps between systems.
+ * Base sphere-of-influence scale (world units). Actual per-system radii are
+ * derived in FactionTerritoryLayer: larger toward friendlies, capped at
+ * halfway to the nearest unclaimed / enemy system.
  */
 export const CLAIM_RADIUS = 480;
