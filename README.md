@@ -1,5 +1,7 @@
 # Interactive-GalaxyMap-Maker
 
+A passion project I used to explore Cursor AI capabilities and how to best work with Cursor AI
+
 Allows for custom or procedural generation of interactive galaxies for long term campaigns. Includes an optional hotseat turn tracker per faction, fleet movements, regiment movements, area control, a timelapse of events, and more.
 
 Interactive sector map for narrative wargame campaigns. Pan and zoom a galaxy view, drill into star systems and planets, and track factions, notes, and battle logs. Data auto-saves in the browser and can be exported as JSON.
