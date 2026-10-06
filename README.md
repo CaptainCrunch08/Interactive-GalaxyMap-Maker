@@ -31,7 +31,7 @@ npm install
 npm run dev
 ```
 
-Open the URL shown in the terminal (usually `http://localhost:5173`).
+The app stays at [http://localhost:5173](http://localhost:5173). That command starts the dev server on that address when it is not already running, and opening this folder in Cursor does the same thing.
 
 ```bash
 npm run build   # production build
