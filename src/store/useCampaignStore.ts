@@ -89,14 +89,12 @@ import type {
   District,
   DistrictKind,
   Faction,
-  FamousBattleSite,
   Fleet,
   FleetLocation,
   GalaxyOverviewTab,
   Planet,
   PlanetClassification,
   PlanetStructure,
-  PlanetType,
   Ship,
   ShipChassis,
   SphereDir,
@@ -128,7 +126,6 @@ import {
   armyStrength,
   buildBattleRecord,
   classifyBattleVictory,
-  classifyVictory,
   commanderLabel,
   battleMonumentDir,
   eligibleSupportArmies,
@@ -186,6 +183,7 @@ import {
   ORE_MINE_BP_COST,
   OUTPOST_BP_COST,
   ownedCamps,
+  ownedSpacePorts,
   shipBpCost,
   spendBuildingPoints,
   spendFleetCargo,
@@ -335,7 +333,7 @@ function buildPlayCityDistrict(
         ),
       };
     });
-    const touched = planets.find((p) => p.id === args.planetId);
+    const touched = planets.find((p: Planet) => p.id === args.planetId);
     const systems = touched
       ? syncSystemOwnerInSystems(
           s.campaign.systems,
@@ -3591,7 +3589,10 @@ export const useCampaignStore = create<CampaignState>()(
           name: `${faction?.name ?? "Army"} Detachment`,
           factionId,
           symbolId: faction?.defaultSymbolId,
-          dir: preferredDetachmentSpawnDir(planet ?? { cities: [] }, factionId),
+          dir: preferredDetachmentSpawnDir(
+            planet ?? { cities: [], armies: [] },
+            factionId,
+          ),
           notes: "",
           strengthPercent: 100,
         };
@@ -3687,7 +3688,7 @@ export const useCampaignStore = create<CampaignState>()(
         const state = get();
         const planet = state.campaign.planets.find((p) => p.id === planetId);
         const army = planet?.armies?.find((a) => a.id === armyId);
-        if (!army) return false;
+        if (!planet || !army) return false;
         const block = playMoveBlockReason(
           state.campaign,
           army.factionId,
@@ -3746,7 +3747,7 @@ export const useCampaignStore = create<CampaignState>()(
         }
 
         set((s) => {
-          let campaign = {
+          let campaign: Campaign = {
             ...s.campaign,
             planets: s.campaign.planets.map((p) =>
               p.id === planetId
@@ -4115,7 +4116,7 @@ export const useCampaignStore = create<CampaignState>()(
           )?.name;
           const logEntry = planetaryLogEntry(battle, planet, systemName);
 
-          let campaign = {
+          let campaign: Campaign = {
             ...s.campaign,
             battleLog: upsertBattleLog(s.campaign.battleLog, logEntry),
             planets: s.campaign.planets.map((p) => {
@@ -4722,8 +4723,9 @@ export const useCampaignStore = create<CampaignState>()(
           set({ playMoveHint: "Fleet must be in orbit to load BP" });
           return 0;
         }
+        const location = fleet.location;
         const planet = state.campaign.planets.find(
-          (p) => p.id === fleet.location.planetId,
+          (p) => p.id === location.planetId,
         );
         if (!planet) {
           set({ playMoveHint: "Orbit world not found" });
@@ -4768,8 +4770,9 @@ export const useCampaignStore = create<CampaignState>()(
           set({ playMoveHint: "Fleet must be in orbit to unload BP" });
           return 0;
         }
+        const location = fleet.location;
         const planet = state.campaign.planets.find(
-          (p) => p.id === fleet.location.planetId,
+          (p) => p.id === location.planetId,
         );
         if (!planet) {
           set({ playMoveHint: "Orbit world not found" });
@@ -5698,6 +5701,13 @@ export const useCampaignStore = create<CampaignState>()(
         }
         const cost = shipBpCost(chassis);
         const faction = state.campaign.factions.find((f) => f.id === factionId);
+        const ports = ownedSpacePorts(planet, factionId);
+        const portStructure = (planet.structures ?? []).find(
+          (structure) =>
+            structure.kind === "space_port" &&
+            structure.controllingFactionId === factionId,
+        );
+        const selectedPortDistrict = ports[0];
 
         const existing = (state.campaign.fleets ?? []).find(
           (f) =>
@@ -5729,10 +5739,10 @@ export const useCampaignStore = create<CampaignState>()(
               }),
             ),
             selectedFleetId: existing.id,
-            selectedStructureId: port.id,
+            selectedStructureId: portStructure?.id ?? null,
             selectedArmyId: null,
-            selectedCityId: null,
-            selectedDistrictId: null,
+            selectedCityId: selectedPortDistrict?.cityId ?? null,
+            selectedDistrictId: selectedPortDistrict?.district.id ?? null,
             playMoveHint: null,
             inspectorOpen: true,
           }));
@@ -5770,10 +5780,10 @@ export const useCampaignStore = create<CampaignState>()(
             }),
           ),
           selectedFleetId: fleetId,
-          selectedStructureId: port.id,
+          selectedStructureId: portStructure?.id ?? null,
           selectedArmyId: null,
-          selectedCityId: null,
-          selectedDistrictId: null,
+          selectedCityId: selectedPortDistrict?.cityId ?? null,
+          selectedDistrictId: selectedPortDistrict?.district.id ?? null,
           playMoveHint: null,
           inspectorOpen: true,
         }));

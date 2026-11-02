@@ -135,7 +135,8 @@ export function fleetAtWarpGate(
   fleet: Fleet,
 ): Planet | undefined {
   if (fleet.location.kind !== "orbit") return undefined;
-  const planet = campaign.planets.find((p) => p.id === fleet.location.planetId);
+  const location = fleet.location;
+  const planet = campaign.planets.find((p) => p.id === location.planetId);
   if (!planet || planet.type !== "warp_gate") return undefined;
   return planet;
 }

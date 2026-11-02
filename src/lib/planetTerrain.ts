@@ -569,8 +569,7 @@ function applyTypeBias(
       return climate;
     case "trade":
       if (urban > 0.58 || (urban > 0.42 && elev > 0.35)) return "urban";
-      if (climate === "ocean") return "ocean";
-      if (detail > 0.72 && climate !== "ocean") return "urban";
+      if (detail > 0.72) return "urban";
       return climate;
     case "asteroid_belt":
       if (detail > 0.55) return "crater";

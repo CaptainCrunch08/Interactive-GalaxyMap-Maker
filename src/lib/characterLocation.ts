@@ -157,7 +157,7 @@ export function fleetsForLocationDraft(
     (f) => f.factionId === factionId,
   );
   if (planetId) {
-    const inOrbit = fleetsInOrbit(sameFaction, planetId);
+    const inOrbit = fleetsInOrbit(sameFaction, systemId, planetId);
     const atStar = sameFaction.filter(
       (f) =>
         f.location.kind === "system" && f.location.systemId === systemId,

@@ -604,7 +604,7 @@ export function paintPlanetTexture(
             ? 0.5 + pole * 0.55
             : cls === "tundra"
               ? Math.max(0, pole * 1.35 - 0.32)
-              : wet || cls === "super_earth"
+              : wet
                 ? Math.max(0, pole * 1.65 - 0.82)
                 : 0;
         if (iceAmt > 0) {

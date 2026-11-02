@@ -74,9 +74,10 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
     "fleet",
   );
   const play = normalizeCampaignPlay(campaign.play);
+  const fleetLocation = fleet.location;
   const orbitPlanet =
-    fleet.location.kind === "orbit"
-      ? campaign.planets.find((p) => p.id === fleet.location.planetId)
+    fleetLocation.kind === "orbit"
+      ? campaign.planets.find((p) => p.id === fleetLocation.planetId)
       : undefined;
   const cargo = fleetCargoBp(fleet);
   const cargoCap = fleetCargoCapacity(fleet);
@@ -242,11 +243,11 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
                 : "Click star or planet…"
               : "Move fleet"}
           </button>
-          {fleet.location.kind === "orbit" &&
+          {fleetLocation.kind === "orbit" &&
             (() => {
               const gate = campaign.planets.find(
                 (p) =>
-                  p.id === fleet.location.planetId && p.type === "warp_gate",
+                  p.id === fleetLocation.planetId && p.type === "warp_gate",
               );
               if (!gate) return null;
               return (

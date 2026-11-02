@@ -534,7 +534,7 @@ function buildSettlementMarkers(
   factions: Faction[],
   selectedCityId: string | null,
   selectedDistrictId: string | null,
-  accentColor: string,
+  _accentColor: string,
   independentDistricts: District[] = [],
   opts?: {
     showRuleWarnings?: boolean;
@@ -908,7 +908,7 @@ function buildStructureMarkers(
   structures: PlanetStructure[],
   factions: Faction[],
   selectedStructureId: string | null,
-  accentColor: string,
+  _accentColor: string,
 ): THREE.Group {
   const group = new THREE.Group();
   for (const structure of structures) {

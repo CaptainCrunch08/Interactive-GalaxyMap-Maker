@@ -329,7 +329,7 @@ function buildSpacePort(): Parts {
   return p;
 }
 
-function buildSpireCluster(): Parts {
+export function buildSpireCluster(): Parts {
   const p: Parts = [];
   addBox(p, 0.1, 0.02, 0.09, 0, 0.01, 0);
   addBox(p, 0.08, 0.014, 0.07, 0.01, 0.025, 0.005);
@@ -368,7 +368,7 @@ function buildSpireCluster(): Parts {
   return p;
 }
 
-function buildUnderhiveGate(): Parts {
+export function buildUnderhiveGate(): Parts {
   const p: Parts = [];
   // Massive bunker face
   addBox(p, 0.16, 0.09, 0.05, 0, 0.05, -0.01);
@@ -399,7 +399,7 @@ function buildUnderhiveGate(): Parts {
   return p;
 }
 
-function buildManufactorum(): Parts {
+export function buildManufactorum(): Parts {
   const p: Parts = [];
   // Main hall + wing
   addBox(p, 0.12, 0.07, 0.09, -0.02, 0.045, 0);
@@ -479,7 +479,7 @@ function buildOreMine(): Parts {
   return p;
 }
 
-function buildSlagWorks(): Parts {
+export function buildSlagWorks(): Parts {
   const p: Parts = [];
   addBox(p, 0.14, 0.014, 0.11, 0, 0.007, 0);
   // Furnace mass
@@ -511,7 +511,7 @@ function buildSlagWorks(): Parts {
   return p;
 }
 
-function buildReactor(): Parts {
+export function buildReactor(): Parts {
   const p: Parts = [];
   addCyl(p, 0.05, 0.055, 0.025, 10, 0, 0.012, 0);
   addCyl(p, 0.042, 0.045, 0.02, 10, 0, 0.03, 0);
@@ -552,7 +552,7 @@ function buildReactor(): Parts {
   return p;
 }
 
-function buildAgriDome(): Parts {
+export function buildAgriDome(): Parts {
   const p: Parts = [];
   addCyl(p, 0.07, 0.075, 0.022, 6, 0, 0.011, 0);
   addBox(p, 0.14, 0.01, 0.12, 0, 0.005, 0);
@@ -580,7 +580,7 @@ function buildAgriDome(): Parts {
   return p;
 }
 
-function buildSiloComplex(): Parts {
+export function buildSiloComplex(): Parts {
   const p: Parts = [];
   addBox(p, 0.14, 0.012, 0.1, 0, 0.006, 0);
   // Silo cluster
@@ -611,7 +611,7 @@ function buildSiloComplex(): Parts {
   return p;
 }
 
-function buildReservoirWorks(): Parts {
+export function buildReservoirWorks(): Parts {
   const p: Parts = [];
   addBox(p, 0.15, 0.01, 0.13, 0, 0.005, 0);
   // Nested basins
@@ -639,7 +639,7 @@ function buildReservoirWorks(): Parts {
   return p;
 }
 
-function buildFortressBastion(): Parts {
+export function buildFortressBastion(): Parts {
   const p: Parts = [];
   addBox(p, 0.12, 0.02, 0.11, 0, 0.01, 0);
   addBox(p, 0.09, 0.08, 0.085, 0, 0.055, 0); // keep
@@ -705,7 +705,7 @@ function buildTrenchLine(): Parts {
   return p;
 }
 
-function buildKillZone(): Parts {
+export function buildKillZone(): Parts {
   const p: Parts = [];
   addBox(p, 0.16, 0.008, 0.14, 0, 0.004, 0);
   // Scorched / cleared panels
@@ -736,7 +736,7 @@ function buildKillZone(): Parts {
   return p;
 }
 
-function buildCathedral(): Parts {
+export function buildCathedral(): Parts {
   const p: Parts = [];
   addBox(p, 0.12, 0.016, 0.16, 0, 0.008, 0);
   // Nave + transept
@@ -771,7 +771,7 @@ function buildCathedral(): Parts {
   return p;
 }
 
-function buildReliquaryVault(): Parts {
+export function buildReliquaryVault(): Parts {
   const p: Parts = [];
   addBox(p, 0.13, 0.016, 0.12, 0, 0.008, 0);
   // Layered vault body
@@ -806,7 +806,7 @@ function buildReliquaryVault(): Parts {
   return p;
 }
 
-function buildPilgrimStation(): Parts {
+export function buildPilgrimStation(): Parts {
   const p: Parts = [];
   addBox(p, 0.14, 0.012, 0.1, 0, 0.006, 0);
   // Grand arch
@@ -838,7 +838,7 @@ function buildPilgrimStation(): Parts {
   return p;
 }
 
-function buildMiningClaim(): Parts {
+export function buildMiningClaim(): Parts {
   const p: Parts = [];
   addBox(p, 0.12, 0.012, 0.1, 0, 0.006, 0);
   // Beacon mast

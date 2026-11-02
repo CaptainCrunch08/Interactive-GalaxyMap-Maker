@@ -4,6 +4,7 @@ import type {
   Campaign,
   CampaignCharacter,
   CharacterStatus,
+  Faction,
 } from "../../types/campaign";
 import { compareByLabel, sortedByName } from "../../lib/sortOptions";
 import { factionsSortedByName, getFactionById } from "../../lib/territory";
@@ -316,7 +317,7 @@ function CharacterForm({
   title: string;
   draft: Draft;
   campaign: Campaign;
-  factions: { id: string; name: string }[];
+  factions: Faction[];
   onChange: (patch: Partial<Draft>) => void;
   onSave: () => void;
   onCancel: () => void;

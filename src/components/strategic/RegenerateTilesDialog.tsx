@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import {
   legendSwatch,
   TERRAIN_KIND_LABELS,
-  TERRAIN_KIND_ORDER,
   type TerrainKind,
 } from "../../lib/planetTerrain";
 import { keysSortedByLabel } from "../../lib/sortOptions";

@@ -185,7 +185,7 @@ export function ownershipLabel(ownership: SystemOwnership): string {
 }
 
 export function getFactionById(
-  campaign: Campaign,
+  campaign: Pick<Campaign, "factions">,
   factionId: string | undefined,
 ): Faction | undefined {
   if (!factionId) return undefined;

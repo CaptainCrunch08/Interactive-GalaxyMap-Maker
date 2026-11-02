@@ -398,7 +398,7 @@ export function generateGalaxyCampaign(
         type,
         classification,
         visualModelId:
-          type === "asteroid_belt" || type === "warp_gate"
+          type === "asteroid_belt" || (type as PlanetType) === "warp_gate"
             ? undefined
             : pickPlanetVisualModel(classification, rng),
         controllingFactionId: planetOwnerFromCities(

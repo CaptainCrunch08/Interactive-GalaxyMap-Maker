@@ -1,12 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { AutoGrowTextarea } from "./AutoGrowTextarea";
 import {
-  DISTRICT_KIND_LABELS,
   PLANET_CLASSIFICATION_LABELS,
   PLANET_TYPE_LABELS,
   STAR_CLASS_LABELS,
-  STRUCTURE_KIND_LABELS,
-  planetTypeDisplayLabel,
 } from "../types/campaign";
 import type {
   PlanetClassification,
