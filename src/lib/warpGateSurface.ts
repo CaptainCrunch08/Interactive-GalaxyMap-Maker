@@ -73,10 +73,10 @@ export function generateWarpGateSurface(
   });
 
   const chamberKinds: StructureKind[] = [
-    "reactor",
     "relay",
-    "fortress_bastion",
     "outpost",
+    "supply_network",
+    "trench_line",
   ];
   const chamberNames = [
     "Plasma Core",
@@ -144,11 +144,26 @@ export function ensureWarpGateSurface(planet: Planet): Planet {
   const structures = planet.structures ?? [];
   const maze = buildStationMaze(planet.id);
 
+  // Player already edited/cleared this station — never rebuild from seed.
+  if (planet.surfaceReady) {
+    return {
+      ...planet,
+      cities: planet.cities ?? [],
+      structures,
+      surfaceReady: true,
+      armies: planet.armies ?? [],
+      controllingFactionId:
+        structures.find((s) => s.kind === RELAY_CROWN_KIND)
+          ?.controllingFactionId ?? planet.controllingFactionId,
+    };
+  }
+
   if (!needsSquareMazeRegen(structures, planet.id)) {
     return {
       ...planet,
       cities: planet.cities ?? [],
       structures,
+      surfaceReady: true,
       armies: planet.armies ?? [],
       controllingFactionId: structures.find((s) => s.kind === RELAY_CROWN_KIND)
         ?.controllingFactionId,
@@ -174,6 +189,7 @@ export function ensureWarpGateSurface(planet: Planet): Planet {
     ...planet,
     cities: [],
     structures: nextStructures,
+    surfaceReady: true,
     armies,
     controllingFactionId: nextStructures.find((s) => s.kind === RELAY_CROWN_KIND)
       ?.controllingFactionId,

@@ -228,6 +228,7 @@ export function buildBattleRecord(args: {
   defenderStrengthLostPct: number;
   victoryKind: VictoryKind;
   victorFactionId: string | null;
+  killedCharacterIds?: string[];
 }): BattleEntry {
   const {
     victoryKind,
@@ -285,12 +286,43 @@ export function buildBattleRecord(args: {
     defenderStrengthLostPct: args.defenderStrengthLostPct,
     victoryKind,
     victorFactionId,
+    killedCharacterIds:
+      args.killedCharacterIds && args.killedCharacterIds.length > 0
+        ? [...args.killedCharacterIds]
+        : undefined,
   };
+}
+
+/** Heroic / Epochal victories — famous-battle monument tier. */
+export function isSpecialVictoryKind(
+  kind: VictoryKind | undefined,
+): boolean {
+  return kind === "heroic" || kind === "epochal";
+}
+
+/**
+ * Important chronicle battles: special victory types, or any fight where a
+ * named character died.
+ */
+export function isImportantBattle(entry: {
+  victoryKind?: VictoryKind;
+  killedCharacterIds?: string[];
+}): boolean {
+  if (isSpecialVictoryKind(entry.victoryKind)) return true;
+  return (entry.killedCharacterIds?.length ?? 0) > 0;
 }
 
 /** Sum recorded battle casualties for Galactic Overview KIA. */
 export function totalBattleCasualties(campaign: Campaign): number {
   let n = 0;
+  const log = campaign.battleLog;
+  if (log && log.length > 0) {
+    for (const b of log) {
+      n += b.attackerCasualties ?? 0;
+      n += b.defenderCasualties ?? 0;
+    }
+    return n;
+  }
   for (const p of campaign.planets ?? []) {
     for (const b of p.battles ?? []) {
       n += b.attackerCasualties ?? 0;

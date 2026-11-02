@@ -4,6 +4,7 @@ import {
   factionSymbolIds,
   symbolOwnerMap,
 } from "../../lib/factionSymbols";
+import { sortedByName } from "../../lib/sortOptions";
 import { factionsSortedByName } from "../../lib/territory";
 import { useCampaignStore } from "../../store/useCampaignStore";
 
@@ -219,7 +220,7 @@ export function EditGalaxyFactionsPanel() {
                         }}
                       >
                         <option value="">Choose unassigned symbol…</option>
-                        {unowned.map((s) => (
+                        {sortedByName(unowned).map((s) => (
                           <option key={s.id} value={s.id}>
                             {s.name}
                           </option>

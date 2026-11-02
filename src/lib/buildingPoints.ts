@@ -34,6 +34,7 @@ import {
   SPIRE_BP_COST,
   UNDERHIVE_BP_COST,
 } from "./activation";
+import { armyTileIndex } from "./armyActions";
 
 export { DOMED_HABITAT_BP_COST, SPIRE_BP_COST, UNDERHIVE_BP_COST };
 
@@ -49,7 +50,8 @@ export const DETACHMENT_BP_COST = 500;
 export const MANUFACTORUM_BP_COST = 1000;
 
 /** Play-mode fortification / outpost / habitat build costs (slightly steep). */
-export const TRENCH_LINE_BP_COST = 400;
+/** Cheap field dig — requires a detachment on the hex. */
+export const TRENCH_LINE_BP_COST = 50;
 export const ORE_MINE_BP_COST = 500;
 export const OUTPOST_BP_COST = 550;
 export const BASTION_BP_COST = 700;
@@ -266,20 +268,46 @@ export function canBuildBastion(
   );
 }
 
+/** Play: build an outpost structure (not a city district). */
 export function canBuildOutpost(
   campaign: Campaign,
   planet: Planet,
   factionId: string,
-  cityId?: string | null,
-): { ok: true; city: City } | { ok: false; reason: RecruitBlockReason; message: string } {
-  return canBuildCityAdjacentDistrict(
-    campaign,
-    planet,
-    factionId,
-    "outpost",
-    OUTPOST_BP_COST,
-    cityId,
+  _cityId?: string | null,
+): { ok: true } | { ok: false; reason: RecruitBlockReason; message: string } {
+  const play = normalizeCampaignPlay(campaign.play);
+  if (!play.active) {
+    return { ok: false, reason: "not_play", message: "Start Play to build" };
+  }
+  if (play.activeFactionId !== factionId) {
+    return {
+      ok: false,
+      reason: "wrong_faction",
+      message: "Only the active faction can build",
+    };
+  }
+  if (getBuildingPoints(planet, factionId) < OUTPOST_BP_COST) {
+    return {
+      ok: false,
+      reason: "insufficient_bp",
+      message: `Need ${OUTPOST_BP_COST} BP (have ${getBuildingPoints(planet, factionId)})`,
+    };
+  }
+  return { ok: true };
+}
+
+/** Free hex — outposts are freestanding structures. */
+export function canPlaceOutpostAtTile(
+  planet: Planet,
+  tileIndex: number,
+): string | null {
+  const occupied = settlementTileSet(
+    planet.cities ?? [],
+    planet.structures ?? [],
+    planet.independentDistricts ?? [],
   );
+  if (occupied.has(tileIndex)) return "That hex is occupied";
+  return null;
 }
 
 export function canBuildSpire(
@@ -344,15 +372,13 @@ function canBuildCityAdjacentDistrict(
       ? "manufactorum"
       : kind === "bastion"
         ? "bastion"
-        : kind === "outpost"
-          ? "outpost"
-          : kind === "spire"
-            ? "hive spire"
-            : kind === "underhive"
-              ? "underhive"
-              : kind === "domed_habitat"
-                ? "domed habitat"
-                : "district";
+        : kind === "spire"
+          ? "hive spire"
+          : kind === "underhive"
+            ? "underhive"
+            : kind === "domed_habitat"
+              ? "domed habitat"
+              : "district";
   if (!play.active) {
     return { ok: false, reason: "not_play", message: "Start Play to build" };
   }
@@ -436,16 +462,19 @@ export function canBuildTrenchLine(
   campaign: Campaign,
   planet: Planet,
   factionId: string,
-): { ok: true } | { ok: false; reason: RecruitBlockReason; message: string } {
+  armyId?: string | null,
+):
+  | { ok: true; armyId: string; tileIndex: number }
+  | { ok: false; reason: RecruitBlockReason; message: string } {
   const play = normalizeCampaignPlay(campaign.play);
   if (!play.active) {
-    return { ok: false, reason: "not_play", message: "Start Play to build" };
+    return { ok: false, reason: "not_play", message: "Start Play to dig" };
   }
   if (play.activeFactionId !== factionId) {
     return {
       ok: false,
       reason: "wrong_faction",
-      message: "Only the active faction can build",
+      message: "Only the active faction can dig trenches",
     };
   }
   if (getBuildingPoints(planet, factionId) < TRENCH_LINE_BP_COST) {
@@ -455,7 +484,27 @@ export function canBuildTrenchLine(
       message: `Need ${TRENCH_LINE_BP_COST} BP (have ${getBuildingPoints(planet, factionId)})`,
     };
   }
-  return { ok: true };
+  if (!armyId) {
+    return {
+      ok: false,
+      reason: "no_site",
+      message: "Select one of your detachments to dig the trench",
+    };
+  }
+  const army = (planet.armies ?? []).find((a) => a.id === armyId);
+  if (!army || army.factionId !== factionId) {
+    return {
+      ok: false,
+      reason: "no_site",
+      message: "Select one of your detachments on this world",
+    };
+  }
+  const tileIndex = armyTileIndex(planet, army);
+  const placeErr = canPlaceTrenchLineAtTile(planet, tileIndex);
+  if (placeErr) {
+    return { ok: false, reason: "no_site", message: placeErr };
+  }
+  return { ok: true, armyId: army.id, tileIndex };
 }
 
 export function canPlaceTrenchLineAtTile(
@@ -467,7 +516,9 @@ export function canPlaceTrenchLineAtTile(
     planet.structures ?? [],
     planet.independentDistricts ?? [],
   );
-  if (occupied.has(tileIndex)) return "That hex is occupied";
+  if (occupied.has(tileIndex)) {
+    return "That hex is occupied — move the detachment to an empty hex";
+  }
   return null;
 }
 
@@ -519,7 +570,7 @@ export function canBuildOreMine(
   return { ok: true };
 }
 
-/** Play placement: free hex on crater terrain only. */
+/** Play placement: free hex on crater or iron-rich terrain. */
 export function canPlaceOreMineAtTile(
   planet: Planet,
   tileIndex: number,
@@ -531,8 +582,8 @@ export function canPlaceOreMineAtTile(
   );
   if (occupied.has(tileIndex)) return "That hex is occupied";
   const terrain = terrainKindAtTile(planet, tileIndex);
-  if (terrain !== "crater") {
-    return "Ore mines can only be built on crater hexes";
+  if (terrain !== "crater" && terrain !== "iron_rich") {
+    return "Ore mines can only be built on crater or iron-rich hexes";
   }
   return null;
 }
@@ -652,6 +703,17 @@ export function ownedSpacePorts(
   );
 }
 
+/** Activated docks districts or owned space_port structures. */
+export function factionHasSpacePort(
+  planet: Planet,
+  factionId: string,
+): boolean {
+  if (ownedSpacePorts(planet, factionId).length > 0) return true;
+  return (planet.structures ?? []).some(
+    (s) => s.kind === "space_port" && structureOwnedBy(s, factionId),
+  );
+}
+
 export function applyTurnIncome(
   campaign: Campaign,
   factionId: string,
@@ -723,7 +785,7 @@ export function canUseSpacePort(
       message: "Only the active faction can recruit",
     };
   }
-  if (ownedSpacePorts(planet, factionId).length === 0) {
+  if (!factionHasSpacePort(planet, factionId)) {
     return {
       ok: false,
       reason: "no_site",

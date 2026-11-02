@@ -1,10 +1,13 @@
 import type { PlanetClassification, PlanetType } from "../types/campaign";
 import { normalizePlanetClassification } from "./planetClass";
 import { hexNoise, type HexCoord } from "./hex";
+import { buildHexSphere } from "./hexSphere";
+import { SETTLEMENT_HEX_FREQUENCY } from "./settlements";
 
 export type TerrainKind =
   | "wasteland"
   | "crater"
+  | "iron_rich"
   | "urban"
   | "agri"
   | "forest"
@@ -262,6 +265,11 @@ const TERRAIN_KIND_BASE: Record<
     fill: "#4a4038",
     stroke: "rgba(120,100,85,0.35)",
   },
+  iron_rich: {
+    fill: "#a85a38",
+    stroke: "rgba(200,120,70,0.35)",
+    glow: "rgba(180,80,40,0.08)",
+  },
   lava: {
     fill: "#c03018",
     stroke: "rgba(255,90,40,0.45)",
@@ -297,65 +305,95 @@ function classifyClimate(
   moist: number,
   detail: number,
   dayFac = 0.5,
+  opts?: { greenBelt?: boolean; latAbs?: number; tidalContrast?: number },
 ): TerrainKind {
   switch (classification) {
     case "ice":
       if (elev < 0.22) return "ocean";
       if (detail > 0.82) return "crater";
       return "ice";
-    case "tundra":
+    case "tundra": {
       if (elev < 0.28) return "ocean";
       if (elev > 0.72) return "ice";
+      // Minority of tundras thaw near the equator into thin green patches.
+      const latAbs = opts?.latAbs;
+      if (
+        opts?.greenBelt &&
+        latAbs != null &&
+        latAbs < 0.38 &&
+        elev > 0.3 &&
+        elev < 0.7
+      ) {
+        if (moist > 0.62 && detail > 0.45) return "forest";
+        if (moist > 0.5) return "agri";
+        if (moist > 0.4 && detail > 0.35) return "savanna";
+      }
       if (moist > 0.55) return "swamp";
       return "tundra";
+    }
     case "water":
       // Ocean world with scattered island chains
       if (elev < 0.62) return "ocean";
       if (elev < 0.72) return moist > 0.45 ? "forest" : "agri";
-      if (elev > 0.88) return "wasteland";
+      if (elev > 0.88) return "forest";
       return moist > 0.5 ? "forest" : "agri";
     case "islands":
-      if (elev < 0.52) return "ocean";
-      if (elev < 0.58) return moist > 0.5 ? "swamp" : "agri";
+      // Target ≥60% ocean — high sea floor, small land peaks. No wasteland.
+      if (elev < 0.62) return "ocean";
+      if (elev < 0.68) return moist > 0.5 ? "swamp" : "agri";
       if (moist > 0.55) return "jungle";
-      if (elev > 0.82) return "wasteland";
+      if (elev > 0.88) return "forest";
       return "agri";
     case "jungle":
-      if (elev < 0.32) return "ocean";
-      if (elev < 0.4) return "swamp";
+      // Wetter than before — more inland seas / river basins on average.
+      if (elev < 0.4) return "ocean";
+      if (elev < 0.48) return "swamp";
       if (moist > 0.25) return "jungle";
       if (detail > 0.8) return "swamp";
       return "jungle";
     case "earthlike":
     case "super_earth":
-      // Earth-like: large oceans + continental interiors
-      if (elev < 0.46) return "ocean";
-      if (elev < 0.52) {
-        // Shelves / coasts
+      // Continental worlds: ≥40% ocean + land continents. No wasteland.
+      if (elev < 0.5) return "ocean";
+      if (elev < 0.56) {
         if (moist > 0.6) return "swamp";
         return "agri";
       }
       if (elev > 0.86) return moist < 0.4 ? "tundra" : "ice";
       if (elev > 0.78) return "tundra";
-      if (moist < 0.28 && elev > 0.55) return "desert";
+      if (moist < 0.28 && elev > 0.55) return "savanna";
       if (moist > 0.72 && elev < 0.72) return "jungle";
       if (moist > 0.58) return "forest";
       if (moist > 0.4) return "savanna";
-      return "wasteland";
+      return "agri";
     case "desert":
-      if (elev < 0.18) return "ocean";
+      if (elev < 0.12) return "ocean";
       if (detail > 0.78) return "crater";
-      if (moist > 0.72 && elev < 0.5) return "agri";
+      if (detail > 0.58 && elev > 0.4) return "iron_rich";
+      if (detail > 0.4 && elev > 0.35) return "wasteland";
       return "desert";
     case "arid":
-      if (elev < 0.22) return "ocean";
-      if (moist > 0.6) return "agri";
-      if (elev > 0.7) return "wasteland";
-      return "desert";
+      // Mostly wasteland with desert / iron-rich pockets — no agri belts.
+      if (elev < 0.12) return "ocean";
+      if (detail > 0.72 && elev > 0.35) return "iron_rich";
+      if (detail > 0.55 && moist < 0.4) return "desert";
+      if (detail > 0.8) return "crater";
+      return "wasteland";
     case "savannah":
       if (elev < 0.26) return "ocean";
-      if (moist > 0.7) return "forest";
-      if (moist > 0.55) return "agri";
+      // Rare gallery woods in the wettest folds — not common forest cover.
+      if (moist > 0.84 && detail > 0.55) return "forest";
+      // Small fertile pockets amid the grass, not broad agri belts.
+      if (
+        moist > 0.58 &&
+        moist < 0.8 &&
+        detail > 0.42 &&
+        elev > 0.32 &&
+        elev < 0.78
+      ) {
+        return "agri";
+      }
+      if (moist < 0.32 && elev > 0.48) return "desert";
       return "savanna";
     case "swamp":
       if (elev < 0.35) return "ocean";
@@ -363,20 +401,26 @@ function classifyClimate(
       if (detail > 0.75) return "toxic";
       return "jungle";
     case "volcanic":
+      // No greenery — lava, craters, ash, and rock only.
       if (elev < 0.22) return "lava";
-      if (detail > 0.7) return "wasteland";
+      if (detail > 0.62) return "crater";
       if (elev > 0.7) return "crater";
+      if (detail > 0.4) return "desert";
       return "wasteland";
     case "magma":
-      if (elev < 0.4 || detail > 0.55) return "lava";
-      if (detail > 0.35) return "wasteland";
-      return "crater";
-    case "toxic":
-      if (elev < 0.32) return "toxic";
-      if (detail > 0.68) return "urban";
-      if (detail > 0.52) return "wasteland";
-      if (moist > 0.55) return "swamp";
+      if (elev < 0.4 || detail > 0.5) return "lava";
+      if (detail > 0.3) return "crater";
       return "wasteland";
+    case "toxic": {
+      // Mottled chem palette — ocean / spoil / ore / ash / dunes / industry.
+      if (elev < 0.3) return moist > 0.42 ? "ocean" : "toxic";
+      if (detail > 0.78) return "urban";
+      if (detail > 0.62 && moist < 0.5) return "iron_rich";
+      if (moist > 0.58 && detail > 0.35) return "toxic";
+      if (detail > 0.48 && moist < 0.4) return "desert";
+      if (moist < 0.38) return "wasteland";
+      return detail > 0.4 ? "toxic" : "wasteland";
+    }
     case "barren":
       if (elev < 0.2) return "crater";
       if (detail > 0.72) return "crater";
@@ -386,21 +430,30 @@ function classifyClimate(
       if (detail > 0.65) return "wasteland";
       if (elev > 0.55) return "toxic";
       return "wasteland";
-    case "tidally_locked":
-      // Scorched day hemisphere vs frozen night, thin twilight belt.
-      if (dayFac > 0.6) {
-        if (elev < 0.2 && detail > 0.5) return "lava";
-        if (detail > 0.68) return "wasteland";
+    case "tidally_locked": {
+      const contrast = Math.max(0, Math.min(1, opts?.tidalContrast ?? 0.65));
+      const twilightHalf = 0.07 + (1 - contrast) * 0.15;
+      const hotEdge = 0.5 + twilightHalf;
+      const coldEdge = 0.5 - twilightHalf;
+      if (dayFac >= hotEdge) {
+        const heat = (dayFac - hotEdge) / Math.max(1e-6, 1 - hotEdge);
+        if (contrast > 0.5 && heat > 0.55 && detail > 0.62) return "lava";
+        if (detail > 0.78) return "crater";
+        if (detail > 0.55) return "wasteland";
         return "desert";
       }
-      if (dayFac < 0.4) {
-        if (detail > 0.85) return "crater";
-        return "ice";
+      if (dayFac <= coldEdge) {
+        const cold = (coldEdge - dayFac) / Math.max(1e-6, coldEdge);
+        if (contrast > 0.4 && (cold > 0.25 || detail < 0.55)) return "ice";
+        return contrast > 0.65 ? "ice" : "tundra";
       }
-      if (elev < 0.38) return "ocean";
-      if (moist > 0.52) return "jungle";
-      if (moist > 0.35) return "savanna";
-      return "wasteland";
+      // Clean terminator: water pockets + greenery.
+      if (elev < 0.42 || moist > 0.62) return "ocean";
+      if (moist > 0.55) return detail > 0.5 ? "jungle" : "forest";
+      if (moist > 0.4) return "agri";
+      if (detail > 0.55) return "swamp";
+      return "savanna";
+    }
     default:
       if (elev < 0.42) return "ocean";
       if (moist > 0.65) return "forest";
@@ -418,17 +471,52 @@ function applyTypeBias(
   elev: number,
   urban: number,
   detail: number,
+  classification?: PlanetClassification,
 ): TerrainKind {
+  const lush =
+    classification === "earthlike" ||
+    classification === "super_earth" ||
+    classification === "jungle" ||
+    classification === "islands";
+  const lushLand = (): TerrainKind => {
+    if (classification === "jungle") return detail > 0.5 ? "jungle" : "forest";
+    if (classification === "islands") return detail > 0.55 ? "jungle" : "agri";
+    return detail > 0.55 ? "forest" : "savanna";
+  };
+
   switch (type) {
     case "hive":
       if (urban > 0.72 || (urban > 0.55 && elev > 0.42)) return "urban";
       if (urban > 0.48) return "urban";
-      if (detail > 0.82 && elev > 0.5) return "wasteland";
+      if (detail > 0.82 && elev > 0.5) return lush ? lushLand() : "wasteland";
       return climate;
     case "forge":
       if (urban > 0.58 || detail > 0.68) return "urban";
-      if (elev > 0.72 && detail > 0.4) return "wasteland";
-      if (urban > 0.4 && climate === "ocean") return "toxic";
+      if (elev > 0.72 && detail > 0.4) return lush ? "urban" : "wasteland";
+      if (urban > 0.4 && climate === "ocean") return lush ? climate : "toxic";
+      return climate;
+    case "mining":
+      if (detail > 0.72) return "crater";
+      if (detail > 0.58 && elev > 0.4) {
+        if (classification === "islands") return lushLand();
+        return lush ? "savanna" : "iron_rich";
+      }
+      if (urban > 0.62) return "urban";
+      if (elev > 0.55 && detail > 0.45) return lush ? lushLand() : "wasteland";
+      if (urban > 0.4 && climate === "ocean") return lush ? climate : "toxic";
+      return climate;
+    case "archaeological":
+      if (detail > 0.7) return "crater";
+      if (urban > 0.68) return "urban";
+      if (detail > 0.55 && climate !== "ocean") {
+        return lush ? lushLand() : "wasteland";
+      }
+      return climate;
+    case "abandoned_colony":
+      if (detail > 0.68) return lush ? lushLand() : "wasteland";
+      if (urban > 0.55) return "urban";
+      if (detail > 0.5 && elev > 0.45) return "crater";
+      if (urban > 0.35 && climate === "ocean") return lush ? climate : "toxic";
       return climate;
     case "agri":
       if (
@@ -443,18 +531,22 @@ function applyTypeBias(
       return climate;
     case "death":
       if (detail > 0.78) return "crater";
-      if (urban > 0.82) return "wasteland";
+      if (urban > 0.82) return lush ? "urban" : "wasteland";
       if (climate === "forest" || climate === "agri" || climate === "jungle") {
-        return "wasteland";
+        return lush ? "swamp" : "wasteland";
       }
       return climate;
     case "shrine":
       if (urban > 0.65 || detail > 0.74) return "urban";
-      if (detail > 0.6 && climate !== "ocean") return "wasteland";
+      if (detail > 0.6 && climate !== "ocean") {
+        return lush ? lushLand() : "wasteland";
+      }
       return climate;
     case "feudal":
       if (urban > 0.7) return "urban";
-      if (detail > 0.78 && climate !== "ocean") return "wasteland";
+      if (detail > 0.78 && climate !== "ocean") {
+        return lush ? lushLand() : "wasteland";
+      }
       if (
         climate === "agri" ||
         climate === "forest" ||
@@ -467,13 +559,18 @@ function applyTypeBias(
       if (urban > 0.55 || detail > 0.65) return "urban";
       if (detail > 0.72) return "crater";
       if (climate === "forest" || climate === "agri" || climate === "jungle") {
-        return "wasteland";
+        return lush ? "urban" : "wasteland";
       }
       return climate;
     case "homeworld":
       if (urban > 0.68) return "urban";
       if (urban > 0.5 && elev > 0.4) return "urban";
       if (detail > 0.8) return "forest";
+      return climate;
+    case "trade":
+      if (urban > 0.58 || (urban > 0.42 && elev > 0.35)) return "urban";
+      if (climate === "ocean") return "ocean";
+      if (detail > 0.72 && climate !== "ocean") return "urban";
       return climate;
     case "asteroid_belt":
       if (detail > 0.55) return "crater";
@@ -551,6 +648,14 @@ function sampleFields(
   };
 }
 
+const GREENERY: ReadonlySet<TerrainKind> = new Set([
+  "forest",
+  "jungle",
+  "agri",
+  "savanna",
+  "swamp",
+]);
+
 function resolveKind(
   classification: PlanetClassification,
   type: PlanetType,
@@ -559,19 +664,64 @@ function resolveKind(
   urban: number,
   detail: number,
   dayFac = 0.5,
+  marsLike = false,
+  greenBelt = false,
+  latAbs?: number,
+  tidalContrast?: number,
 ): TerrainKind {
-  const climate = classifyClimate(
+  let climate = classifyClimate(
     classification,
     elev,
     moist,
     detail,
     dayFac,
+    { greenBelt, latAbs, tidalContrast },
   );
-  return applyTypeBias(type, climate, elev, urban, detail);
+  if (marsLike) {
+    // Oxide world: majority iron-rich with rock / dune leftovers.
+    if (detail > 0.35 || elev > 0.4) return "iron_rich";
+    if (detail > 0.2) return "desert";
+    if (elev < 0.12) return "ocean";
+    return "wasteland";
+  }
+  let kind = applyTypeBias(
+    type,
+    climate,
+    elev,
+    urban,
+    detail,
+    classification,
+  );
+  if (
+    (classification === "volcanic" || classification === "magma") &&
+    GREENERY.has(kind)
+  ) {
+    kind = detail > 0.5 ? "crater" : "wasteland";
+  }
+  if (
+    (classification === "earthlike" ||
+      classification === "super_earth" ||
+      classification === "jungle" ||
+      classification === "islands") &&
+    kind === "wasteland"
+  ) {
+    kind =
+      classification === "jungle"
+        ? "jungle"
+        : classification === "islands"
+          ? "agri"
+          : "forest";
+  }
+  // Island worlds never carry arid dunes.
+  if (classification === "islands" && kind === "desert") {
+    kind = detail > 0.55 ? "jungle" : "agri";
+  }
+  return kind;
 }
 
 function typeHazeBoost(type: PlanetType, moist: number): number {
   if (type === "forge" || type === "hive") return 0.08 + moist * 0.22;
+  if (type === "trade") return 0.06 + moist * 0.18;
   if (type === "agri") return 0.05 + moist * 0.15;
   return 0.04 + moist * 0.12;
 }
@@ -589,13 +739,36 @@ export function generatePlanetTerrain(
   const seed = seedFromId(planetId);
   const cls = normalizePlanetClassification(classification);
 
+  const marsLike =
+    (cls === "arid" || cls === "desert") &&
+    isMarsLikeFromPlanetId(planetId, cls);
+
+  const greenBelt =
+    cls === "tundra" && isTundraGreenBeltFromPlanetId(planetId);
+  const tidalContrast =
+    cls === "tidally_locked" ? tidalContrastFromPlanetId(planetId) : undefined;
+
   return cells.map(({ q, r }) => {
     const { elev, moist, urban, detail } = sampleFields(q, r, seed, cls);
     const dayFac =
       cls === "tidally_locked"
         ? Math.max(0, Math.min(1, 0.5 + Math.tanh(q * 0.14) * 0.5))
         : 0.5;
-    const kind = resolveKind(cls, type, elev, moist, urban, detail, dayFac);
+    // Disk map: |r| as a rough latitude stand-in for green-belt thaw.
+    const latAbs = Math.min(1, Math.abs(r) / 12);
+    const kind = resolveKind(
+      cls,
+      type,
+      elev,
+      moist,
+      urban,
+      detail,
+      dayFac,
+      marsLike,
+      greenBelt,
+      latAbs,
+      tidalContrast,
+    );
     const { fill, stroke, glow } = colorFor(kind, elev);
     return {
       q,
@@ -610,10 +783,11 @@ export function generatePlanetTerrain(
   });
 }
 
-export function terrainLegend(
+/** Climate + world-type preferred labels for legend entries (uncapped). */
+function preferredTerrainLabels(
   classification: PlanetClassification,
   type: PlanetType,
-): { kind: TerrainKind; label: string }[] {
+): Map<TerrainKind, string> {
   const cls = normalizePlanetClassification(classification);
   const climateLegend: Record<
     PlanetClassification,
@@ -629,6 +803,8 @@ export function terrainLegend(
       { kind: "tundra", label: "Tundra" },
       { kind: "ice", label: "Ice shelves" },
       { kind: "swamp", label: "Melt bogs" },
+      { kind: "forest", label: "Thaw woods" },
+      { kind: "agri", label: "Green belts" },
       { kind: "ocean", label: "Cold seas" },
     ],
     water: [
@@ -641,36 +817,40 @@ export function terrainLegend(
       { kind: "ocean", label: "Seas" },
       { kind: "jungle", label: "Isle jungles" },
       { kind: "agri", label: "Shore belts" },
-      { kind: "wasteland", label: "Ridges" },
+      { kind: "forest", label: "Ridges" },
     ],
     jungle: [
       { kind: "jungle", label: "Canopy" },
       { kind: "swamp", label: "Wetlands" },
       { kind: "ocean", label: "Rivers / lakes" },
-      { kind: "wasteland", label: "Clearings" },
+      { kind: "forest", label: "Clearings" },
     ],
     earthlike: [
       { kind: "ocean", label: "Oceans" },
       { kind: "agri", label: "Plains" },
       { kind: "forest", label: "Woodlands" },
       { kind: "savanna", label: "Savanna" },
+      { kind: "desert", label: "Desert belts" },
       { kind: "jungle", label: "Rainforest" },
       { kind: "tundra", label: "Highlands" },
     ],
     super_earth: [
       { kind: "ocean", label: "Oceans" },
       { kind: "agri", label: "Vast plains" },
+      { kind: "desert", label: "Equatorial dunes" },
       { kind: "jungle", label: "Deep forests" },
       { kind: "tundra", label: "Massifs" },
     ],
     desert: [
       { kind: "desert", label: "Dunes" },
+      { kind: "iron_rich", label: "Rust flats" },
       { kind: "wasteland", label: "Rock flats" },
       { kind: "crater", label: "Basins" },
       { kind: "ocean", label: "Salt pans" },
     ],
     arid: [
       { kind: "desert", label: "Scrub" },
+      { kind: "iron_rich", label: "Oxide plains" },
       { kind: "agri", label: "Oases" },
       { kind: "savanna", label: "Steppe" },
       { kind: "ocean", label: "Dry seas" },
@@ -700,10 +880,12 @@ export function terrainLegend(
       { kind: "desert", label: "Basalt" },
     ],
     toxic: [
+      { kind: "ocean", label: "Dead seas" },
       { kind: "toxic", label: "Chem spills" },
+      { kind: "iron_rich", label: "Oxide spoil" },
+      { kind: "wasteland", label: "Ash flats" },
+      { kind: "desert", label: "Bleached dunes" },
       { kind: "urban", label: "Industry belts" },
-      { kind: "wasteland", label: "Soot plains" },
-      { kind: "swamp", label: "Bleached crust" },
     ],
     barren: [
       { kind: "wasteland", label: "Regolith" },
@@ -722,11 +904,13 @@ export function terrainLegend(
       { kind: "lava", label: "Bake plains" },
       { kind: "ice", label: "Eternal night" },
       { kind: "ocean", label: "Twilight seas" },
-      { kind: "jungle", label: "Terminator belt" },
+      { kind: "forest", label: "Green belt" },
+      { kind: "jungle", label: "Terminator canopy" },
+      { kind: "agri", label: "Twilight farms" },
     ],
   };
 
-  const base = climateLegend[cls];
+  const base = climateLegend[cls] ?? [];
   const typeExtra: { kind: TerrainKind; label: string }[] = [];
   switch (type) {
     case "hive":
@@ -736,6 +920,28 @@ export function terrainLegend(
       typeExtra.push(
         { kind: "urban", label: "Manufactorum" },
         { kind: "wasteland", label: "Slag fields" },
+      );
+      break;
+    case "mining":
+      typeExtra.push(
+        { kind: "crater", label: "Open pits" },
+        { kind: "iron_rich", label: "Iron belts" },
+        { kind: "wasteland", label: "Spoil heaps" },
+        { kind: "urban", label: "Processing hubs" },
+      );
+      break;
+    case "archaeological":
+      typeExtra.push(
+        { kind: "crater", label: "Excavations" },
+        { kind: "wasteland", label: "Ruined plains" },
+        { kind: "urban", label: "Dig camps" },
+      );
+      break;
+    case "abandoned_colony":
+      typeExtra.push(
+        { kind: "wasteland", label: "Empty districts" },
+        { kind: "urban", label: "Ghost habs" },
+        { kind: "crater", label: "Collapsed works" },
       );
       break;
     case "agri":
@@ -776,17 +982,74 @@ export function terrainLegend(
         { kind: "agri", label: "Heartland" },
       );
       break;
+    case "trade":
+      typeExtra.push(
+        { kind: "urban", label: "Mart cities" },
+        { kind: "ocean", label: "Trade seas" },
+        { kind: "agri", label: "Caravan belts" },
+      );
+      break;
     default:
       break;
   }
 
-  const seen = new Set<TerrainKind>();
-  const out: { kind: TerrainKind; label: string }[] = [];
+  const labels = new Map<TerrainKind, string>();
+  // Type flavor first so e.g. feudal agri → "Fiefs".
   for (const item of [...typeExtra, ...base]) {
-    if (seen.has(item.kind)) continue;
-    seen.add(item.kind);
-    out.push(item);
+    if (!labels.has(item.kind)) labels.set(item.kind, item.label);
+  }
+  return labels;
+}
+
+export function terrainLegend(
+  classification: PlanetClassification,
+  type: PlanetType,
+): { kind: TerrainKind; label: string }[] {
+  const labels = preferredTerrainLabels(classification, type);
+  const out: { kind: TerrainKind; label: string }[] = [];
+  for (const [kind, label] of labels) {
+    out.push({ kind, label });
     if (out.length >= 5) break;
+  }
+  return out;
+}
+
+/**
+ * Legend of biome kinds that actually appear on this planet's hexes
+ * (procedural sample + painted overrides), with climate/type labels and swatch colors.
+ */
+export function activeTerrainLegend(
+  planetId: string,
+  classification: PlanetClassification,
+  type: PlanetType,
+  tileTerrain?: Record<string, string>,
+): { kind: TerrainKind; label: string; color: string }[] {
+  const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
+  const present = new Set<TerrainKind>();
+  for (let ti = 0; ti < sphere.tiles.length; ti++) {
+    const tile = sphere.tiles[ti]!;
+    const override = normalizeTerrainKind(tileTerrain?.[String(ti)]);
+    const { kind } = sampleTerrainAtDirection(
+      tile.center.x,
+      tile.center.y,
+      tile.center.z,
+      planetId,
+      classification,
+      type,
+      override,
+    );
+    present.add(kind);
+  }
+
+  const labels = preferredTerrainLabels(classification, type);
+  const out: { kind: TerrainKind; label: string; color: string }[] = [];
+  for (const kind of TERRAIN_KIND_ORDER) {
+    if (!present.has(kind)) continue;
+    out.push({
+      kind,
+      label: labels.get(kind) ?? TERRAIN_KIND_LABELS[kind],
+      color: legendSwatch(kind, classification),
+    });
   }
   return out;
 }
@@ -801,6 +1064,7 @@ export function legendSwatch(
 export const TERRAIN_KIND_LABELS: Record<TerrainKind, string> = {
   wasteland: "Wasteland",
   crater: "Crater",
+  iron_rich: "Iron rich",
   urban: "Urban",
   agri: "Agri",
   forest: "Forest",
@@ -825,6 +1089,7 @@ export const TERRAIN_KIND_ORDER: TerrainKind[] = [
   "savanna",
   "agri",
   "desert",
+  "iron_rich",
   "wasteland",
   "crater",
   "urban",
@@ -905,11 +1170,73 @@ export function sampleTerrainAtDirection(
       ? Math.max(0, Math.min(1, 0.5 + 0.5 * z))
       : 0.5;
   const normalizedOverride = normalizeTerrainKind(overrideKind);
+  const marsLike =
+    !normalizedOverride &&
+    (cls === "arid" || cls === "desert") &&
+    isMarsLikeFromPlanetId(planetId, cls);
+  const greenBelt =
+    !normalizedOverride &&
+    cls === "tundra" &&
+    isTundraGreenBeltFromPlanetId(planetId);
+  const tidalContrast =
+    !normalizedOverride && cls === "tidally_locked"
+      ? tidalContrastFromPlanetId(planetId)
+      : undefined;
+  const latAbs = Math.abs(y);
   const kind =
     normalizedOverride ??
-    resolveKind(cls, type, elev, moist, urban, detail, dayFac);
+    resolveKind(
+      cls,
+      type,
+      elev,
+      moist,
+      urban,
+      detail,
+      dayFac,
+      marsLike,
+      greenBelt,
+      latAbs,
+      tidalContrast,
+    );
   const { fill } = colorFor(kind, elev);
   return { kind, fill, height: elev };
+}
+
+/** Match terrainGenerate Mars-like rate (~15% arid, ~12% desert). */
+function isMarsLikeFromPlanetId(
+  planetId: string,
+  cls: PlanetClassification,
+): boolean {
+  const rate = cls === "arid" ? 0.15 : 0.12;
+  let s = 2166136261;
+  const key = `${planetId}:mars-like`;
+  for (let i = 0; i < key.length; i++) {
+    s ^= key.charCodeAt(i);
+    s = Math.imul(s, 16777619);
+  }
+  return ((s >>> 0) % 1000) / 1000 < rate;
+}
+
+/** Match terrainGenerate tundra green-belt rate (~18%). */
+function isTundraGreenBeltFromPlanetId(planetId: string): boolean {
+  let s = 2166136261;
+  const key = `${planetId}:tundra-green`;
+  for (let i = 0; i < key.length; i++) {
+    s ^= key.charCodeAt(i);
+    s = Math.imul(s, 16777619);
+  }
+  return ((s >>> 0) % 1000) / 1000 < 0.18;
+}
+
+/** Match terrainGenerate tidal contrast (0.4 mild → 1.0 extreme). */
+function tidalContrastFromPlanetId(planetId: string): number {
+  let s = 2166136261;
+  const key = `${planetId}:tidal-contrast`;
+  for (let i = 0; i < key.length; i++) {
+    s ^= key.charCodeAt(i);
+    s = Math.imul(s, 16777619);
+  }
+  return 0.4 + (0.6 * ((s >>> 0) % 1000)) / 1000;
 }
 
 /** Mid-tone fill used for the opaque planet core under the hex crust. */

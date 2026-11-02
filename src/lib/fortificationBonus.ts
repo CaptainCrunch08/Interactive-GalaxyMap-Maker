@@ -6,11 +6,13 @@ import { buildHexSphere } from "./hexSphere";
 import { SETTLEMENT_HEX_FREQUENCY } from "./settlements";
 import { tilesAreHexAdjacent } from "./supplyNetwork";
 
-/** Neutral trench: +1% STR when on/adjacent, any faction. */
+/** Neutral trench: +1% STR per trench hex in the cluster you stand on (max 3%). */
 export const TRENCH_STR_BONUS_PCT = 1;
-/** Bastion district: +2% STR when on/adjacent, controlling faction only. */
-export const BASTION_STR_BONUS_PCT = 2;
-/** Outpost (district or structure): +1% STR when on/adjacent, controlling faction only. */
+/** Cap on stacked trench bonuses while standing on a trench line. */
+export const TRENCH_STR_BONUS_MAX_PCT = 3;
+/** Bastion district: +10% STR when standing on that hex (controlling faction, activated). */
+export const BASTION_STR_BONUS_PCT = 10;
+/** Outpost structure: +1% STR when on or adjacent (controlling faction). */
 export const OUTPOST_STR_BONUS_PCT = 1;
 
 function tileOnOrAdjacent(armyTile: number, featureTile: number): boolean {
@@ -19,8 +21,32 @@ function tileOnOrAdjacent(armyTile: number, featureTile: number): boolean {
 }
 
 /**
- * Percent STR bonus from fortifications near this army.
- * Bonuses stack additively (e.g. trench + bastion = 3%).
+ * Trench bonus: unit must stand on a trench hex. +1% for that hex, plus +1%
+ * for each adjacent trench-line structure, capped at {@link TRENCH_STR_BONUS_MAX_PCT}.
+ */
+function trenchBonusPercent(planet: Planet, armyTile: number): number {
+  const trenches = (planet.structures ?? []).filter(
+    (st) => st.kind === "trench_line",
+  );
+  const onTrench = trenches.find((st) => st.tileIndex === armyTile);
+  if (!onTrench) return 0;
+
+  let stacks = 1; // the trench you occupy
+  for (const st of trenches) {
+    if (st.id === onTrench.id) continue;
+    if (tilesAreHexAdjacent(armyTile, st.tileIndex)) stacks += 1;
+  }
+  return Math.min(
+    TRENCH_STR_BONUS_MAX_PCT,
+    stacks * TRENCH_STR_BONUS_PCT,
+  );
+}
+
+/**
+ * Percent STR bonus from fortifications.
+ * - Bastion: on-hex only, +10% (activated, owning faction)
+ * - Trench: on-hex only, stacks with adjacent trenches up to +3%
+ * - Outpost: on or adjacent, +1% (owning faction)
  */
 export function fortificationStrBonusPercent(
   planet: Planet,
@@ -33,40 +59,29 @@ export function fortificationStrBonusPercent(
   // Ensure sphere exists for neighbor tables used by tilesAreHexAdjacent.
   buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
   const tile = armyTileIndex(planet, army);
-  let bonus = 0;
+  let bonus = trenchBonusPercent(planet, tile);
 
   for (const st of planet.structures ?? []) {
-    if (!tileOnOrAdjacent(tile, st.tileIndex)) continue;
-    if (st.kind === "trench_line") {
-      bonus += TRENCH_STR_BONUS_PCT;
-    } else if (
-      st.kind === "outpost" &&
-      st.controllingFactionId === army.factionId
-    ) {
+    if (st.kind !== "outpost") continue;
+    if (st.controllingFactionId !== army.factionId) continue;
+    if (tileOnOrAdjacent(tile, st.tileIndex)) {
       bonus += OUTPOST_STR_BONUS_PCT;
     }
   }
 
-  const visitDistrict = (d: District) => {
-    if (!tileOnOrAdjacent(tile, d.tileIndex)) return;
-    // Bastion / outpost bonuses require activation
-    if (d.kind === "bastion" || d.kind === "outpost") {
-      if (!isDistrictActivated(planet, d.id)) return;
-    }
-    if (d.kind === "bastion" && d.controllingFactionId === army.factionId) {
+  const visitBastion = (d: District) => {
+    if (d.kind !== "bastion") return;
+    if (d.tileIndex !== tile) return;
+    if (!isDistrictActivated(planet, d.id)) return;
+    if (d.controllingFactionId === army.factionId) {
       bonus += BASTION_STR_BONUS_PCT;
-    } else if (
-      d.kind === "outpost" &&
-      d.controllingFactionId === army.factionId
-    ) {
-      bonus += OUTPOST_STR_BONUS_PCT;
     }
   };
 
   for (const city of planet.cities ?? []) {
-    for (const d of city.districts) visitDistrict(d);
+    for (const d of city.districts) visitBastion(d);
   }
-  for (const d of planet.independentDistricts ?? []) visitDistrict(d);
+  for (const d of planet.independentDistricts ?? []) visitBastion(d);
 
   return bonus;
 }

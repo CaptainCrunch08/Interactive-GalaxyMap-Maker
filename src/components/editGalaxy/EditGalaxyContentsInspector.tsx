@@ -1,24 +1,28 @@
 import {
+  DISTRICT_KIND_LABELS,
   PLANET_CLASSIFICATION_LABELS,
-  PLANET_CLASSIFICATION_ORDER,
   PLANET_TYPE_LABELS,
   STAR_CLASS_LABELS,
-  STAR_CLASS_ORDER,
   STRUCTURE_KIND_LABELS,
   STRUCTURE_KIND_ORDER,
+  planetTypeDisplayLabel,
+  type DistrictKind,
   type PlanetClassification,
   type PlanetType,
   type StarClass,
   type StructureKind,
 } from "../../types/campaign";
 import { useCampaignStore } from "../../store/useCampaignStore";
+import { promptCustomLabel } from "../../lib/customLabel";
 import { megastructureName } from "../../lib/stars";
 import { supportsStrategicSurface } from "../../lib/planetClass";
+import { keysSortedByLabel, sortedByName } from "../../lib/sortOptions";
 import { factionsSortedByName } from "../../lib/territory";
 import {
   linkedWarpGate,
   warpGateLinkCandidates,
 } from "../../lib/warpGates";
+import { AutoGrowTextarea } from "../AutoGrowTextarea";
 
 const inputClass = "hud-input";
 
@@ -39,7 +43,6 @@ export function EditGalaxyContentsInspector({
   const enterStrategic = useCampaignStore((s) => s.enterStrategic);
   const updateSystem = useCampaignStore((s) => s.updateSystem);
   const deleteSystem = useCampaignStore((s) => s.deleteSystem);
-  const addPlanet = useCampaignStore((s) => s.addPlanet);
   const updatePlanet = useCampaignStore((s) => s.updatePlanet);
   const linkWarpGates = useCampaignStore((s) => s.linkWarpGates);
   const unlinkWarpGate = useCampaignStore((s) => s.unlinkWarpGate);
@@ -49,8 +52,15 @@ export function EditGalaxyContentsInspector({
   const setDistrictOwner = useCampaignStore((s) => s.setDistrictOwner);
   const setStructureOwner = useCampaignStore((s) => s.setStructureOwner);
   const regenerateSettlements = useCampaignStore((s) => s.regenerateSettlements);
+  const shufflePlanetSurface = useCampaignStore((s) => s.shufflePlanetSurface);
   const clearOpenTileClaims = useCampaignStore((s) => s.clearOpenTileClaims);
   const addStructure = useCampaignStore((s) => s.addStructure);
+  const addCity = useCampaignStore((s) => s.addCity);
+  const deleteCity = useCampaignStore((s) => s.deleteCity);
+  const addDistrict = useCampaignStore((s) => s.addDistrict);
+  const deleteDistrict = useCampaignStore((s) => s.deleteDistrict);
+  const updateCity = useCampaignStore((s) => s.updateCity);
+  const updateDistrict = useCampaignStore((s) => s.updateDistrict);
   const updateStructure = useCampaignStore((s) => s.updateStructure);
   const deleteStructure = useCampaignStore((s) => s.deleteStructure);
 
@@ -137,7 +147,7 @@ export function EditGalaxyContentsInspector({
                   })
                 }
               >
-                {STAR_CLASS_ORDER.map((c) => (
+                {keysSortedByLabel(STAR_CLASS_LABELS).map((c) => (
                   <option key={c} value={c}>
                     {STAR_CLASS_LABELS[c]}
                   </option>
@@ -163,7 +173,7 @@ export function EditGalaxyContentsInspector({
             )}
             <label className="block text-[10px] uppercase tracking-wider text-muted">
               Notes
-              <textarea
+              <AutoGrowTextarea
                 className={inputClass + " mt-1 min-h-[4rem]"}
                 value={system.notes}
                 onChange={(e) =>
@@ -176,8 +186,8 @@ export function EditGalaxyContentsInspector({
                 type="button"
                 className="hud-btn flex-1"
                 onClick={() => {
-                  const id = addPlanet(system.id);
-                  selectPlanet(id);
+                  const id = useCampaignStore.getState().addPlanet(system.id);
+                  useCampaignStore.getState().selectPlanet(id);
                 }}
               >
                 + Planet
@@ -211,7 +221,7 @@ export function EditGalaxyContentsInspector({
                   >
                     {p.name}
                     <span className="block text-[10px] text-muted">
-                      {PLANET_TYPE_LABELS[p.type]}
+                      {planetTypeDisplayLabel(p)}
                     </span>
                   </button>
                 </li>
@@ -262,19 +272,48 @@ export function EditGalaxyContentsInspector({
               <select
                 className={inputClass + " mt-1"}
                 value={planet.type}
-                onChange={(e) =>
+                onChange={(e) => {
+                  const next = e.target.value as PlanetType;
+                  if (next === "custom") {
+                    const label = promptCustomLabel(
+                      "world type",
+                      planet.customTypeLabel,
+                    );
+                    if (!label) return;
+                    updatePlanet(planet.id, {
+                      type: "custom",
+                      customTypeLabel: label,
+                    });
+                    return;
+                  }
                   updatePlanet(planet.id, {
-                    type: e.target.value as PlanetType,
-                  })
-                }
+                    type: next,
+                    customTypeLabel: undefined,
+                  });
+                }}
               >
-                {(Object.keys(PLANET_TYPE_LABELS) as PlanetType[]).map((t) => (
+                {keysSortedByLabel(PLANET_TYPE_LABELS).map((t) => (
                   <option key={t} value={t}>
                     {PLANET_TYPE_LABELS[t]}
                   </option>
                 ))}
               </select>
             </label>
+            {planet.type === "custom" && (
+              <label className="block text-[10px] uppercase tracking-wider text-muted">
+                Custom type name
+                <input
+                  className={inputClass + " mt-1"}
+                  value={planet.customTypeLabel ?? ""}
+                  placeholder="e.g. Forge-Agri Hybrid"
+                  onChange={(e) =>
+                    updatePlanet(planet.id, {
+                      customTypeLabel: e.target.value,
+                    })
+                  }
+                />
+              </label>
+            )}
             {planet.type === "warp_gate" && (
               <div className="rounded border border-panel-border/60 p-2 space-y-1.5">
                 <p className="text-[10px] uppercase tracking-wider text-muted">
@@ -316,7 +355,7 @@ export function EditGalaxyContentsInspector({
                             <option value="">
                               {linked ? "Change partner…" : "Select gate…"}
                             </option>
-                            {candidates.map((g) => {
+                            {sortedByName(candidates).map((g) => {
                               const sys = campaign.systems.find(
                                 (s) => s.id === g.systemId,
                               );
@@ -361,7 +400,7 @@ export function EditGalaxyContentsInspector({
                     })
                   }
                 >
-                  {PLANET_CLASSIFICATION_ORDER.map((c) => (
+                  {keysSortedByLabel(PLANET_CLASSIFICATION_LABELS).map((c) => (
                     <option key={c} value={c}>
                       {PLANET_CLASSIFICATION_LABELS[c]}
                     </option>
@@ -388,7 +427,7 @@ export function EditGalaxyContentsInspector({
             </label>
             <label className="block text-[10px] uppercase tracking-wider text-muted">
               Notes
-              <textarea
+              <AutoGrowTextarea
                 className={inputClass + " mt-1 min-h-[3rem]"}
                 value={planet.notes}
                 onChange={(e) =>
@@ -405,6 +444,18 @@ export function EditGalaxyContentsInspector({
                     onClick={() => regenerateSettlements(planet.id)}
                   >
                     Regenerate surface
+                  </button>
+                  <button
+                    type="button"
+                    className="hud-btn"
+                    title="Reposition cities and districts; reshuffle biomes. Keeps the same districts on each city."
+                    onClick={() => {
+                      if (!shufflePlanetSurface(planet.id)) {
+                        alert("Could not shuffle this world’s surface.");
+                      }
+                    }}
+                  >
+                    Shuffle surface
                   </button>
                   <button
                     type="button"
@@ -432,9 +483,22 @@ export function EditGalaxyContentsInspector({
             {supportsStrategicSurface(planet) && (
               <>
             <section className="space-y-2 pt-2 border-t border-panel-border">
-              <p className="text-[10px] uppercase tracking-wider text-muted">
-                Cities / districts
-              </p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] uppercase tracking-wider text-muted">
+                  Cities / districts
+                </p>
+                <button
+                  type="button"
+                  className="hud-btn text-[10px] px-2 py-0.5"
+                  onClick={() => {
+                    if (!addCity(planet.id)) {
+                      alert("No free hexes left for a new city.");
+                    }
+                  }}
+                >
+                  + City
+                </button>
+              </div>
               {(planet.cities ?? []).length === 0 &&
               (planet.independentDistricts ?? []).length === 0 ? (
                 <p className="text-xs text-muted">No cities.</p>
@@ -446,9 +510,17 @@ export function EditGalaxyContentsInspector({
                       className="rounded border border-panel-border/60 p-2 space-y-1"
                     >
                       <div className="flex items-center gap-2">
-                        <span className="text-xs flex-1 truncate">
-                          {city.name}
-                        </span>
+                        <input
+                          className={inputClass + " flex-1 min-w-0"}
+                          style={{ fontSize: "0.75rem" }}
+                          value={city.name}
+                          onChange={(e) =>
+                            updateCity(planet.id, city.id, {
+                              name: e.target.value,
+                            })
+                          }
+                          aria-label="City name"
+                        />
                         <select
                           className={inputClass}
                           style={{ fontSize: "0.7rem", width: "7rem" }}
@@ -468,13 +540,39 @@ export function EditGalaxyContentsInspector({
                             </option>
                           ))}
                         </select>
+                        <button
+                          type="button"
+                          className="text-crimson text-xs px-1"
+                          title="Delete city and its districts"
+                          onClick={() => {
+                            if (
+                              confirm(
+                                `Delete city “${city.name}” and its districts?`,
+                              )
+                            ) {
+                              deleteCity(planet.id, city.id);
+                            }
+                          }}
+                        >
+                          ×
+                        </button>
                       </div>
                       {city.districts.map((d) => (
                         <div
                           key={d.id}
-                          className="flex items-center gap-2 pl-2 text-[11px] text-muted"
+                          className="flex items-center gap-2 pl-2"
                         >
-                          <span className="flex-1 truncate">{d.name}</span>
+                          <input
+                            className={inputClass + " flex-1 min-w-0"}
+                            style={{ fontSize: "0.7rem" }}
+                            value={d.name}
+                            onChange={(e) =>
+                              updateDistrict(planet.id, city.id, d.id, {
+                                name: e.target.value,
+                              })
+                            }
+                            aria-label="District name"
+                          />
                           <select
                             className={inputClass}
                             style={{ fontSize: "0.65rem", width: "6.5rem" }}
@@ -495,8 +593,38 @@ export function EditGalaxyContentsInspector({
                               </option>
                             ))}
                           </select>
+                          <button
+                            type="button"
+                            className="text-crimson text-xs px-1"
+                            title="Delete district"
+                            onClick={() =>
+                              deleteDistrict(planet.id, city.id, d.id)
+                            }
+                          >
+                            ×
+                          </button>
                         </div>
                       ))}
+                      <select
+                        className={inputClass + " ml-2"}
+                        style={{ fontSize: "0.65rem", width: "calc(100% - 0.5rem)" }}
+                        defaultValue=""
+                        onChange={(e) => {
+                          const kind = e.target.value as DistrictKind;
+                          if (!kind) return;
+                          if (!addDistrict(planet.id, city.id, kind)) {
+                            alert("No free hexes left for a new district.");
+                          }
+                          e.target.value = "";
+                        }}
+                      >
+                        <option value="">+ District…</option>
+                        {keysSortedByLabel(DISTRICT_KIND_LABELS).map((k) => (
+                          <option key={k} value={k}>
+                            {DISTRICT_KIND_LABELS[k]}
+                          </option>
+                        ))}
+                      </select>
                     </li>
                   ))}
                   {(planet.independentDistricts ?? []).length > 0 && (
@@ -507,9 +635,19 @@ export function EditGalaxyContentsInspector({
                       {(planet.independentDistricts ?? []).map((d) => (
                         <div
                           key={d.id}
-                          className="flex items-center gap-2 pl-2 text-[11px] text-muted"
+                          className="flex items-center gap-2 pl-2"
                         >
-                          <span className="flex-1 truncate">{d.name}</span>
+                          <input
+                            className={inputClass + " flex-1 min-w-0"}
+                            style={{ fontSize: "0.7rem" }}
+                            value={d.name}
+                            onChange={(e) =>
+                              updateDistrict(planet.id, null, d.id, {
+                                name: e.target.value,
+                              })
+                            }
+                            aria-label="District name"
+                          />
                           <select
                             className={inputClass}
                             style={{ fontSize: "0.65rem", width: "6.5rem" }}
@@ -530,6 +668,16 @@ export function EditGalaxyContentsInspector({
                               </option>
                             ))}
                           </select>
+                          <button
+                            type="button"
+                            className="text-crimson text-xs px-1"
+                            title="Delete district"
+                            onClick={() =>
+                              deleteDistrict(planet.id, null, d.id)
+                            }
+                          >
+                            ×
+                          </button>
                         </div>
                       ))}
                     </li>
@@ -555,7 +703,10 @@ export function EditGalaxyContentsInspector({
                   }}
                 >
                   <option value="">+ Add…</option>
-                  {STRUCTURE_KIND_ORDER.map((k) => (
+                  {keysSortedByLabel(
+                    STRUCTURE_KIND_LABELS,
+                    STRUCTURE_KIND_ORDER,
+                  ).map((k) => (
                     <option key={k} value={k}>
                       {STRUCTURE_KIND_LABELS[k]}
                     </option>
@@ -592,7 +743,7 @@ export function EditGalaxyContentsInspector({
                             })
                           }
                         >
-                          {STRUCTURE_KIND_ORDER.map((k) => (
+                          {keysSortedByLabel(STRUCTURE_KIND_LABELS).map((k) => (
                             <option key={k} value={k}>
                               {STRUCTURE_KIND_LABELS[k]}
                             </option>

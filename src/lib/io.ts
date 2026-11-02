@@ -1,13 +1,15 @@
 import { z } from "zod";
-import type { Campaign } from "../types/campaign";
+import type { Campaign, Faction } from "../types/campaign";
 import { normalizeCampaignPlay } from "../types/campaign";
-import { ensurePlanetCities } from "./settlements";
+import { ensurePlanetCities, normalizeDistrictKind } from "./settlements";
 import { normalizeStarClass } from "./stars";
 import { normalizePlanetClassification } from "./planetClass";
 import { resolvePlanetVisualModelId } from "./planetModels";
 import { enforceUniqueSymbolOwnership } from "./factionSymbols";
 import { armyStrength, pruneDestroyedArmies } from "./battleResolve";
+import { ensureCampaignBattleLog } from "./battleLog";
 import { normalizeShipCargo, normalizeShipChassis } from "./fleets";
+import { normalizeStructureKind } from "./structureMeshes";
 import { normalizeTerrainKind } from "./planetTerrain";
 import { reportPersistSize, utf8ByteLength } from "./perfDebug";
 
@@ -16,6 +18,12 @@ const factionSchema = z.object({
   name: z.string(),
   color: z.string(),
   leader: z.string().optional(),
+  epithet: z.string().optional(),
+  origin: z.string().optional(),
+  purpose: z.string().optional(),
+  standing: z.string().optional(),
+  /** @deprecated Prefer `standing`. Accepted on import for older dossier saves. */
+  backstory: z.string().optional(),
   defaultSymbolId: z.string().optional(),
   symbolIds: z.array(z.string()).optional().default([]),
 });
@@ -56,12 +64,14 @@ const characterPlacementSchema = z.discriminatedUnion("kind", [
 const characterSchema = z.object({
   id: z.string(),
   name: z.string(),
+  nickname: z.string().optional(),
   title: z.string().default(""),
   factionId: z.string().optional(),
   affiliation: z.string().optional(),
   status: z.enum(["alive", "lost", "deceased"]).default("alive"),
   placement: characterPlacementSchema.optional(),
   location: z.string().default(""),
+  background: z.string().optional(),
   notes: z.string().optional(),
 });
 
@@ -99,29 +109,24 @@ const sphereDirSchema = z.object({
 const districtSchema = z.object({
   id: z.string(),
   name: z.string(),
-  kind: z.enum([
-    "spire",
-    "underhive",
-    "domed_habitat",
-    "docks",
-    "bastion",
-    "manufactorum",
-    "foundry",
-    "refinery",
-    "railhead",
-    "agriplex",
-    "silo",
-    "reservoir",
-    "outpost",
-    "fortress",
-    "camp",
-    "cathedral",
-    "reliquary",
-    "cloister",
-    "quarter",
-    "ruins",
-    "supply_station",
-  ]),
+  kind: z
+    .string()
+    .transform((k) => normalizeDistrictKind(k))
+    .pipe(
+      z.enum([
+        "spire",
+        "underhive",
+        "domed_habitat",
+        "docks",
+        "bastion",
+        "manufactorum",
+        "camp",
+        "cathedral",
+        "reliquary",
+        "ruins",
+        "supply_station",
+      ]),
+    ),
   controllingFactionId: z.string().optional(),
   tileIndex: z.number().int().nonnegative(),
   dir: sphereDirSchema,
@@ -143,26 +148,12 @@ const structureSchema = z.object({
   name: z.string(),
   kind: z
     .string()
-    .transform((k) => (k === "void_dock" ? "space_port" : k))
+    .transform((k) => normalizeStructureKind(k))
     .pipe(
       z.enum([
         "space_port",
-        "spire_cluster",
-        "underhive_gate",
-        "manufactorum_complex",
         "ore_mine",
-        "slag_works",
-        "reactor",
-        "agri_dome",
-        "silo_complex",
-        "reservoir_works",
-        "fortress_bastion",
         "trench_line",
-        "kill_zone",
-        "cathedral_complex",
-        "reliquary_vault",
-        "pilgrim_station",
-        "mining_claim",
         "relay",
         "relay_crown",
         "outpost",
@@ -215,6 +206,16 @@ const battleEntrySchema = z.object({
     ])
     .optional(),
   victorFactionId: z.string().nullable().optional(),
+  killedCharacterIds: z.array(z.string()).optional(),
+});
+
+const campaignBattleLogEntrySchema = battleEntrySchema.extend({
+  theater: z.enum(["planetary", "space"]).default("planetary"),
+  planetId: z.string().optional(),
+  systemId: z.string().optional(),
+  locationLabel: z.string().default(""),
+  attackerFleetId: z.string().optional(),
+  defenderFleetId: z.string().optional(),
 });
 
 const famousBattleSiteSchema = z.object({
@@ -334,10 +335,15 @@ const planetSchema = z.object({
     "feudal",
     "fortress",
     "homeworld",
+    "trade",
+    "mining",
+    "archaeological",
+    "abandoned_colony",
     "asteroid_belt",
     "warp_gate",
     "custom",
   ]),
+  customTypeLabel: z.string().optional(),
   classification: z
     .enum([
       "ice",
@@ -367,6 +373,7 @@ const planetSchema = z.object({
   cities: z.array(citySchema).default([]),
   independentDistricts: z.array(districtSchema).optional().default([]),
   structures: z.array(structureSchema).default([]),
+  surfaceReady: z.boolean().optional(),
   tileClaims: z.record(z.string(), z.string()).optional().default({}),
   tileTerrain: z.record(z.string(), z.string()).optional().default({}),
   armies: z.array(armySchema).default([]),
@@ -400,6 +407,7 @@ const campaignSchema = z.object({
   hyperlanes: z.array(hyperlaneSchema).optional(),
   hyperlaneEdits: hyperlaneEditsSchema.optional(),
   timeline: campaignTimelineSchema.optional(),
+  battleLog: z.array(campaignBattleLogEntrySchema).optional().default([]),
   mapSize: z.number().positive().optional(),
   play: campaignPlaySchema.optional(),
 });
@@ -433,11 +441,19 @@ export function parseCampaignJson(json: string): Campaign {
     characters: campaign.characters ?? [],
     hyperlanes: campaign.hyperlanes,
     hyperlaneEdits: campaign.hyperlaneEdits,
-    factions: enforceUniqueSymbolOwnership(campaign.factions),
+    factions: enforceUniqueSymbolOwnership(
+      campaign.factions.map((f) => {
+        const legacy = f as Faction & { backstory?: string };
+        const { backstory, ...rest } = legacy;
+        if (rest.standing?.trim() || !backstory?.trim()) return rest;
+        return { ...rest, standing: backstory };
+      }),
+    ),
     timeline: {
       frames: campaign.timeline?.frames ?? [],
       events: campaign.timeline?.events ?? [],
     },
+    battleLog: ensureCampaignBattleLog(campaign),
     mapSize: campaign.mapSize,
     play: normalizeCampaignPlay(campaign.play),
     systems: campaign.systems.map((s) => {

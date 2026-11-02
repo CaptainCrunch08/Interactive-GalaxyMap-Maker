@@ -1,7 +1,7 @@
 import type { Faction, Planet } from "../../types/campaign";
 import {
   PLANET_CLASSIFICATION_LABELS,
-  PLANET_TYPE_LABELS,
+  planetTypeDisplayLabel,
 } from "../../types/campaign";
 import { classificationColor } from "../../lib/planetClass";
 
@@ -40,7 +40,7 @@ export function PlanetNode({
         e.stopPropagation();
         onNavigate();
       }}
-      title={`${planet.name} — ${PLANET_TYPE_LABELS[planet.type]} · ${classLabel}`}
+      title={`${planet.name} — ${planetTypeDisplayLabel(planet)} · ${classLabel}`}
     >
       <span
         className="block w-3.5 h-3.5 rounded-full border transition-transform group-hover:scale-125"

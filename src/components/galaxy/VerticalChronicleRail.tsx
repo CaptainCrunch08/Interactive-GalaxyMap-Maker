@@ -3,6 +3,7 @@ import type {
   TimelineEvent,
   TimelineEventSignificance,
 } from "../../types/campaign";
+import { AutoGrowTextarea } from "../AutoGrowTextarea";
 
 const SIGNIFICANCE_ORDER: TimelineEventSignificance[] = [
   "normal",
@@ -173,8 +174,8 @@ export function VerticalChronicleRail({
           <label className="block text-[10px] uppercase tracking-wide text-muted mb-1">
             Notes
           </label>
-          <textarea
-            className="hud-input w-full min-h-[5.5rem] resize-y text-xs mb-3"
+          <AutoGrowTextarea
+            className="hud-input w-full min-h-[5.5rem] text-xs mb-3"
             value={selected.summary}
             placeholder="Event notes…"
             onChange={(e) =>

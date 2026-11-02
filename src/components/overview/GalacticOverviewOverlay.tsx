@@ -1,14 +1,17 @@
 import { useCampaignStore } from "../../store/useCampaignStore";
+import type { GalaxyOverviewTab } from "../../types/campaign";
 import { StrategicOverviewPanel } from "./StrategicOverviewPanel";
 import { FactionsOverviewPanel } from "./FactionsOverviewPanel";
 import { PlanetsOverviewPanel } from "./PlanetsOverviewPanel";
 import { CharactersOverviewPanel } from "./CharactersOverviewPanel";
+import { BattlesOverviewPanel } from "./BattlesOverviewPanel";
 
-const TABS = [
-  { id: "strategic" as const, label: "Strategic Overview" },
-  { id: "factions" as const, label: "Factions" },
-  { id: "planets" as const, label: "Planets" },
-  { id: "characters" as const, label: "Characters" },
+const TABS: { id: GalaxyOverviewTab; label: string }[] = [
+  { id: "strategic", label: "Strategic Overview" },
+  { id: "factions", label: "Factions" },
+  { id: "planets", label: "Planets" },
+  { id: "characters", label: "Characters" },
+  { id: "battles", label: "Battles" },
 ];
 
 export function GalacticOverviewOverlay() {
@@ -72,6 +75,7 @@ export function GalacticOverviewOverlay() {
         {tab === "factions" && <FactionsOverviewPanel />}
         {tab === "planets" && <PlanetsOverviewPanel />}
         {tab === "characters" && <CharactersOverviewPanel />}
+        {tab === "battles" && <BattlesOverviewPanel />}
       </div>
     </div>
   );

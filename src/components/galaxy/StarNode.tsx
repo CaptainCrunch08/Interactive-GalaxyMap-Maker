@@ -1,5 +1,5 @@
 import type { Faction, StarSystem } from "../../types/campaign";
-import { useRef } from "react";
+import { memo, useRef, useState } from "react";
 import {
   isBlackHoleBomb,
   megastructureShortLabel,
@@ -26,9 +26,42 @@ interface StarNodeProps {
   canDrag?: boolean;
   mapScale: number;
   onDrag: (x: number, y: number) => void;
+  /**
+   * Bumps when editor interaction mode changes (tool / connect-from).
+   * Lets us skip re-renders on typing while still refreshing handlers.
+   */
+  interactionKey?: string;
 }
 
-export function StarNode({
+function starNodePropsEqual(a: StarNodeProps, b: StarNodeProps): boolean {
+  // Callbacks are ignored — interactionKey must change when they go stale.
+  return (
+    a.system.id === b.system.id &&
+    a.system.x === b.system.x &&
+    a.system.y === b.system.y &&
+    a.system.name === b.system.name &&
+    a.system.starClass === b.system.starClass &&
+    a.system.dysonSphere === b.system.dysonSphere &&
+    a.faction?.id === b.faction?.id &&
+    a.faction?.color === b.faction?.color &&
+    a.faction?.name === b.faction?.name &&
+    a.contested === b.contested &&
+    a.selected === b.selected &&
+    a.editMode === b.editMode &&
+    a.canDrag === b.canDrag &&
+    a.mapScale === b.mapScale &&
+    a.interactionKey === b.interactionKey &&
+    contestedFactionsKey(a.contestedFactions) ===
+      contestedFactionsKey(b.contestedFactions)
+  );
+}
+
+function contestedFactionsKey(factions: Faction[] | undefined): string {
+  if (!factions || factions.length === 0) return "";
+  return factions.map((f) => f.id).join(",");
+}
+
+function StarNodeImpl({
   system,
   faction,
   contested = false,
@@ -40,7 +73,9 @@ export function StarNode({
   canDrag,
   mapScale,
   onDrag,
+  interactionKey: _interactionKey,
 }: StarNodeProps) {
+  void _interactionKey;
   const starClass = normalizeStarClass(system.starClass);
   const look = starAppearance(starClass);
   const isPulsar = starClass === "pulsar";
@@ -51,6 +86,10 @@ export function StarNode({
   const showLabel = mapScale >= 0.55 || selected;
   const dragMoved = useRef(false);
   const allowDrag = canDrag ?? editMode;
+  /** Ephemeral drag position — avoids store writes on every pointermove. */
+  const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(
+    null,
+  );
   const bodySize = isBomb
     ? look.galaxySize * 1.7
     : hasDyson
@@ -72,12 +111,20 @@ export function StarNode({
       const dx = (ev.clientX - startX) / mapScale;
       const dy = (ev.clientY - startY) / mapScale;
       if (Math.abs(dx) + Math.abs(dy) > 2) dragMoved.current = true;
-      onDrag(origX + dx, origY + dy);
+      setDragPos({ x: origX + dx, y: origY + dy });
     };
-    const onUp = () => {
+    const onUp = (ev: PointerEvent) => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      const dx = (ev.clientX - startX) / mapScale;
+      const dy = (ev.clientY - startY) / mapScale;
+      const nextX = origX + dx;
+      const nextY = origY + dy;
+      setDragPos(null);
       endSystemDrag();
+      if (dragMoved.current) {
+        onDrag(nextX, nextY);
+      }
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -105,11 +152,14 @@ export function StarNode({
       ? ` · ${faction.name}`
       : "";
 
+  const left = dragPos?.x ?? system.x;
+  const top = dragPos?.y ?? system.y;
+
   return (
     <button
       type="button"
       className="absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1 bg-transparent border-0 p-0 cursor-pointer group z-10"
-      style={{ left: system.x, top: system.y }}
+      style={{ left, top }}
       onPointerDown={handlePointerDown}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
@@ -219,3 +269,5 @@ export function StarNode({
     </button>
   );
 }
+
+export const StarNode = memo(StarNodeImpl, starNodePropsEqual);

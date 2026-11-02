@@ -8,7 +8,14 @@ import type {
 } from "../types/campaign";
 import { GALAXY_HEIGHT, GALAXY_SIZE, GALAXY_WIDTH } from "../types/campaign";
 import { createShip } from "./fleets";
-import { generatePlanetSurface, planetOwnerFromCities } from "./settlements";
+import {
+  generatePlanetSurface,
+  planetOwnerFromCities,
+  settlementTileSet,
+} from "./settlements";
+import {
+  generateWorldTileTerrain,
+} from "./terrainGenerate";
 import { snapshotGalaxyFrame } from "./galaxyHistory";
 
 function withCities(
@@ -29,11 +36,28 @@ function withCities(
       classification: planet.classification,
     },
   );
+  const reservedTiles = [
+    ...settlementTileSet(cities, structures, independentDistricts),
+  ];
+  const tileTerrain = generateWorldTileTerrain(
+    planet.classification,
+    planet.type,
+    {
+      planetId: planet.id,
+      rng: Math.random,
+      settlement: {
+        reservedTiles,
+        cityHubTiles: cities.map((c) => c.tileIndex),
+      },
+    },
+  );
   return {
     ...planet,
     cities,
     independentDistricts,
     structures,
+    surfaceReady: true,
+    tileTerrain,
     controllingFactionId:
       planetOwnerFromCities(
         cities,
@@ -325,6 +349,7 @@ export function createEmptyCampaign(): Campaign {
     fleets: [],
     characters: [],
     timeline: { frames: [], events: [] },
+    battleLog: [],
     mapSize: GALAXY_SIZE,
   };
 }

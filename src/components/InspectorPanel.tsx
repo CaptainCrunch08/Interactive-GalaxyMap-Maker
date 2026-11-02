@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import { AutoGrowTextarea } from "./AutoGrowTextarea";
 import {
   DISTRICT_KIND_LABELS,
   PLANET_CLASSIFICATION_LABELS,
-  PLANET_CLASSIFICATION_ORDER,
   PLANET_TYPE_LABELS,
   STAR_CLASS_LABELS,
-  STAR_CLASS_ORDER,
   STRUCTURE_KIND_LABELS,
+  planetTypeDisplayLabel,
 } from "../types/campaign";
 import type {
   PlanetClassification,
@@ -14,13 +14,17 @@ import type {
   StarClass,
 } from "../types/campaign";
 import { useCampaignStore } from "../store/useCampaignStore";
+import { promptCustomLabel } from "../lib/customLabel";
 import { megastructureName } from "../lib/stars";
 import { supportsStrategicSurface } from "../lib/planetClass";
+import { keysSortedByLabel, sortedByName } from "../lib/sortOptions";
 import {
   factionsSortedByName,
   getFactionById,
+  getPlanetOwnership,
   getSystemOwnership,
   ownershipLabel,
+  planetOwnershipLabel,
   systemOwnerSelectValue,
 } from "../lib/territory";
 import { countDistrictsByFaction } from "../lib/settlements";
@@ -36,7 +40,6 @@ import {
   canBuildUnderhive,
   canRecruitDetachment,
   canRecruitShip,
-  canRenameControlled,
   canUseSpacePort,
   canDeployFromTransport,
   canLoadTransportCargo,
@@ -60,11 +63,11 @@ import {
   TRENCH_LINE_BP_COST,
   UNDERHIVE_BP_COST,
 } from "../lib/buildingPoints";
+import { computeActivation } from "../lib/activation";
 import {
-  computeActivation,
-  isApConsumer,
-  isApGenerator,
-} from "../lib/activation";
+  districtBuffDetail,
+  structureBuffDetail,
+} from "../lib/districtBuffs";
 import { fleetsInOrbit } from "../lib/fleets";
 import {
   connectedSupplyStations,
@@ -94,7 +97,6 @@ import { factionSymbolIds } from "../lib/factionSymbols";
 import {
   normalizeCampaignPlay,
   SHIP_CHASSIS_LABELS,
-  SHIP_CHASSIS_ORDER,
 } from "../types/campaign";
 import { TERRAIN_PAINT_ERASE } from "./strategic/HexPlanet";
 import { FleetInspector, FleetListSection } from "./FleetInspector";
@@ -145,8 +147,10 @@ export function InspectorPanel() {
     (s) => s.setTerrainPaintFaction,
   );
   const regenerateSettlements = useCampaignStore((s) => s.regenerateSettlements);
+  const shufflePlanetSurface = useCampaignStore((s) => s.shufflePlanetSurface);
   const addArmy = useCampaignStore((s) => s.addArmy);
   const recruitDetachment = useCampaignStore((s) => s.recruitDetachment);
+  const digTrenchWithArmy = useCampaignStore((s) => s.digTrenchWithArmy);
   const recruitShip = useCampaignStore((s) => s.recruitShip);
   const loadTransportCargo = useCampaignStore((s) => s.loadTransportCargo);
   const unloadTransportCargo = useCampaignStore((s) => s.unloadTransportCargo);
@@ -216,6 +220,9 @@ export function InspectorPanel() {
 
   const systemOwnership = system
     ? getSystemOwnership(campaign, system.id)
+    : null;
+  const planetOwnership = planet
+    ? getPlanetOwnership(campaign, planet)
     : null;
 
   /** Galaxy chrome: no system selected and still on the galaxy map. */
@@ -603,18 +610,47 @@ export function InspectorPanel() {
               <select
                 className={inputClass + " mb-2"}
                 value={planet.type}
-                onChange={(e) =>
+                onChange={(e) => {
+                  const next = e.target.value as PlanetType;
+                  if (next === "custom") {
+                    const label = promptCustomLabel(
+                      "world type",
+                      planet.customTypeLabel,
+                    );
+                    if (!label) return;
+                    updatePlanet(planet.id, {
+                      type: "custom",
+                      customTypeLabel: label,
+                    });
+                    return;
+                  }
                   updatePlanet(planet.id, {
-                    type: e.target.value as PlanetType,
-                  })
-                }
+                    type: next,
+                    customTypeLabel: undefined,
+                  });
+                }}
               >
-                {(Object.keys(PLANET_TYPE_LABELS) as PlanetType[]).map((t) => (
+                {keysSortedByLabel(PLANET_TYPE_LABELS).map((t) => (
                   <option key={t} value={t}>
                     {PLANET_TYPE_LABELS[t]}
                   </option>
                 ))}
               </select>
+              {planet.type === "custom" && (
+                <label className="block text-xs text-muted mb-2">
+                  Custom type name
+                  <input
+                    className={inputClass + " mt-1"}
+                    value={planet.customTypeLabel ?? ""}
+                    placeholder="e.g. Forge-Agri Hybrid"
+                    onChange={(e) =>
+                      updatePlanet(planet.id, {
+                        customTypeLabel: e.target.value,
+                      })
+                    }
+                  />
+                </label>
+              )}
               {planet.type === "warp_gate" && (
                 <div className="mb-2 space-y-1.5">
                   <p className="text-[10px] text-brass leading-snug">
@@ -660,7 +696,7 @@ export function InspectorPanel() {
                               <option value="">
                                 {linked ? "Change partner…" : "Select gate…"}
                               </option>
-                              {candidates.map((g) => {
+                              {sortedByName(candidates).map((g) => {
                                 const sys = campaign.systems.find(
                                   (s) => s.id === g.systemId,
                                 );
@@ -707,7 +743,7 @@ export function InspectorPanel() {
                       })
                     }
                   >
-                    {PLANET_CLASSIFICATION_ORDER.map((c) => (
+                    {keysSortedByLabel(PLANET_CLASSIFICATION_LABELS).map((c) => (
                       <option key={c} value={c}>
                         {PLANET_CLASSIFICATION_LABELS[c]}
                       </option>
@@ -718,20 +754,35 @@ export function InspectorPanel() {
               <label className="block text-xs text-muted mb-1">
                 Controlling faction
               </label>
-              <div className="flex items-center gap-2 mb-2">
-                <FactionSwatch
-                  color={
-                    getFactionById(campaign, planet.controllingFactionId)?.color
-                  }
-                />
+              <div className="flex items-center gap-2 mb-1">
+                {planetOwnership?.status === "owned" && (
+                  <FactionSwatch color={planetOwnership.factions[0].color} />
+                )}
+                {planetOwnership?.status === "contested" &&
+                  planetOwnership.factions.map((f) => (
+                    <FactionSwatch key={f.id} color={f.color} />
+                  ))}
                 <select
                   className={inputClass + " flex-1"}
-                  value={planet.controllingFactionId ?? ""}
-                  onChange={(e) =>
-                    setPlanetOwner(planet.id, e.target.value || null)
+                  value={
+                    planetOwnership?.status === "owned"
+                      ? planetOwnership.factions[0].id
+                      : planetOwnership?.status === "contested"
+                        ? "__contested__"
+                        : ""
                   }
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "__contested__") return;
+                    setPlanetOwner(planet.id, v || null);
+                  }}
                 >
                   <option value="">Unclaimed</option>
+                  {planetOwnership?.status === "contested" && (
+                    <option value="__contested__" disabled>
+                      Contested — {planetOwnershipLabel(planetOwnership)}
+                    </option>
+                  )}
                   {factionsSortedByName(campaign.factions).map((f) => (
                     <option key={f.id} value={f.id}>
                       {f.name}
@@ -739,9 +790,12 @@ export function InspectorPanel() {
                   ))}
                 </select>
               </div>
+              <p className="text-[10px] text-muted mb-2 leading-snug">
+                Derived from city majority. A tie leaves the world contested.
+              </p>
               <label className="block text-xs text-muted mb-1">Notes</label>
-              <textarea
-                className={inputClass + " min-h-24 resize-y mb-2"}
+              <AutoGrowTextarea
+                className={inputClass + " min-h-24 mb-2"}
                 value={planet.notes}
                 onChange={(e) =>
                   updatePlanet(planet.id, { notes: e.target.value })
@@ -754,24 +808,38 @@ export function InspectorPanel() {
               supportsStrategicSurface(planet) && (
             <>
             <section>
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center justify-between gap-2 mb-2">
                 <h3 className="text-xs uppercase text-muted tracking-wide">
                   Cities, districts & structures
                 </h3>
-                <button
-                  type="button"
-                  className="text-[10px] text-brass"
-                  onClick={() => {
-                    if (
-                      confirm(
-                        "Regenerate cities, districts, and structures for this world class?",
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    className="text-[10px] text-brass"
+                    title="Reposition cities and districts; reshuffle biomes. Same districts stay on the same cities."
+                    onClick={() => {
+                      if (!shufflePlanetSurface(planet.id)) {
+                        alert("Could not shuffle this world’s surface.");
+                      }
+                    }}
+                  >
+                    Shuffle
+                  </button>
+                  <button
+                    type="button"
+                    className="text-[10px] text-brass"
+                    onClick={() => {
+                      if (
+                        confirm(
+                          "Regenerate cities, districts, and structures for this world class?",
+                        )
                       )
-                    )
-                      regenerateSettlements(planet.id);
-                  }}
-                >
-                  Regenerate
-                </button>
+                        regenerateSettlements(planet.id);
+                    }}
+                  >
+                    Regenerate
+                  </button>
+                </div>
               </div>
               <p className="text-[10px] text-muted mb-2 leading-snug">
                 Cities and districts sit on hexes; world-type structures
@@ -850,39 +918,12 @@ export function InspectorPanel() {
                                 : "border-panel-border/80"
                             }`}
                           >
-                            <button
-                              type="button"
-                              className="w-full text-left bg-transparent border-0 p-0 cursor-pointer"
-                              onClick={() => selectSettlement(city.id, null)}
-                            >
-                              <span className="text-sm text-star font-medium">
-                                {city.name}
-                              </span>
-                              <span className="text-[10px] text-muted ml-2">
-                                {city.districts.length} districts
-                              </span>
-                              <span className="block text-[10px] text-cyan mt-0.5">
-                                Activation{" "}
-                                {activation.groupUsed.get(city.id) ?? 0}/
-                                {activation.groupAp.get(city.id) ?? 0}
-                                {(activation.cityAp.get(city.id) ?? 0) !==
-                                  (activation.groupAp.get(city.id) ?? 0) && (
-                                  <span className="text-muted">
-                                    {" "}
-                                    (local {activation.cityAp.get(city.id) ?? 0}
-                                    , shared via supply)
-                                  </span>
-                                )}
-                              </span>
-                            </button>
-                            {canRenameControlled(
-                              campaign,
-                              city.controllingFactionId,
-                            ) && (
+                            <div className="space-y-1">
                               <input
                                 className={inputClass}
-                                style={{ fontSize: "0.75rem" }}
+                                style={{ fontSize: "0.8rem" }}
                                 value={city.name}
+                                onFocus={() => selectSettlement(city.id, null)}
                                 onChange={(e) =>
                                   updateCity(planet.id, city.id, {
                                     name: e.target.value,
@@ -890,7 +931,30 @@ export function InspectorPanel() {
                                 }
                                 aria-label="City name"
                               />
-                            )}
+                              <button
+                                type="button"
+                                className="w-full text-left bg-transparent border-0 p-0 cursor-pointer"
+                                onClick={() => selectSettlement(city.id, null)}
+                              >
+                                <span className="text-[10px] text-muted">
+                                  {city.districts.length} districts
+                                </span>
+                                <span className="block text-[10px] text-cyan mt-0.5">
+                                  Activation{" "}
+                                  {activation.groupUsed.get(city.id) ?? 0}/
+                                  {activation.groupAp.get(city.id) ?? 0}
+                                  {(activation.cityAp.get(city.id) ?? 0) !==
+                                    (activation.groupAp.get(city.id) ?? 0) && (
+                                    <span className="text-muted">
+                                      {" "}
+                                      (local{" "}
+                                      {activation.cityAp.get(city.id) ?? 0},
+                                      shared via supply)
+                                    </span>
+                                  )}
+                                </span>
+                              </button>
+                            </div>
                             <select
                               className={inputClass}
                               style={{ fontSize: "0.75rem" }}
@@ -929,49 +993,45 @@ export function InspectorPanel() {
                                       active ? "bg-cyan/10" : ""
                                     }`}
                                   >
-                                    <button
-                                      type="button"
-                                      className="w-full flex items-start gap-2 text-left bg-transparent border-0 p-0 cursor-pointer"
-                                      onClick={() =>
-                                        selectSettlement(city.id, d.id)
-                                      }
-                                    >
-                                      <FactionSwatch color={fac?.color} />
-                                      <span className="min-w-0 flex-1">
-                                        <span className="block text-xs text-text truncate">
-                                          {d.name}
-                                        </span>
-                                        <span className="block text-[10px] text-brass truncate">
-                                          {DISTRICT_KIND_LABELS[d.kind]}
-                                          {isApGenerator(d.kind)
-                                            ? " · +AP"
-                                            : isApConsumer(d.kind)
-                                              ? activation.activated.has(d.id)
-                                                ? " · active"
-                                                : " · inactive"
-                                              : ""}
-                                        </span>
-                                      </span>
-                                    </button>
-                                    {canRenameControlled(
-                                      campaign,
-                                      d.controllingFactionId,
-                                    ) && (
-                                      <input
-                                        className={inputClass}
-                                        style={{ fontSize: "0.7rem" }}
-                                        value={d.name}
-                                        onChange={(e) =>
-                                          updateDistrict(
-                                            planet.id,
-                                            city.id,
-                                            d.id,
-                                            { name: e.target.value },
-                                          )
+                                    <div className="flex items-start gap-2">
+                                      <button
+                                        type="button"
+                                        className="mt-1.5 bg-transparent border-0 p-0 cursor-pointer shrink-0"
+                                        onClick={() =>
+                                          selectSettlement(city.id, d.id)
                                         }
-                                        aria-label="District name"
-                                      />
-                                    )}
+                                        aria-label={`Select ${d.name}`}
+                                      >
+                                        <FactionSwatch color={fac?.color} />
+                                      </button>
+                                      <div className="min-w-0 flex-1 space-y-0.5">
+                                        <input
+                                          className={inputClass}
+                                          style={{ fontSize: "0.7rem" }}
+                                          value={d.name}
+                                          onFocus={() =>
+                                            selectSettlement(city.id, d.id)
+                                          }
+                                          onChange={(e) =>
+                                            updateDistrict(
+                                              planet.id,
+                                              city.id,
+                                              d.id,
+                                              { name: e.target.value },
+                                            )
+                                          }
+                                          aria-label="District name"
+                                        />
+                                        <span className="block text-[10px] text-brass truncate">
+                                          {districtBuffDetail(
+                                            planet,
+                                            city.id,
+                                            d,
+                                            activation,
+                                          )}
+                                        </span>
+                                      </div>
+                                    </div>
                                     <select
                                       className={inputClass}
                                       style={{ fontSize: "0.7rem" }}
@@ -1048,37 +1108,40 @@ export function InspectorPanel() {
                                     : "border-panel-border/60"
                                 }`}
                               >
-                                <button
-                                  type="button"
-                                  className="w-full flex items-start gap-2 text-left bg-transparent border-0 p-0 cursor-pointer"
-                                  onClick={() => selectSettlement(null, d.id)}
-                                >
-                                  <FactionSwatch color={fac?.color} />
-                                  <span className="min-w-0 flex-1">
-                                    <span className="block text-xs text-text truncate">
-                                      {d.name}
-                                    </span>
+                                <div className="flex items-start gap-2">
+                                  <button
+                                    type="button"
+                                    className="mt-1.5 bg-transparent border-0 p-0 cursor-pointer shrink-0"
+                                    onClick={() => selectSettlement(null, d.id)}
+                                    aria-label={`Select ${d.name}`}
+                                  >
+                                    <FactionSwatch color={fac?.color} />
+                                  </button>
+                                  <div className="min-w-0 flex-1 space-y-0.5">
+                                    <input
+                                      className={inputClass}
+                                      style={{ fontSize: "0.7rem" }}
+                                      value={d.name}
+                                      onFocus={() =>
+                                        selectSettlement(null, d.id)
+                                      }
+                                      onChange={(e) =>
+                                        updateDistrict(planet.id, null, d.id, {
+                                          name: e.target.value,
+                                        })
+                                      }
+                                      aria-label="District name"
+                                    />
                                     <span className="block text-[10px] text-brass truncate">
-                                      {DISTRICT_KIND_LABELS[d.kind]}
+                                      {districtBuffDetail(
+                                        planet,
+                                        null,
+                                        d,
+                                        activation,
+                                      )}
                                     </span>
-                                  </span>
-                                </button>
-                                {canRenameControlled(
-                                  campaign,
-                                  d.controllingFactionId,
-                                ) && (
-                                  <input
-                                    className={inputClass}
-                                    style={{ fontSize: "0.7rem" }}
-                                    value={d.name}
-                                    onChange={(e) =>
-                                      updateDistrict(planet.id, null, d.id, {
-                                        name: e.target.value,
-                                      })
-                                    }
-                                    aria-label="District name"
-                                  />
-                                )}
+                                  </div>
+                                </div>
                                 <select
                                   className={inputClass}
                                   style={{ fontSize: "0.7rem" }}
@@ -1149,37 +1212,33 @@ export function InspectorPanel() {
                                     : "border-panel-border/60"
                                 }`}
                               >
-                                <button
-                                  type="button"
-                                  className="w-full flex items-start gap-2 text-left bg-transparent border-0 p-0 cursor-pointer"
-                                  onClick={() => selectStructure(st.id)}
-                                >
-                                  <FactionSwatch color={fac?.color} />
-                                  <span className="min-w-0 flex-1">
-                                    <span className="block text-xs text-star font-medium truncate">
-                                      {st.name}
-                                    </span>
+                                <div className="flex items-start gap-2">
+                                  <button
+                                    type="button"
+                                    className="mt-1.5 bg-transparent border-0 p-0 cursor-pointer shrink-0"
+                                    onClick={() => selectStructure(st.id)}
+                                    aria-label={`Select ${st.name}`}
+                                  >
+                                    <FactionSwatch color={fac?.color} />
+                                  </button>
+                                  <div className="min-w-0 flex-1 space-y-0.5">
+                                    <input
+                                      className={inputClass}
+                                      style={{ fontSize: "0.7rem" }}
+                                      value={st.name}
+                                      onFocus={() => selectStructure(st.id)}
+                                      onChange={(e) =>
+                                        updateStructure(planet.id, st.id, {
+                                          name: e.target.value,
+                                        })
+                                      }
+                                      aria-label="Structure name"
+                                    />
                                     <span className="block text-[10px] text-brass truncate">
-                                      {STRUCTURE_KIND_LABELS[st.kind]}
+                                      {structureBuffDetail(planet, st)}
                                     </span>
-                                  </span>
-                                </button>
-                                {canRenameControlled(
-                                  campaign,
-                                  st.controllingFactionId,
-                                ) && (
-                                  <input
-                                    className={inputClass}
-                                    style={{ fontSize: "0.7rem" }}
-                                    value={st.name}
-                                    onChange={(e) =>
-                                      updateStructure(planet.id, st.id, {
-                                        name: e.target.value,
-                                      })
-                                    }
-                                    aria-label="Structure name"
-                                  />
-                                )}
+                                  </div>
+                                </div>
                                 <select
                                   className={inputClass}
                                   style={{ fontSize: "0.7rem" }}
@@ -1346,7 +1405,6 @@ export function InspectorPanel() {
               const buildCityId =
                 (playBuildMode?.kind === "manufactorum" ||
                   playBuildMode?.kind === "bastion" ||
-                  playBuildMode?.kind === "outpost" ||
                   playBuildMode?.kind === "spire" ||
                   playBuildMode?.kind === "underhive" ||
                   playBuildMode?.kind === "domed_habitat") &&
@@ -1396,6 +1454,7 @@ export function InspectorPanel() {
                 campaign,
                 planet,
                 factionId,
+                selectedArmyId,
               );
               const oreMineCheck = canBuildOreMine(
                 campaign,
@@ -1568,7 +1627,6 @@ export function InspectorPanel() {
                             if (
                               (playBuildMode?.kind === "manufactorum" ||
                                 playBuildMode?.kind === "bastion" ||
-                                playBuildMode?.kind === "outpost" ||
                                 playBuildMode?.kind === "spire" ||
                                 playBuildMode?.kind === "underhive" ||
                                 playBuildMode?.kind === "domed_habitat") &&
@@ -1583,7 +1641,7 @@ export function InspectorPanel() {
                             selectSettlement(cityId, null);
                           }}
                         >
-                          {citiesOwned.map((c) => (
+                          {sortedByName(citiesOwned).map((c) => (
                             <option key={c.id} value={c.id}>
                               {c.name}
                             </option>
@@ -1603,13 +1661,7 @@ export function InspectorPanel() {
                           kind: "bastion" as const,
                           check: bastionCheck,
                           cost: BASTION_BP_COST,
-                          label: "Bastion (+2% STR)",
-                        },
-                        {
-                          kind: "outpost" as const,
-                          check: outpostCheck,
-                          cost: OUTPOST_BP_COST,
-                          label: "Outpost (+1% STR)",
+                          label: "Bastion (+10% STR on hex)",
                         },
                         {
                           kind: "spire" as const,
@@ -1675,24 +1727,24 @@ export function InspectorPanel() {
                     <button
                       type="button"
                       className={`hud-btn w-full ${
-                        playBuildMode?.kind === "trench_line"
+                        playBuildMode?.kind === "outpost"
                           ? "hud-btn-active"
                           : ""
                       }`}
-                      disabled={!trenchCheck.ok && playBuildMode == null}
+                      disabled={!outpostCheck.ok && playBuildMode == null}
                       title={
-                        trenchCheck.ok
+                        outpostCheck.ok
                           ? "Then click any free hex"
-                          : trenchCheck.message
+                          : outpostCheck.message
                       }
                       onClick={() => {
-                        if (playBuildMode?.kind === "trench_line") {
+                        if (playBuildMode?.kind === "outpost") {
                           setPlayBuildMode(null);
                           return;
                         }
-                        if (!trenchCheck.ok) return;
+                        if (!outpostCheck.ok) return;
                         setPlayBuildMode({
-                          kind: "trench_line",
+                          kind: "outpost",
                           planetId: planet.id,
                         });
                         if (viewLevel !== "strategic") {
@@ -1700,11 +1752,35 @@ export function InspectorPanel() {
                         }
                       }}
                     >
-                      {playBuildMode?.kind === "trench_line"
+                      {playBuildMode?.kind === "outpost"
                         ? "Click free hex… (cancel)"
-                        : `Build trench line (+1% any) (${TRENCH_LINE_BP_COST} BP)`}
+                        : `Build outpost (+1% STR on/adj.) (${OUTPOST_BP_COST} BP)`}
                     </button>
-                    {!trenchCheck.ok && playBuildMode == null && (
+                    {!outpostCheck.ok && playBuildMode == null && (
+                      <p className="text-[10px] text-brass leading-snug">
+                        {outpostCheck.message}
+                      </p>
+                    )}
+                    <button
+                      type="button"
+                      className="hud-btn w-full"
+                      disabled={!trenchCheck.ok}
+                      title={
+                        trenchCheck.ok
+                          ? "Digs a trench on the selected detachment’s hex"
+                          : trenchCheck.message
+                      }
+                      onClick={() => {
+                        if (!trenchCheck.ok || !selectedArmyId) return;
+                        digTrenchWithArmy(planet.id, selectedArmyId);
+                        if (viewLevel !== "strategic") {
+                          enterPlanet(planet.id);
+                        }
+                      }}
+                    >
+                      Dig trench here (+1–3% on hex) ({TRENCH_LINE_BP_COST} BP)
+                    </button>
+                    {!trenchCheck.ok && (
                       <p className="text-[10px] text-brass leading-snug">
                         {trenchCheck.message}
                       </p>
@@ -1719,7 +1795,7 @@ export function InspectorPanel() {
                       disabled={!oreMineCheck.ok && playBuildMode == null}
                       title={
                         oreMineCheck.ok
-                          ? "Then click a free crater hex"
+                          ? "Then click a free crater or iron-rich hex"
                           : oreMineCheck.message
                       }
                       onClick={() => {
@@ -1738,7 +1814,7 @@ export function InspectorPanel() {
                       }}
                     >
                       {playBuildMode?.kind === "ore_mine"
-                        ? "Click crater hex… (cancel)"
+                        ? "Click crater/iron-rich hex… (cancel)"
                         : `Build ore mine (+${ORE_MINE_BP_BONUS} BP linked) (${ORE_MINE_BP_COST} BP)`}
                     </button>
                     {!oreMineCheck.ok && playBuildMode == null && (
@@ -1793,7 +1869,7 @@ export function InspectorPanel() {
                       </p>
                     ) : (
                       <div className="flex flex-wrap gap-1 max-h-36 overflow-y-auto">
-                        {SHIP_CHASSIS_ORDER.map((chassis) => {
+                        {keysSortedByLabel(SHIP_CHASSIS_LABELS).map((chassis) => {
                           const shipCheck = canRecruitShip(
                             campaign,
                             planet,
@@ -2018,15 +2094,18 @@ export function InspectorPanel() {
                                 })`
                               : ""}
                           </option>
-                          {(fac ? factionSymbolIds(fac) : [])
-                            .map((id) =>
-                              (campaign.symbols ?? []).find((s) => s.id === id),
-                            )
-                            .filter(Boolean)
-                            .map((s) => (
-                              <option key={s!.id} value={s!.id}>
-                                {s!.name}
-                                {s!.id === fac?.defaultSymbolId
+                          {sortedByName(
+                            (fac ? factionSymbolIds(fac) : [])
+                              .map((id) =>
+                                (campaign.symbols ?? []).find((s) => s.id === id),
+                              )
+                              .filter(
+                                (s): s is NonNullable<typeof s> => s != null,
+                              ),
+                          ).map((s) => (
+                              <option key={s.id} value={s.id}>
+                                {s.name}
+                                {s.id === fac?.defaultSymbolId
                                   ? " (primary)"
                                   : ""}
                               </option>
@@ -2102,7 +2181,7 @@ export function InspectorPanel() {
                               <option value="">
                                 Merge into… (1 movement)
                               </option>
-                              {targets.map((t) => (
+                              {sortedByName(targets).map((t) => (
                                 <option key={t.id} value={t.id}>
                                   {t.name} ({armyStrength(t)}%) →{" "}
                                   {armyStrength(army) + armyStrength(t)}%
@@ -2280,7 +2359,7 @@ export function InspectorPanel() {
                   })
                 }
               >
-                {STAR_CLASS_ORDER.map((c) => (
+                {keysSortedByLabel(STAR_CLASS_LABELS).map((c) => (
                   <option key={c} value={c}>
                     {STAR_CLASS_LABELS[c]}
                   </option>
@@ -2348,13 +2427,14 @@ export function InspectorPanel() {
                 </select>
               </div>
               <p className="text-[10px] text-muted mb-2 leading-snug">
-                Setting a system owner assigns every planet in it. Mixed planet
-                owners make the system a battlezone.
+                Setting a system owner assigns every planet in it. System control
+                follows clearly owned worlds only — contested planets are ignored.
+                Split owned planets make the system contested.
               </p>
 
               <label className="block text-xs text-muted mb-1">Notes</label>
-              <textarea
-                className={inputClass + " min-h-16 resize-y mb-2"}
+              <AutoGrowTextarea
+                className={inputClass + " min-h-16 mb-2"}
                 value={system.notes}
                 onChange={(e) =>
                   updateSystem(system.id, { notes: e.target.value })
@@ -2380,10 +2460,13 @@ export function InspectorPanel() {
               ) : (
                 <ul className="space-y-1">
                   {systemPlanets.map((p) => {
-                    const fac = getFactionById(
-                      campaign,
-                      p.controllingFactionId,
-                    );
+                    const own = getPlanetOwnership(campaign, p);
+                    const fac =
+                      own.status === "owned"
+                        ? own.factions[0]
+                        : own.status === "contested"
+                          ? own.factions[0]
+                          : undefined;
                     return (
                       <li key={p.id}>
                         <button
@@ -2396,11 +2479,13 @@ export function InspectorPanel() {
                             {p.name}
                           </span>
                           <span className="text-muted truncate max-w-[40%]">
-                            {p.type === "asteroid_belt"
-                              ? PLANET_TYPE_LABELS[p.type]
-                              : PLANET_CLASSIFICATION_LABELS[
-                                  p.classification
-                                ] ?? PLANET_TYPE_LABELS[p.type]}
+                            {own.status === "contested"
+                              ? "Contested"
+                              : p.type === "asteroid_belt"
+                                ? PLANET_TYPE_LABELS[p.type]
+                                : PLANET_CLASSIFICATION_LABELS[
+                                    p.classification
+                                  ] ?? PLANET_TYPE_LABELS[p.type]}
                           </span>
                         </button>
                       </li>

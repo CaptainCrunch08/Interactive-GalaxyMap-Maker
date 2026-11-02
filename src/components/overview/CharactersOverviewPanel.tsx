@@ -1,18 +1,19 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useCampaignStore } from "../../store/useCampaignStore";
 import type {
   Campaign,
   CampaignCharacter,
   CharacterStatus,
 } from "../../types/campaign";
+import { compareByLabel, sortedByName } from "../../lib/sortOptions";
 import { factionsSortedByName, getFactionById } from "../../lib/territory";
 import {
   characterLocationDisplay,
   characterPlacementLabel,
-  fleetsForLocationDraft,
   placementFromDraft,
   resolvePlacementDraft,
 } from "../../lib/characterLocation";
+import { locationLabel } from "../../lib/fleets";
 
 const STATUS_STYLE: Record<
   CharacterStatus,
@@ -46,6 +47,7 @@ type SortMode = "name_asc" | "name_desc" | "faction_asc";
 
 type Draft = {
   name: string;
+  nickname: string;
   title: string;
   factionId: string;
   affiliation: string;
@@ -56,10 +58,13 @@ type Draft = {
   armyId: string;
   /** Free-text detail when placement is unknown, or extra lore note. */
   locationNote: string;
+  /** Description and background lore. */
+  background: string;
 };
 
 const emptyDraft = (): Draft => ({
   name: "",
+  nickname: "",
   title: "",
   factionId: "",
   affiliation: "",
@@ -69,6 +74,7 @@ const emptyDraft = (): Draft => ({
   fleetId: "",
   armyId: "",
   locationNote: "",
+  background: "",
 });
 
 function draftFromCharacter(
@@ -85,12 +91,14 @@ function draftFromCharacter(
         : c.location;
   return {
     name: c.name,
+    nickname: c.nickname ?? "",
     title: c.title,
     factionId: c.factionId ?? "",
     affiliation: c.affiliation ?? "",
     status: c.status,
     ...place,
     locationNote: note,
+    background: c.background ?? c.notes ?? "",
   };
 }
 
@@ -188,6 +196,11 @@ function CharacterCard({
             >
               {character.name}
             </h4>
+            {character.nickname?.trim() ? (
+              <p className="text-[11px] text-brass/90 truncate mt-0.5 italic">
+                “{character.nickname.trim()}”
+              </p>
+            ) : null}
             <p className="text-[11px] text-muted truncate mt-0.5">
               {character.title.trim() || "No rank recorded"}
             </p>
@@ -209,9 +222,85 @@ function CharacterCard({
         <p className="mt-3 text-[11px] text-muted truncate">
           ◆ {locationPrefix}: {locationLabel || "Unknown"}
         </p>
+        {(character.background ?? character.notes)?.trim() ? (
+          <p className="mt-2 text-[11px] text-fog/85 leading-snug line-clamp-3 whitespace-pre-wrap">
+            {(character.background ?? character.notes)!.trim()}
+          </p>
+        ) : null}
       </button>
     </article>
   );
+}
+
+type SelectOption = { id: string; label: string };
+
+function FilterableSelect({
+  value,
+  onChange,
+  options,
+  emptyLabel,
+  searchPlaceholder = "Search…",
+  disabled,
+}: {
+  value: string;
+  onChange: (id: string) => void;
+  options: SelectOption[];
+  emptyLabel: string;
+  searchPlaceholder?: string;
+  disabled?: boolean;
+}) {
+  const [filter, setFilter] = useState("");
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    let list = q
+      ? options.filter((o) => o.label.toLowerCase().includes(q))
+      : [...options];
+    list = [...list].sort((a, b) => compareByLabel(a.label, b.label));
+    if (value && !list.some((o) => o.id === value)) {
+      const selected = options.find((o) => o.id === value);
+      if (selected) list = [selected, ...list.filter((o) => o.id !== value)];
+    }
+    return list;
+  }, [options, filter, value]);
+
+  return (
+    <div className="mt-1 space-y-1.5">
+      <input
+        type="search"
+        className="hud-input w-full"
+        value={filter}
+        disabled={disabled}
+        placeholder={searchPlaceholder}
+        onChange={(e) => setFilter(e.target.value)}
+      />
+      <select
+        className="hud-input w-full"
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        <option value="">{emptyLabel}</option>
+        {filtered.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function armyOptionId(planetId: string, armyId: string) {
+  return `${planetId}::${armyId}`;
+}
+
+function parseArmyOptionId(value: string): {
+  planetId: string;
+  armyId: string;
+} | null {
+  const i = value.indexOf("::");
+  if (i <= 0) return null;
+  return { planetId: value.slice(0, i), armyId: value.slice(i + 2) };
 }
 
 function CharacterForm({
@@ -238,31 +327,63 @@ function CharacterForm({
       [...campaign.systems].sort((a, b) => a.name.localeCompare(b.name)),
     [campaign.systems],
   );
-  const planets = useMemo(() => {
-    if (!draft.systemId) return [];
-    return campaign.planets
-      .filter((p) => p.systemId === draft.systemId)
-      .sort((a, b) => a.orbitIndex - b.orbitIndex || a.name.localeCompare(b.name));
-  }, [campaign.planets, draft.systemId]);
 
-  const fleets = useMemo(
-    () =>
-      fleetsForLocationDraft(
-        campaign,
-        draft.systemId,
-        draft.planetId,
-        draft.factionId || undefined,
-      ),
-    [campaign, draft.systemId, draft.planetId, draft.factionId],
-  );
+  const systemNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const s of campaign.systems) map.set(s.id, s.name);
+    return map;
+  }, [campaign.systems]);
 
-  const detachments = useMemo(() => {
-    if (!draft.planetId || !draft.factionId) return [];
-    const planet = campaign.planets.find((p) => p.id === draft.planetId);
-    return [...(planet?.armies ?? [])]
-      .filter((a) => a.factionId === draft.factionId)
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [campaign.planets, draft.planetId, draft.factionId]);
+  const planetOptions = useMemo(() => {
+    const list = [...campaign.planets].sort((a, b) => {
+      const sa = systemNameById.get(a.systemId) ?? "";
+      const sb = systemNameById.get(b.systemId) ?? "";
+      const sysCmp = sa.localeCompare(sb, undefined, { sensitivity: "base" });
+      if (sysCmp !== 0) return sysCmp;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    });
+    return list.map((p) => ({
+      id: p.id,
+      label: `${p.name} · ${systemNameById.get(p.systemId) ?? "Unknown system"}`,
+    }));
+  }, [campaign.planets, systemNameById]);
+
+  const fleetOptions = useMemo(() => {
+    let fleets = [...(campaign.fleets ?? [])];
+    if (draft.factionId) {
+      fleets = fleets.filter((f) => f.factionId === draft.factionId);
+    }
+    fleets.sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+    );
+    return fleets.map((f) => ({
+      id: f.id,
+      label: `${f.name} · ${locationLabel(campaign, f.location)}`,
+    }));
+  }, [campaign, draft.factionId]);
+
+  const detachmentOptions = useMemo(() => {
+    const options: SelectOption[] = [];
+    for (const planet of campaign.planets) {
+      for (const army of planet.armies ?? []) {
+        if (draft.factionId && army.factionId !== draft.factionId) continue;
+        const system = systemNameById.get(planet.systemId) ?? "Unknown system";
+        options.push({
+          id: armyOptionId(planet.id, army.id),
+          label: `${army.name} · ${planet.name} · ${system}`,
+        });
+      }
+    }
+    options.sort((a, b) =>
+      a.label.localeCompare(b.label, undefined, { sensitivity: "base" }),
+    );
+    return options;
+  }, [campaign.planets, draft.factionId, systemNameById]);
+
+  const detachmentValue =
+    draft.planetId && draft.armyId
+      ? armyOptionId(draft.planetId, draft.armyId)
+      : "";
 
   const placementPreview = characterPlacementLabel(
     campaign,
@@ -270,33 +391,75 @@ function CharacterForm({
   );
 
   const setSystem = (systemId: string) => {
+    const planetStillValid =
+      draft.planetId &&
+      campaign.planets.some(
+        (p) => p.id === draft.planetId && p.systemId === systemId,
+      );
     onChange({
       systemId,
-      planetId: "",
+      planetId: planetStillValid ? draft.planetId : "",
       fleetId: "",
       armyId: "",
     });
   };
 
   const setPlanet = (planetId: string) => {
+    if (!planetId) {
+      onChange({
+        planetId: "",
+        fleetId: "",
+        armyId: "",
+      });
+      return;
+    }
+    const planet = campaign.planets.find((p) => p.id === planetId);
     onChange({
       planetId,
+      systemId: planet?.systemId ?? draft.systemId,
       fleetId: "",
       armyId: "",
     });
   };
 
   const setFleet = (fleetId: string) => {
+    if (!fleetId) {
+      onChange({ fleetId: "" });
+      return;
+    }
+    const fleet = (campaign.fleets ?? []).find((f) => f.id === fleetId);
+    if (!fleet) {
+      onChange({ fleetId, armyId: "" });
+      return;
+    }
     onChange({
       fleetId,
-      armyId: fleetId ? "" : draft.armyId,
+      armyId: "",
+      factionId: fleet.factionId,
+      systemId: fleet.location.systemId,
+      planetId:
+        fleet.location.kind === "orbit" ? fleet.location.planetId : "",
     });
   };
 
-  const setArmy = (armyId: string) => {
+  const setArmy = (optionId: string) => {
+    if (!optionId) {
+      onChange({ armyId: "" });
+      return;
+    }
+    const parsed = parseArmyOptionId(optionId);
+    if (!parsed) {
+      onChange({ armyId: optionId, fleetId: "" });
+      return;
+    }
+    const planet = campaign.planets.find((p) => p.id === parsed.planetId);
+    const army = planet?.armies?.find((a) => a.id === parsed.armyId);
     onChange({
-      armyId,
-      fleetId: armyId ? "" : draft.fleetId,
+      armyId: parsed.armyId,
+      planetId: parsed.planetId,
+      systemId: planet?.systemId ?? draft.systemId,
+      fleetId: "",
+      factionId: army?.factionId ?? draft.factionId,
     });
   };
 
@@ -313,6 +476,15 @@ function CharacterForm({
             value={draft.name}
             placeholder="Captain Sevrael Sanzeo"
             onChange={(e) => onChange({ name: e.target.value })}
+          />
+        </label>
+        <label className="block text-[10px] uppercase tracking-wider text-muted sm:col-span-2">
+          Nickname
+          <input
+            className="hud-input mt-1 w-full"
+            value={draft.nickname}
+            placeholder="Callsign, epithet, or familiar name…"
+            onChange={(e) => onChange({ nickname: e.target.value })}
           />
         </label>
         <label className="block text-[10px] uppercase tracking-wider text-muted sm:col-span-2">
@@ -333,27 +505,27 @@ function CharacterForm({
             onChange={(e) => onChange({ affiliation: e.target.value })}
           />
         </label>
-          <label className="block text-[10px] uppercase tracking-wider text-muted">
-            Faction
-            <select
-              className="hud-input mt-1 w-full"
-              value={draft.factionId}
-              onChange={(e) =>
-                onChange({
-                  factionId: e.target.value,
-                  fleetId: "",
-                  armyId: "",
-                })
-              }
-            >
-              <option value="">— None —</option>
-              {factions.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.name}
-                </option>
-              ))}
-            </select>
-          </label>
+        <label className="block text-[10px] uppercase tracking-wider text-muted">
+          Faction
+          <select
+            className="hud-input mt-1 w-full"
+            value={draft.factionId}
+            onChange={(e) =>
+              onChange({
+                factionId: e.target.value,
+                fleetId: "",
+                armyId: "",
+              })
+            }
+          >
+            <option value="">— None —</option>
+            {factionsSortedByName(factions).map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.name}
+              </option>
+            ))}
+          </select>
+        </label>
         <label className="block text-[10px] uppercase tracking-wider text-muted sm:col-span-2">
           Status
           <select
@@ -364,8 +536,8 @@ function CharacterForm({
             }
           >
             <option value="alive">Alive</option>
-            <option value="lost">Lost (unconfirmed)</option>
             <option value="deceased">Deceased</option>
+            <option value="lost">Lost (unconfirmed)</option>
           </select>
           {draft.status === "lost" && (
             <span className="mt-1 block normal-case tracking-normal text-[10px] text-muted">
@@ -380,19 +552,19 @@ function CharacterForm({
           Location
         </p>
         <p className="text-[10px] text-muted">
-          Select star system, then planet, then optionally a fleet or surface
-          detachment.
+          Pick any field — planet, fleet, or detachment will fill in the rest.
+          Search to narrow long lists.
         </p>
         <div className="grid sm:grid-cols-2 gap-3">
           <label className="block text-[10px] uppercase tracking-wider text-muted">
-            1. Star system
+            Star system
             <select
               className="hud-input mt-1 w-full"
               value={draft.systemId}
               onChange={(e) => setSystem(e.target.value)}
             >
               <option value="">— Unknown —</option>
-              {systems.map((s) => (
+              {sortedByName(systems).map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}
                 </option>
@@ -400,66 +572,42 @@ function CharacterForm({
             </select>
           </label>
           <label className="block text-[10px] uppercase tracking-wider text-muted">
-            2. Planet
-            <select
-              className="hud-input mt-1 w-full"
+            Planet
+            <FilterableSelect
               value={draft.planetId}
-              disabled={!draft.systemId}
-              onChange={(e) => setPlanet(e.target.value)}
-            >
-              <option value="">
-                {draft.systemId ? "— At star / system only —" : "— Pick a system —"}
-              </option>
-              {planets.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
+              onChange={setPlanet}
+              options={planetOptions}
+              emptyLabel="— At star / system only —"
+              searchPlaceholder="Search planets…"
+            />
           </label>
           <label className="block text-[10px] uppercase tracking-wider text-muted">
-            3. Fleet (optional)
-            <select
-              className="hud-input mt-1 w-full"
+            Fleet (optional)
+            <FilterableSelect
               value={draft.fleetId}
-              disabled={!draft.systemId || !draft.factionId}
-              onChange={(e) => setFleet(e.target.value)}
-            >
-              <option value="">
-                {!draft.factionId
-                  ? "— Pick a faction —"
-                  : !draft.systemId
-                    ? "— Pick a system —"
-                    : "— None —"}
-              </option>
-              {fleets.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.name}
-                </option>
-              ))}
-            </select>
+              onChange={setFleet}
+              options={fleetOptions}
+              emptyLabel="— None —"
+              searchPlaceholder={
+                draft.factionId
+                  ? "Search fleets…"
+                  : "Search fleets (all factions)…"
+              }
+            />
           </label>
           <label className="block text-[10px] uppercase tracking-wider text-muted">
-            4. Detachment (optional)
-            <select
-              className="hud-input mt-1 w-full"
-              value={draft.armyId}
-              disabled={!draft.planetId || !draft.factionId}
-              onChange={(e) => setArmy(e.target.value)}
-            >
-              <option value="">
-                {!draft.factionId
-                  ? "— Pick a faction —"
-                  : !draft.planetId
-                    ? "— Pick a planet —"
-                    : "— None —"}
-              </option>
-              {detachments.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
+            Detachment (optional)
+            <FilterableSelect
+              value={detachmentValue}
+              onChange={setArmy}
+              options={detachmentOptions}
+              emptyLabel="— None —"
+              searchPlaceholder={
+                draft.factionId
+                  ? "Search detachments…"
+                  : "Search detachments (all factions)…"
+              }
+            />
           </label>
           {!draft.systemId && (
             <label className="block text-[10px] uppercase tracking-wider text-muted sm:col-span-2">
@@ -483,6 +631,16 @@ function CharacterForm({
         )}
       </div>
 
+      <label className="block text-[10px] uppercase tracking-wider text-muted">
+        Description &amp; background
+        <textarea
+          className="hud-input mt-1 w-full min-h-[7rem] resize-y"
+          value={draft.background}
+          placeholder="Appearance, history, deeds, and other lore…"
+          onChange={(e) => onChange({ background: e.target.value })}
+        />
+      </label>
+
       <div className="flex flex-wrap gap-2 pt-1">
         <button type="button" className="hud-btn" onClick={onSave}>
           {saveLabel}
@@ -504,12 +662,15 @@ function payloadFromDraft(campaign: Campaign, draft: Draft) {
     "";
   return {
     name: draft.name.trim() || "New Character",
+    nickname: draft.nickname.trim() || undefined,
     title: draft.title.trim(),
     factionId: draft.factionId || undefined,
     affiliation: draft.affiliation.trim() || undefined,
     status: draft.status,
     placement,
     location,
+    background: draft.background.trim() || undefined,
+    notes: undefined,
   };
 }
 
@@ -521,13 +682,24 @@ export function CharactersOverviewPanel() {
 
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [sortMode, setSortMode] = useState<SortMode>("name_asc");
+  const [sortMode, setSortMode] = useState<SortMode>("faction_asc");
   const [mode, setMode] = useState<"idle" | "create" | "edit">("idle");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   const characters = campaign.characters ?? [];
   const q = query.trim().toLowerCase();
+
+  useEffect(() => {
+    if (mode !== "edit" && mode !== "create") return;
+    const panel = panelRef.current;
+    // Wait a frame so the form is mounted, then scroll the encyclopedia panel.
+    const id = requestAnimationFrame(() => {
+      panel?.scrollTo({ top: 0, behavior: "smooth" });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [mode, editingId]);
 
   const filtered = useMemo(() => {
     const list = characters.filter((c) => {
@@ -538,8 +710,11 @@ export function CharactersOverviewPanel() {
       const style = STATUS_STYLE[c.status] ?? STATUS_STYLE.alive;
       const hay = [
         c.name,
+        c.nickname ?? "",
         c.title,
         c.affiliation ?? "",
+        c.background ?? "",
+        c.notes ?? "",
         loc,
         c.location,
         faction,
@@ -624,7 +799,10 @@ export function CharactersOverviewPanel() {
   };
 
   return (
-    <div className="flex-1 overflow-y-auto p-5 md:p-7 space-y-6">
+    <div
+      ref={panelRef}
+      className="flex-1 overflow-y-auto p-5 md:p-7 space-y-6"
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="font-display text-2xl md:text-3xl text-brass tracking-[0.08em] uppercase">
@@ -669,9 +847,9 @@ export function CharactersOverviewPanel() {
               onChange={(e) => setSortMode(e.target.value as SortMode)}
               title="Organize characters"
             >
+              <option value="faction_asc">Faction A → Z</option>
               <option value="name_asc">Name A → Z</option>
               <option value="name_desc">Name Z → A</option>
-              <option value="faction_asc">Faction A → Z</option>
             </select>
           </label>
           <label className="block">
@@ -683,35 +861,23 @@ export function CharactersOverviewPanel() {
             >
               <option value="all">All Status</option>
               <option value="alive">Alive</option>
-              <option value="lost">Lost</option>
               <option value="deceased">Deceased</option>
+              <option value="lost">Lost</option>
             </select>
           </label>
         </div>
       </div>
 
-      {mode === "create" && (
+      {(mode === "create" || mode === "edit") && (
         <CharacterForm
-          title="Create Character"
+          title={mode === "create" ? "Create Character" : "Edit Character"}
           draft={draft}
           campaign={campaign}
           factions={factionsSortedByName(campaign.factions)}
           onChange={(patch) => setDraft((d) => ({ ...d, ...patch }))}
-          onSave={saveCreate}
+          onSave={mode === "create" ? saveCreate : saveEdit}
           onCancel={cancelForm}
-          saveLabel="Create"
-        />
-      )}
-      {mode === "edit" && (
-        <CharacterForm
-          title="Edit Character"
-          draft={draft}
-          campaign={campaign}
-          factions={factionsSortedByName(campaign.factions)}
-          onChange={(patch) => setDraft((d) => ({ ...d, ...patch }))}
-          onSave={saveEdit}
-          onCancel={cancelForm}
-          saveLabel="Save"
+          saveLabel={mode === "create" ? "Create" : "Save"}
         />
       )}
 

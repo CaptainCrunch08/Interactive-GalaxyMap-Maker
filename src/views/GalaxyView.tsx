@@ -12,10 +12,7 @@ import { FleetMarker } from "../components/fleet/FleetMarker";
 import { resolveFleetSymbolUrl } from "../lib/fleetSymbols";
 import { useMapCamera } from "../hooks/useMapCamera";
 import { useThrottledMapScale } from "../hooks/useThrottledMapScale";
-import {
-  getDominantFactionForSystem,
-  useCampaignStore,
-} from "../store/useCampaignStore";
+import { useCampaignStore } from "../store/useCampaignStore";
 import {
   adjacentSystemIds,
   fleetsBySystemId,
@@ -51,6 +48,12 @@ export function GalaxyView() {
 
   const bySystem = useMemo(() => fleetsBySystemId(fleets), [fleets]);
 
+  /** System to frame when returning from system view (or last selection). */
+  const centerSystem = useMemo(() => {
+    if (!selectedSystemId) return null;
+    return campaign.systems.find((s) => s.id === selectedSystemId) ?? null;
+  }, [campaign.systems, selectedSystemId]);
+
   const movingFleet = fleets.find((f) => f.id === fleetMoveModeId);
   const moveTargets = useMemo(() => {
     if (!movingFleet) return new Set<string>();
@@ -61,6 +64,16 @@ export function GalaxyView() {
     );
   }, [movingFleet, campaign]);
 
+  const ownershipBySystemId = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof getSystemOwnership>>();
+    for (const system of campaign.systems) {
+      map.set(system.id, getSystemOwnership(campaign, system.id));
+    }
+    return map;
+  }, [campaign]);
+
+  const starInteractionKey = `${editMode}:${fleetMoveModeId ?? ""}`;
+
   return (
     <div className="relative h-full w-full galaxy-bg overflow-hidden">
       <TransformWrapper
@@ -70,13 +83,25 @@ export function GalaxyView() {
         minScale={minScale}
         maxScale={maxScale}
         limitToBounds={false}
-        centerOnInit
+        centerOnInit={!centerSystem}
         wheel={{ disabled: true }}
         panning={{ disabled: editMode, velocityDisabled: true }}
         doubleClick={{ disabled: true }}
         onInit={(ref) => {
           syncTargetScale(ref.state.scale);
           setMapScale(ref.state.scale);
+          if (!centerSystem) return;
+          const wrapper = ref.instance.wrapperComponent;
+          if (!wrapper) return;
+          const { clientWidth: cw, clientHeight: ch } = wrapper;
+          if (cw <= 0 || ch <= 0) return;
+          const scale = ref.state.scale;
+          ref.setTransform(
+            cw / 2 - centerSystem.x * scale,
+            ch / 2 - centerSystem.y * scale,
+            scale,
+            0,
+          );
         }}
         onTransform={(_ref, state) => {
           setMapScale(state.scale);
@@ -118,7 +143,7 @@ export function GalaxyView() {
               </div>
             )}
             {campaign.systems.map((system) => {
-              const ownership = getSystemOwnership(campaign, system.id);
+              const ownership = ownershipBySystemId.get(system.id);
               const validTarget = Boolean(
                 fleetMoveModeId && moveTargets.has(system.id),
               );
@@ -126,10 +151,15 @@ export function GalaxyView() {
                 <StarNode
                   key={system.id}
                   system={system}
-                  faction={getDominantFactionForSystem(campaign, system.id)}
-                  contested={ownership.status === "contested"}
+                  faction={
+                    ownership?.status === "owned" ||
+                    ownership?.status === "contested"
+                      ? ownership.factions[0]
+                      : undefined
+                  }
+                  contested={ownership?.status === "contested"}
                   contestedFactions={
-                    ownership.status === "contested"
+                    ownership?.status === "contested"
                       ? ownership.factions
                       : undefined
                   }
@@ -138,6 +168,7 @@ export function GalaxyView() {
                   }
                   editMode={editMode}
                   mapScale={mapScale}
+                  interactionKey={starInteractionKey}
                   onSelect={() => {
                     if (fleetMoveModeId && validTarget) {
                       moveFleet(fleetMoveModeId, {

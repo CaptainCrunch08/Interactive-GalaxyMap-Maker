@@ -9,6 +9,10 @@ export type PlanetType =
   | "feudal"
   | "fortress"
   | "homeworld"
+  | "trade"
+  | "mining"
+  | "archaeological"
+  | "abandoned_colony"
   | "asteroid_belt"
   | "warp_gate"
   | "custom";
@@ -42,19 +46,9 @@ export type DistrictKind =
   | "docks"
   | "bastion"
   | "manufactorum"
-  | "foundry"
-  | "refinery"
-  | "railhead"
-  | "agriplex"
-  | "silo"
-  | "reservoir"
-  | "outpost"
-  | "fortress"
   | "camp"
   | "cathedral"
   | "reliquary"
-  | "cloister"
-  | "quarter"
   | "ruins"
   | "supply_station";
 
@@ -64,22 +58,8 @@ export type DistrictKind =
  */
 export type StructureKind =
   | "space_port"
-  | "spire_cluster"
-  | "underhive_gate"
-  | "manufactorum_complex"
   | "ore_mine"
-  | "slag_works"
-  | "reactor"
-  | "agri_dome"
-  | "silo_complex"
-  | "reservoir_works"
-  | "fortress_bastion"
   | "trench_line"
-  | "kill_zone"
-  | "cathedral_complex"
-  | "reliquary_vault"
-  | "pilgrim_station"
-  | "mining_claim"
   | "relay"
   | "relay_crown"
   | "outpost"
@@ -92,6 +72,14 @@ export interface Faction {
   color: string;
   /** Named commander / sovereign shown in Galactic Overview. */
   leader?: string;
+  /** Short tagline under the faction name on the dossier. */
+  epithet?: string;
+  /** Origin lore for the faction dossier. */
+  origin?: string;
+  /** Purpose / mission lore for the faction dossier. */
+  purpose?: string;
+  /** Present condition / outlook for the faction dossier. */
+  standing?: string;
   /**
    * Primary emblem for the faction as a whole
    * (also used as default for new detachments / fleets).
@@ -121,6 +109,8 @@ export type CharacterPlacement =
 export interface CampaignCharacter {
   id: string;
   name: string;
+  /** Optional alias / callsign shown under the name. */
+  nickname?: string;
   /** Rank / role line under the name (e.g. "Captain of the 4th Company"). */
   title: string;
   /** Optional link to a map faction. */
@@ -135,6 +125,9 @@ export interface CampaignCharacter {
   placement?: CharacterPlacement;
   /** Display / last-known location (derived from placement when set). */
   location: string;
+  /** Description and background lore for the character sheet. */
+  background?: string;
+  /** @deprecated Prefer `background`. Kept for older saves. */
   notes?: string;
 }
 
@@ -233,7 +226,38 @@ export interface BattleEntry {
   victoryKind?: VictoryKind;
   /** Winning faction id, or null/omit on a draw. */
   victorFactionId?: string | null;
+  /** Characters killed in this engagement (encyclopedia deceased). */
+  killedCharacterIds?: string[];
 }
+
+/** Surface fight vs void fight for the galactic battle chronicle. */
+export type BattleTheater = "planetary" | "space";
+
+/**
+ * Campaign-wide battle log entry (Galactic Overview → Battles).
+ * Planetary resolves also keep a copy on `Planet.battles`.
+ */
+export interface CampaignBattleLogEntry extends BattleEntry {
+  theater: BattleTheater;
+  planetId?: string;
+  systemId?: string;
+  /** Human-readable place (planet · system, or system for space). */
+  locationLabel: string;
+  attackerFleetId?: string;
+  defenderFleetId?: string;
+}
+
+export type GalaxyOverviewTab =
+  | "strategic"
+  | "factions"
+  | "planets"
+  | "characters"
+  | "battles";
+
+export const BATTLE_THEATER_LABELS: Record<BattleTheater, string> = {
+  planetary: "Planetary",
+  space: "Space",
+};
 
 /** Imperial Navy–style ship hull class. */
 export type ShipChassis =
@@ -357,6 +381,11 @@ export interface Planet {
   name: string;
   orbitIndex: number;
   type: PlanetType;
+  /**
+   * User-defined label when `type === "custom"` (e.g. "Forge-Agri Hybrid").
+   * Shown in place of the generic "Custom" type name.
+   */
+  customTypeLabel?: string;
   /** Climate / environment (ignored for asteroid belts). */
   classification: PlanetClassification;
   /**
@@ -381,6 +410,12 @@ export interface Planet {
   independentDistricts?: District[];
   /** World-type structures on free hexes (mines, docks, forts, …). */
   structures: PlanetStructure[];
+  /**
+   * True once this world has received a settlement pass (gen, load migrate, or
+   * regenerate). Empty cities/structures after this must stay empty — do not
+   * auto-rebuild on focus/load.
+   */
+  surfaceReady?: boolean;
   /**
    * Ownership of open hexes (no city/district/structure).
    * Keys are tile index strings → faction id. Settlement tiles always win.
@@ -496,6 +531,11 @@ export interface Campaign {
   /** Optional in-game chronicle (territory/fleet timelapse + events). */
   timeline?: CampaignTimeline;
   /**
+   * Galaxy-wide battle chronicle (planetary + space).
+   * Older saves omit this — migrated from `Planet.battles` on load.
+   */
+  battleLog?: CampaignBattleLogEntry[];
+  /**
    * Square map extent in world units (border / playable area).
    * Defaults to GALAXY_SIZE when missing (older saves).
    */
@@ -513,10 +553,25 @@ export const PLANET_TYPE_LABELS: Record<PlanetType, string> = {
   feudal: "Feudal World",
   fortress: "Fortress World",
   homeworld: "Homeworld",
+  trade: "Trade World",
+  mining: "Mining World",
+  archaeological: "Archaeological World",
+  abandoned_colony: "Abandoned Colony",
   asteroid_belt: "Asteroid Belt",
   warp_gate: "Warp Gate",
   custom: "Custom",
 };
+
+/** Display label for a planet's type, including user-named custom worlds. */
+export function planetTypeDisplayLabel(
+  planet: Pick<Planet, "type" | "customTypeLabel">,
+): string {
+  if (planet.type === "custom") {
+    const custom = planet.customTypeLabel?.trim();
+    if (custom) return custom;
+  }
+  return PLANET_TYPE_LABELS[planet.type] ?? "World";
+}
 
 export const PLANET_CLASSIFICATION_LABELS: Record<PlanetClassification, string> =
   {
@@ -594,19 +649,9 @@ export const DISTRICT_KIND_LABELS: Record<DistrictKind, string> = {
   docks: "Space Port",
   bastion: "Bastion",
   manufactorum: "Manufactorum",
-  foundry: "Foundry",
-  refinery: "Refinery",
-  railhead: "Railhead",
-  agriplex: "Agri-Plex",
-  silo: "Grain Silo",
-  reservoir: "Reservoir",
-  outpost: "Outpost",
-  fortress: "Fortress",
   camp: "War Camp",
   cathedral: "Cathedral",
   reliquary: "Reliquary",
-  cloister: "Cloister",
-  quarter: "District",
   ruins: "Ruins",
   supply_station: "Supply Station",
 };
@@ -618,31 +663,17 @@ export const DISTRICT_KIND_ORDER: DistrictKind[] = [
   "docks",
   "bastion",
   "manufactorum",
-  "outpost",
   "camp",
   "cathedral",
+  "reliquary",
   "ruins",
   "supply_station",
 ];
 
 export const STRUCTURE_KIND_LABELS: Record<StructureKind, string> = {
   space_port: "Space Port",
-  spire_cluster: "Spire Cluster",
-  underhive_gate: "Underhive Gate",
-  manufactorum_complex: "Manufactorum Complex",
   ore_mine: "Ore Mine",
-  slag_works: "Slag Works",
-  reactor: "Reactor",
-  agri_dome: "Agri Dome",
-  silo_complex: "Silo Complex",
-  reservoir_works: "Reservoir Works",
-  fortress_bastion: "Fortress Bastion",
   trench_line: "Trench Line",
-  kill_zone: "Kill Zone",
-  cathedral_complex: "Cathedral Complex",
-  reliquary_vault: "Reliquary Vault",
-  pilgrim_station: "Pilgrim Station",
-  mining_claim: "Mining Claim",
   relay: "Relay",
   relay_crown: "Relay Crown",
   outpost: "Outpost",
@@ -650,10 +681,15 @@ export const STRUCTURE_KIND_LABELS: Record<StructureKind, string> = {
   supply_network: "Supply Network",
 };
 
+/** Kinds players may place from edit / strategic pickers (excludes warp-only crown). */
 export const STRUCTURE_KIND_ORDER: StructureKind[] = [
   "ore_mine",
-  "trench_line",
+  "outpost",
+  "relay",
+  "ruins_site",
+  "space_port",
   "supply_network",
+  "trench_line",
 ];
 
 export const SHIP_CHASSIS_LABELS: Record<ShipChassis, string> = {

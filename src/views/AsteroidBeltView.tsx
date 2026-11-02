@@ -9,6 +9,7 @@ import {
 import { SystemStar } from "../components/system/SystemStar";
 import { fleetsInOrbit, shipCount } from "../lib/fleets";
 import { useCampaignStore } from "../store/useCampaignStore";
+import { AutoGrowTextarea } from "../components/AutoGrowTextarea";
 
 function hash(seed: string): number {
   let h = 2166136261;
@@ -234,8 +235,8 @@ export function AsteroidBeltView() {
           <label className="block text-[10px] uppercase tracking-wide text-muted">
             Notes
           </label>
-          <textarea
-            className="hud-input min-h-[5rem] resize-y text-sm"
+          <AutoGrowTextarea
+            className="hud-input min-h-[5rem] text-sm"
             placeholder="Belt notes, mining claims, hazards…"
             value={planet.notes}
             onChange={(e) =>

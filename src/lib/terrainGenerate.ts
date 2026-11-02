@@ -1,4 +1,12 @@
+import type {
+  Planet,
+  PlanetClassification,
+  PlanetType,
+} from "../types/campaign";
+import { normalizePlanetClassification } from "./planetClass";
 import {
+  normalizeTerrainKind,
+  sampleTerrainAtDirection,
   TERRAIN_KIND_ORDER,
   type TerrainKind,
 } from "./planetTerrain";
@@ -8,6 +16,13 @@ import { SETTLEMENT_HEX_FREQUENCY } from "./settlements";
 /** Tile count on the strategic hex sphere (stable). */
 export function strategicTileCount(): number {
   return buildHexSphere(SETTLEMENT_HEX_FREQUENCY).tiles.length;
+}
+
+/** Empty percent map (all zeros). */
+export function zeroTerrainPercents(): Record<TerrainKind, number> {
+  const out = {} as Record<TerrainKind, number>;
+  for (const kind of TERRAIN_KIND_ORDER) out[kind] = 0;
+  return out;
 }
 
 /** Even split of 100% across all terrain kinds. */
@@ -21,6 +36,659 @@ export function equalTerrainPercents(): Record<TerrainKind, number> {
     const v = i === n - 1 ? rem : base;
     out[kind] = v;
     rem -= v;
+  }
+  return out;
+}
+
+/** Renormalize partial weights so they sum to 100 (largest kinds absorb remainder). */
+export function normalizeTerrainPercents(
+  weights: Partial<Record<TerrainKind, number>>,
+): Record<TerrainKind, number> {
+  const out = zeroTerrainPercents();
+  let sum = 0;
+  for (const kind of TERRAIN_KIND_ORDER) {
+    const v = Math.max(0, Math.round(Number(weights[kind]) || 0));
+    out[kind] = v;
+    sum += v;
+  }
+  if (sum <= 0) return equalTerrainPercents();
+  if (sum === 100) return out;
+  let rem = 100;
+  const nonzero = TERRAIN_KIND_ORDER.filter((k) => out[k]! > 0);
+  for (let i = 0; i < nonzero.length; i++) {
+    const kind = nonzero[i]!;
+    if (i === nonzero.length - 1) {
+      out[kind] = Math.max(0, rem);
+    } else {
+      const v = Math.round((out[kind]! / sum) * 100);
+      out[kind] = v;
+      rem -= v;
+    }
+  }
+  return out;
+}
+
+/**
+ * Climate-first biome mixes inspired by hand-authored Amphoran worlds
+ * (cohesive themes — not equal splits across every kind).
+ */
+const CLASS_TERRAIN_PRESETS: Record<
+  PlanetClassification,
+  Partial<Record<TerrainKind, number>>
+> = {
+  ice: { ice: 45, tundra: 35, ocean: 15, urban: 3, crater: 2 },
+  tundra: { tundra: 40, ice: 30, ocean: 20, wasteland: 5, urban: 3, crater: 2 },
+  water: { ocean: 88, ice: 8, tundra: 4 },
+  islands: { ocean: 68, forest: 10, jungle: 8, agri: 7, ice: 4, urban: 3 },
+  jungle: {
+    ocean: 38,
+    forest: 22,
+    jungle: 18,
+    swamp: 14,
+    agri: 4,
+    ice: 2,
+    tundra: 2,
+  },
+  earthlike: {
+    ocean: 46,
+    forest: 15,
+    agri: 13,
+    jungle: 5,
+    savanna: 5,
+    desert: 4,
+    ice: 4,
+    tundra: 3,
+    swamp: 3,
+    urban: 2,
+  },
+  super_earth: {
+    ocean: 50,
+    agri: 16,
+    forest: 11,
+    jungle: 6,
+    desert: 5,
+    ice: 5,
+    tundra: 4,
+    swamp: 3,
+  },
+  desert: {
+    desert: 48,
+    wasteland: 22,
+    iron_rich: 12,
+    crater: 10,
+    ocean: 4,
+    lava: 2,
+    urban: 2,
+  },
+  /** Default arid: barren flats with desert / oxide pockets (not Mars-dominant). */
+  arid: {
+    wasteland: 58,
+    desert: 16,
+    iron_rich: 12,
+    crater: 6,
+    ocean: 4,
+    urban: 4,
+  },
+  /** Grass seas with small agri pockets and rare gallery forest. */
+  savannah: {
+    savanna: 48,
+    ocean: 30,
+    agri: 6,
+    desert: 5,
+    forest: 2,
+    urban: 3,
+    tundra: 3,
+    swamp: 3,
+  },
+  swamp: { swamp: 45, ocean: 30, forest: 8, agri: 5, urban: 4, ice: 4, tundra: 4 },
+  /** No greenery — ash, rock, and fire only. */
+  volcanic: { crater: 52, lava: 28, wasteland: 14, desert: 4, urban: 2 },
+  magma: { lava: 48, crater: 32, wasteland: 16, urban: 4 },
+  /** Mottled chem world — mixed ocean / spoil / ore / ash / dunes / industry. */
+  toxic: {
+    ocean: 20,
+    toxic: 22,
+    wasteland: 16,
+    iron_rich: 14,
+    desert: 14,
+    urban: 14,
+  },
+  barren: {
+    wasteland: 55,
+    crater: 20,
+    iron_rich: 12,
+    desert: 8,
+    urban: 3,
+    ocean: 2,
+  },
+  gas_giant: { wasteland: 100 },
+  /** Approximate mix for dialogs; actual bake is hemisphere-spatial. */
+  tidally_locked: {
+    desert: 22,
+    ice: 18,
+    ocean: 14,
+    forest: 10,
+    wasteland: 10,
+    jungle: 8,
+    agri: 6,
+    tundra: 5,
+    lava: 4,
+    urban: 3,
+  },
+};
+
+const GREENERY_KINDS: TerrainKind[] = [
+  "forest",
+  "jungle",
+  "agri",
+  "savanna",
+  "swamp",
+];
+
+/** Mars-oxide arid/desert: majority iron-rich hexes. */
+const MARS_LIKE_PRESET: Partial<Record<TerrainKind, number>> = {
+  iron_rich: 55,
+  wasteland: 18,
+  desert: 12,
+  crater: 8,
+  urban: 4,
+  ocean: 3,
+};
+
+/** Share of arid worlds that roll as Mars-like (~10–20%). */
+const ARID_MARS_LIKE_RATE = 0.15;
+/** Share of desert worlds that roll as Mars-like. */
+const DESERT_MARS_LIKE_RATE = 0.12;
+/** Share of tundra worlds with a thin equatorial green belt. */
+export const TUNDRA_GREEN_BELT_RATE = 0.18;
+
+/** Rare tundra thaw: polar ice + equatorial forest / agri patches. */
+const TUNDRA_GREEN_BELT_PRESET: Partial<Record<TerrainKind, number>> = {
+  tundra: 34,
+  ice: 24,
+  ocean: 20,
+  forest: 6,
+  agri: 5,
+  savanna: 3,
+  swamp: 3,
+  urban: 3,
+  crater: 2,
+};
+
+function fnvSeed(id: string): number {
+  let s = 2166136261;
+  for (let i = 0; i < id.length; i++) {
+    s ^= id.charCodeAt(i);
+    s = Math.imul(s, 16777619);
+  }
+  return s >>> 0;
+}
+
+/** Deterministic Mars-like roll from planet id (stable across regenerations). */
+export function isMarsLikeWorld(
+  classification: PlanetClassification | undefined,
+  planetId?: string | null,
+  rng?: () => number,
+): boolean {
+  const cls = normalizePlanetClassification(classification);
+  if (cls !== "arid" && cls !== "desert") return false;
+  const rate = cls === "arid" ? ARID_MARS_LIKE_RATE : DESERT_MARS_LIKE_RATE;
+  if (rng) return rng() < rate;
+  if (planetId) return (fnvSeed(`${planetId}:mars-like`) % 1000) / 1000 < rate;
+  return Math.random() < rate;
+}
+
+/** Deterministic equatorial green-belt roll for a minority of tundra worlds. */
+export function isTundraGreenBeltWorld(
+  classification: PlanetClassification | undefined,
+  planetId?: string | null,
+  rng?: () => number,
+): boolean {
+  const cls = normalizePlanetClassification(classification);
+  if (cls !== "tundra") return false;
+  if (rng) return rng() < TUNDRA_GREEN_BELT_RATE;
+  if (planetId) {
+    return (fnvSeed(`${planetId}:tundra-green`) % 1000) / 1000 < TUNDRA_GREEN_BELT_RATE;
+  }
+  return Math.random() < TUNDRA_GREEN_BELT_RATE;
+}
+
+function stripGreenery(weights: Record<TerrainKind, number>): Record<TerrainKind, number> {
+  const out = { ...weights };
+  let removed = 0;
+  for (const kind of GREENERY_KINDS) {
+    removed += out[kind] ?? 0;
+    out[kind] = 0;
+  }
+  if (removed > 0) {
+    out.wasteland = (out.wasteland ?? 0) + Math.floor(removed * 0.45);
+    out.crater = (out.crater ?? 0) + Math.floor(removed * 0.35);
+    out.lava = (out.lava ?? 0) + (removed - Math.floor(removed * 0.45) - Math.floor(removed * 0.35));
+  }
+  return normalizeTerrainPercents(out);
+}
+
+const COLD_KINDS: TerrainKind[] = ["ice", "tundra"];
+
+/** Hot / dry climates must never grow polar ice caps. */
+function stripColdBiomes(
+  weights: Record<TerrainKind, number>,
+): Record<TerrainKind, number> {
+  const out = { ...weights };
+  let removed = 0;
+  for (const kind of COLD_KINDS) {
+    removed += out[kind] ?? 0;
+    out[kind] = 0;
+  }
+  if (removed > 0) {
+    out.desert = (out.desert ?? 0) + Math.floor(removed * 0.55);
+    out.wasteland = (out.wasteland ?? 0) + (removed - Math.floor(removed * 0.55));
+  }
+  return normalizeTerrainPercents(out);
+}
+
+function isHotDryClimate(cls: PlanetClassification): boolean {
+  return (
+    cls === "desert" ||
+    cls === "arid" ||
+    cls === "volcanic" ||
+    cls === "magma"
+  );
+}
+
+function isLushClimate(cls: PlanetClassification): boolean {
+  return (
+    cls === "earthlike" ||
+    cls === "super_earth" ||
+    cls === "jungle" ||
+    cls === "islands"
+  );
+}
+
+/** Lush worlds stay vegetated / coastal — no dead wasteland flats. */
+function stripWastelandForLush(
+  weights: Record<TerrainKind, number>,
+  cls: PlanetClassification,
+): Record<TerrainKind, number> {
+  const out = { ...weights };
+  const removed = out.wasteland ?? 0;
+  if (removed <= 0) return normalizeTerrainPercents(out);
+  out.wasteland = 0;
+  if (cls === "jungle") {
+    out.jungle = (out.jungle ?? 0) + Math.floor(removed * 0.55);
+    out.forest = (out.forest ?? 0) + Math.floor(removed * 0.25);
+    out.swamp = (out.swamp ?? 0) + (removed - Math.floor(removed * 0.55) - Math.floor(removed * 0.25));
+  } else if (cls === "islands") {
+    out.forest = (out.forest ?? 0) + Math.floor(removed * 0.4);
+    out.agri = (out.agri ?? 0) + Math.floor(removed * 0.35);
+    out.jungle = (out.jungle ?? 0) + (removed - Math.floor(removed * 0.4) - Math.floor(removed * 0.35));
+  } else {
+    // earthlike / super_earth
+    out.forest = (out.forest ?? 0) + Math.floor(removed * 0.4);
+    out.agri = (out.agri ?? 0) + Math.floor(removed * 0.35);
+    out.savanna = (out.savanna ?? 0) + (removed - Math.floor(removed * 0.4) - Math.floor(removed * 0.35));
+  }
+  return normalizeTerrainPercents(out);
+}
+
+/** Island chains stay tropical / coastal — no arid dune biomes. */
+function stripDesertForIslands(
+  weights: Record<TerrainKind, number>,
+): Record<TerrainKind, number> {
+  const out = { ...weights };
+  const removed = out.desert ?? 0;
+  if (removed <= 0) return normalizeTerrainPercents(out);
+  out.desert = 0;
+  out.forest = (out.forest ?? 0) + Math.floor(removed * 0.4);
+  out.agri = (out.agri ?? 0) + Math.floor(removed * 0.35);
+  out.jungle =
+    (out.jungle ?? 0) +
+    (removed - Math.floor(removed * 0.4) - Math.floor(removed * 0.35));
+  return normalizeTerrainPercents(out);
+}
+
+/** Island chains rarely host major ore fields — keep iron deposits sparse. */
+const ISLAND_IRON_MAX_PCT = 2;
+
+function capIronForIslands(
+  weights: Record<TerrainKind, number>,
+): Record<TerrainKind, number> {
+  const out = { ...weights };
+  const iron = out.iron_rich ?? 0;
+  if (iron <= ISLAND_IRON_MAX_PCT) return normalizeTerrainPercents(out);
+  const removed = iron - ISLAND_IRON_MAX_PCT;
+  out.iron_rich = ISLAND_IRON_MAX_PCT;
+  out.forest = (out.forest ?? 0) + Math.floor(removed * 0.4);
+  out.agri = (out.agri ?? 0) + Math.floor(removed * 0.35);
+  out.jungle =
+    (out.jungle ?? 0) +
+    (removed - Math.floor(removed * 0.4) - Math.floor(removed * 0.35));
+  return normalizeTerrainPercents(out);
+}
+
+/** Raise one biome to a minimum % by taking from the largest other shares. */
+function enforceKindMinimum(
+  weights: Record<TerrainKind, number>,
+  kind: TerrainKind,
+  minPct: number,
+): Record<TerrainKind, number> {
+  const out = { ...weights };
+  const cur = out[kind] ?? 0;
+  if (cur >= minPct) return normalizeTerrainPercents(out);
+  let need = minPct - cur;
+  out[kind] = minPct;
+  const donors = TERRAIN_KIND_ORDER.filter(
+    (k) => k !== kind && (out[k] ?? 0) > 0,
+  ).sort((a, b) => (out[b] ?? 0) - (out[a] ?? 0));
+  for (const donor of donors) {
+    if (need <= 0) break;
+    const take = Math.min(out[donor]!, need);
+    out[donor]! -= take;
+    need -= take;
+  }
+  return normalizeTerrainPercents(out);
+}
+
+/** World-role accents layered onto the climate mix (Amphoran-style). */
+function applyTypeTerrainBias(
+  base: Record<TerrainKind, number>,
+  type: PlanetType,
+  classification: PlanetClassification,
+): Record<TerrainKind, number> {
+  const out = { ...base };
+  const bump = (kind: TerrainKind, amount: number) => {
+    out[kind] = (out[kind] ?? 0) + amount;
+  };
+  const barrenClimate =
+    classification === "volcanic" ||
+    classification === "magma" ||
+    classification === "barren" ||
+    classification === "arid" ||
+    classification === "desert" ||
+    classification === "toxic";
+  const lush = isLushClimate(classification);
+
+  switch (type) {
+    case "hive":
+      bump("urban", 10);
+      if (lush) bump("urban", 4);
+      else bump("wasteland", 4);
+      if (!barrenClimate) {
+        bump("ocean", -2);
+        bump("forest", -4);
+      }
+      break;
+    case "forge":
+      bump("urban", 8);
+      bump("crater", 6);
+      bump("toxic", lush ? 2 : 4);
+      if (lush) bump("urban", 6);
+      else bump("wasteland", 10);
+      if (!barrenClimate) {
+        bump("ocean", -4);
+        bump("forest", -6);
+        bump("agri", -4);
+      }
+      break;
+    case "agri":
+      if (classification === "volcanic" || classification === "magma") {
+        bump("wasteland", 4);
+        bump("crater", 2);
+      } else if (classification === "arid" || classification === "desert") {
+        bump("desert", 4);
+        bump("wasteland", 4);
+      } else {
+        bump("agri", 12);
+        bump("savanna", 6);
+        bump("ocean", 4);
+        bump("urban", -4);
+        bump("wasteland", -6);
+        bump("crater", -4);
+      }
+      break;
+    case "death":
+      bump("crater", 4);
+      if (lush) {
+        bump("jungle", 6);
+        bump("swamp", 6);
+        bump("agri", -6);
+      } else {
+        bump("wasteland", 8);
+        if (!barrenClimate) {
+          bump("jungle", 4);
+          bump("swamp", 4);
+          bump("agri", -6);
+        }
+      }
+      bump("urban", -4);
+      break;
+    case "shrine":
+      if (!barrenClimate) {
+        bump("forest", 6);
+        bump("jungle", 4);
+        bump("agri", 2);
+      } else {
+        bump("wasteland", 4);
+      }
+      bump("urban", -2);
+      break;
+    case "feudal":
+      if (!barrenClimate) {
+        bump("agri", 8);
+        bump("savanna", 4);
+        bump("forest", 2);
+      } else {
+        bump("wasteland", 4);
+        bump("desert", 2);
+      }
+      bump("urban", -2);
+      break;
+    case "fortress":
+      bump("urban", 8);
+      bump("crater", 4);
+      if (lush) bump("urban", 4);
+      else bump("wasteland", 4);
+      // Ice only on cold climates — never on desert / arid / volcanic.
+      if (classification === "ice" || classification === "tundra") {
+        bump("ice", 2);
+      }
+      if (!barrenClimate) {
+        bump("forest", -4);
+        bump("jungle", -4);
+      }
+      break;
+    case "homeworld":
+      bump("urban", 6);
+      if (!barrenClimate) {
+        bump("agri", 4);
+        bump("ocean", 2);
+      }
+      break;
+    case "trade":
+      // Mercantile ports: urban hubs, coastal access, light agri hinterland.
+      bump("urban", 8);
+      bump("ocean", 4);
+      if (!barrenClimate) {
+        bump("agri", 2);
+        bump("savanna", 2);
+      } else {
+        bump("desert", 2);
+        bump("wasteland", 2);
+      }
+      bump("crater", -2);
+      break;
+    case "mining":
+      if (classification === "islands") {
+        // Sparse ore seams on island chains — not continental iron belts.
+        bump("iron_rich", 2);
+        bump("crater", 2);
+        bump("savanna", 2);
+      } else {
+        bump("iron_rich", lush ? 6 : 14);
+        bump("crater", lush ? 4 : 10);
+        bump("desert", lush ? 0 : 4);
+        if (!lush) bump("wasteland", 8);
+        else bump("savanna", 4);
+        if (!barrenClimate) {
+          bump("ocean", -4);
+          bump("forest", -8);
+          bump("agri", -6);
+          bump("jungle", -4);
+        }
+      }
+      break;
+    case "archaeological":
+      bump("crater", 6);
+      if (classification === "islands") {
+        bump("savanna", 4);
+        bump("forest", 2);
+      } else if (lush) {
+        bump("savanna", 4);
+        bump("desert", 2);
+      } else {
+        bump("wasteland", 8);
+        bump("desert", 4);
+      }
+      bump("urban", -2);
+      break;
+    case "abandoned_colony":
+      bump("crater", 4);
+      if (lush) bump("savanna", 8);
+      else bump("wasteland", 12);
+      bump("urban", -4);
+      bump("agri", -4);
+      break;
+    case "asteroid_belt":
+    case "warp_gate":
+    case "custom":
+      break;
+  }
+  for (const kind of TERRAIN_KIND_ORDER) {
+    out[kind] = Math.max(0, out[kind] ?? 0);
+  }
+  return normalizeTerrainPercents(out);
+}
+
+export type TerrainPercentOpts = {
+  /** Stable id — drives Mars-like / tundra green-belt rolls. */
+  planetId?: string | null;
+  /** Force / override Mars-like oxide world. */
+  marsLike?: boolean;
+  /** Force / override tundra equatorial green belt. */
+  tundraGreenBelt?: boolean;
+  rng?: () => number;
+};
+
+/**
+ * Default regen / auto-gen biome weights for a world.
+ * Tuned from hand-authored Amphoran Sub-Sector planets, with hard rules:
+ * volcanic/magma → no greenery; earthlike/super_earth → ≥40% ocean +
+ * equatorial desert pockets; islands → ≥60% ocean and no desert;
+ * arid → wasteland + desert/oxide pockets;
+ * ~10–20% of arid (and some desert) worlds are Mars-like (≥50% iron-rich);
+ * ~18% of tundras grow a thin equatorial green belt.
+ */
+export function defaultTerrainPercentsForWorld(
+  classification: PlanetClassification | undefined,
+  type: PlanetType,
+  opts?: TerrainPercentOpts,
+): Record<TerrainKind, number> {
+  const cls = normalizePlanetClassification(classification);
+  if (cls === "gas_giant" || type === "asteroid_belt" || type === "warp_gate") {
+    return zeroTerrainPercents();
+  }
+
+  const marsLike =
+    opts?.marsLike ??
+    isMarsLikeWorld(cls, opts?.planetId, opts?.rng);
+  const tundraGreen =
+    opts?.tundraGreenBelt ??
+    isTundraGreenBeltWorld(cls, opts?.planetId, opts?.rng);
+
+  let base: Record<TerrainKind, number>;
+  if (marsLike && (cls === "arid" || cls === "desert")) {
+    base = normalizeTerrainPercents(MARS_LIKE_PRESET);
+  } else if (tundraGreen && cls === "tundra") {
+    base = normalizeTerrainPercents(TUNDRA_GREEN_BELT_PRESET);
+  } else {
+    base = normalizeTerrainPercents(
+      CLASS_TERRAIN_PRESETS[cls] ?? { ocean: 40, wasteland: 30, agri: 30 },
+    );
+  }
+
+  let mix = applyTypeTerrainBias(base, type, cls);
+
+  if (cls === "volcanic" || cls === "magma") {
+    mix = stripGreenery(mix);
+  }
+  if (cls === "toxic") {
+    // Chem worlds stay a mottled spoil palette — no forests or polar caps.
+    mix = stripGreenery(mix);
+    mix = stripColdBiomes(mix);
+  }
+  if (isHotDryClimate(cls)) {
+    // Fortress / other roles must not paint polar ice onto dune worlds.
+    mix = stripColdBiomes(mix);
+  }
+  if (isLushClimate(cls)) {
+    mix = stripWastelandForLush(mix, cls);
+  }
+  if (cls === "islands") {
+    mix = stripDesertForIslands(mix);
+    mix = capIronForIslands(mix);
+  }
+  if (cls === "earthlike" || cls === "super_earth") {
+    mix = enforceKindMinimum(mix, "ocean", 40);
+  }
+  if (cls === "jungle") {
+    mix = enforceKindMinimum(mix, "ocean", 35);
+  }
+  if (cls === "islands") {
+    mix = enforceKindMinimum(mix, "ocean", 60);
+  }
+  if (marsLike && (cls === "arid" || cls === "desert")) {
+    mix = enforceKindMinimum(mix, "iron_rich", 50);
+  }
+
+  return mix;
+}
+
+/**
+ * Measure the current on-map terrain mix (painted overrides + procedural fill).
+ * Used to prefill the Regenerate Tiles dialog.
+ */
+export function terrainPercentsOnPlanet(
+  planet: Pick<Planet, "id" | "classification" | "type" | "tileTerrain">,
+): Record<TerrainKind, number> {
+  const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
+  const counts = zeroTerrainPercents();
+  const n = sphere.tiles.length;
+  for (let i = 0; i < n; i++) {
+    const t = sphere.tiles[i]!;
+    const c = t.center;
+    const override = normalizeTerrainKind(planet.tileTerrain?.[String(i)]);
+    const { kind } = sampleTerrainAtDirection(
+      c.x,
+      c.y,
+      c.z,
+      planet.id,
+      planet.classification,
+      planet.type,
+      override,
+    );
+    counts[kind] = (counts[kind] ?? 0) + 1;
+  }
+  const out = zeroTerrainPercents();
+  let rem = 100;
+  for (let i = 0; i < TERRAIN_KIND_ORDER.length; i++) {
+    const kind = TERRAIN_KIND_ORDER[i]!;
+    if (i === TERRAIN_KIND_ORDER.length - 1) {
+      out[kind] = Math.max(0, rem);
+    } else {
+      const v = Math.round(((counts[kind] ?? 0) / n) * 100);
+      out[kind] = v;
+      rem -= v;
+    }
   }
   return out;
 }
@@ -115,9 +783,25 @@ function isEquatorialKind(kind: TerrainKind): boolean {
   return kind === "jungle" || kind === "forest";
 }
 
+/**
+ * Arid pockets: few contiguous patches near the equator
+ * (not the low-share "many lakes" seed curve).
+ */
+function isDesertPocketKind(kind: TerrainKind): boolean {
+  return kind === "desert";
+}
+
 /** Vegetated biomes that prefer coasts / proximity to water. */
 function isGreenlandKind(kind: TerrainKind): boolean {
   return kind === "agri" || kind === "forest" || kind === "jungle";
+}
+
+/** Seed count for desert: 1–3 equatorial pockets, never a scatter of singles. */
+function desertPocketSeedCount(target: number): number {
+  if (target <= 0) return 0;
+  if (target <= 3) return 1;
+  if (target <= 10) return Math.min(2, target);
+  return Math.min(3, Math.max(1, Math.ceil(target / 12)));
 }
 
 function isWaterKind(kind: TerrainKind): boolean {
@@ -141,12 +825,210 @@ function polarScore(tileY: number, kind: TerrainKind): number {
   return kind === "ice" ? lat * lat * lat : lat * lat;
 }
 
-/** Equator affinity: 1 at equator, 0 at poles. Jungle hugs the belt harder. */
+/** Equator affinity: 1 at equator, 0 at poles. Jungle / desert hug the belt harder. */
 function equatorScore(tileY: number, kind: TerrainKind): number {
   const equatorial = 1 - Math.abs(tileY);
-  return kind === "jungle"
-    ? equatorial * equatorial * equatorial
-    : equatorial * equatorial;
+  if (kind === "jungle" || kind === "desert") {
+    return equatorial * equatorial * equatorial;
+  }
+  return equatorial * equatorial;
+}
+
+/**
+ * Day–night contrast for tidally locked worlds (0 = mild desert↔tundra,
+ * 1 = extreme lava/desert↔deep ice). Stable per planet id.
+ */
+export function tidalContrastForPlanet(
+  planetId?: string | null,
+  rng?: () => number,
+): number {
+  // Bias toward visible day/night drama (0.4 mild → 1.0 extreme).
+  const unit = rng
+    ? rng()
+    : planetId
+      ? (fnvSeed(`${planetId}:tidal-contrast`) % 1000) / 1000
+      : Math.random();
+  return 0.4 + 0.6 * unit;
+}
+
+/**
+ * Hemisphere-aware tidally locked bake: scorched day, frozen night, and a
+ * clean twilight green belt (water + greenery). Contrast varies by planet.
+ */
+export function generateTidallyLockedTileTerrain(
+  tileCount = strategicTileCount(),
+  rng: () => number = Math.random,
+  settlement?: TerrainGenSettlementOpts,
+  opts?: { planetId?: string | null; contrast?: number },
+): Record<string, string> {
+  const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
+  const n = Math.min(tileCount, sphere.tiles.length);
+  if (n <= 0) return {};
+
+  const contrast = Math.max(
+    0,
+    Math.min(1, opts?.contrast ?? tidalContrastForPlanet(opts?.planetId, rng)),
+  );
+  // Extreme contrast → narrow terminator; mild → wider habitable belt.
+  const twilightHalf = 0.07 + (1 - contrast) * 0.15;
+  const hotEdge = 0.5 + twilightHalf;
+  const coldEdge = 0.5 - twilightHalf;
+
+  const reserved = new Set<number>();
+  for (const t of settlement?.reservedTiles ?? []) {
+    if (t >= 0 && t < n) reserved.add(t);
+  }
+  const cityHubs = new Set<number>();
+  for (const t of settlement?.cityHubTiles ?? []) {
+    if (t >= 0 && t < n) cityHubs.add(t);
+  }
+
+  const assignment: (TerrainKind | null)[] = Array(n).fill(null);
+
+  const forceSettlement = (tile: number) => {
+    assignment[tile] = cityHubs.has(tile) ? "urban" : "urban";
+  };
+
+  const reservedList = [...reserved];
+  shuffleInPlace(reservedList, rng);
+  for (const tile of reservedList) forceSettlement(tile);
+
+  const pickHot = (dayFac: number): TerrainKind => {
+    const heat = (dayFac - hotEdge) / Math.max(1e-6, 1 - hotEdge);
+    const roll = rng();
+    if (contrast > 0.5 && heat > 0.55 && roll < 0.12 + contrast * 0.22) {
+      return "lava";
+    }
+    if (roll < 0.12) return "crater";
+    if (roll < 0.12 + 0.18 + contrast * 0.08) return "wasteland";
+    return "desert";
+  };
+
+  const pickCold = (dayFac: number): TerrainKind => {
+    const cold = (coldEdge - dayFac) / Math.max(1e-6, coldEdge);
+    const roll = rng();
+    // Mild: tundra-heavy. Extreme: nearly all ice on the night side.
+    const iceBias = 0.25 + contrast * 0.65;
+    if (cold > 0.25 || roll < iceBias) return "ice";
+    if (contrast < 0.45 && roll < iceBias + 0.35) return "tundra";
+    return contrast > 0.65 ? "ice" : "tundra";
+  };
+
+  const pickTwilight = (): TerrainKind => {
+    const roll = rng();
+    // Water pockets + greenery dominate the terminator (little barren land).
+    if (roll < 0.34) return "ocean";
+    if (roll < 0.44) return "swamp";
+    if (roll < 0.60) return "forest";
+    if (roll < 0.74) return "jungle";
+    if (roll < 0.86) return "agri";
+    if (roll < 0.95) return "savanna";
+    return "ocean";
+  };
+
+  for (let i = 0; i < n; i++) {
+    if (assignment[i] != null) continue;
+    const z = sphere.tiles[i]!.center.z;
+    const dayFac = Math.max(0, Math.min(1, 0.5 + 0.5 * z));
+    let kind: TerrainKind;
+    if (dayFac >= hotEdge) kind = pickHot(dayFac);
+    else if (dayFac <= coldEdge) kind = pickCold(dayFac);
+    else kind = pickTwilight();
+    if (reserved.has(i) && isSettlementForbiddenTerrain(kind)) {
+      kind = "urban";
+    }
+    assignment[i] = kind;
+  }
+
+  // Cluster twilight water: convert isolated greenery next to ocean stays water-ward.
+  for (let pass = 0; pass < 2; pass++) {
+    const next = assignment.slice();
+    for (let i = 0; i < n; i++) {
+      const z = sphere.tiles[i]!.center.z;
+      const dayFac = Math.max(0, Math.min(1, 0.5 + 0.5 * z));
+      if (dayFac >= hotEdge || dayFac <= coldEdge) continue;
+      if (reserved.has(i)) continue;
+      const cur = assignment[i];
+      if (cur !== "forest" && cur !== "jungle" && cur !== "agri" && cur !== "savanna") {
+        continue;
+      }
+      let oceanN = 0;
+      let greenN = 0;
+      for (const nb of sphere.neighbors[i] ?? []) {
+        if (nb >= n) continue;
+        const k = assignment[nb];
+        if (k === "ocean" || k === "swamp") oceanN += 1;
+        if (
+          k === "forest" ||
+          k === "jungle" ||
+          k === "agri" ||
+          k === "savanna"
+        ) {
+          greenN += 1;
+        }
+      }
+      // Soften single desert-like leftovers: pull lonely tiles toward water pockets.
+      if (oceanN >= 2 && greenN <= 1 && rng() < 0.55) next[i] = "ocean";
+    }
+    for (let i = 0; i < n; i++) assignment[i] = next[i]!;
+  }
+
+  const out: Record<string, string> = {};
+  for (let i = 0; i < n; i++) {
+    let kind = assignment[i] ?? "wasteland";
+    if (reserved.has(i) && isSettlementForbiddenTerrain(kind)) {
+      kind = cityHubs.has(i) ? "urban" : "urban";
+    }
+    out[String(i)] = kind;
+  }
+  return out;
+}
+
+export type GenerateWorldTerrainOpts = {
+  planetId?: string | null;
+  tileCount?: number;
+  rng?: () => number;
+  settlement?: TerrainGenSettlementOpts;
+  /** When set (e.g. regenerate dialog), use percent bake even for tidal worlds. */
+  percentWeights?: Partial<Record<TerrainKind, number>> | null;
+  /** Prefer spatial tidal bake (default true for tidally_locked). */
+  spatialTidal?: boolean;
+};
+
+/**
+ * World-aware tile bake: tidally locked uses hemisphere layout; others use
+ * climate percent mixes.
+ */
+export function generateWorldTileTerrain(
+  classification: PlanetClassification | undefined,
+  type: PlanetType,
+  opts?: GenerateWorldTerrainOpts,
+): Record<string, string> {
+  const cls = normalizePlanetClassification(classification);
+  if (type === "asteroid_belt" || cls === "gas_giant") return {};
+
+  const rng = opts?.rng ?? Math.random;
+  const settlement = opts?.settlement;
+  const tileCount = opts?.tileCount;
+
+  const useSpatialTidal =
+    cls === "tidally_locked" &&
+    opts?.spatialTidal !== false &&
+    !opts?.percentWeights;
+
+  if (useSpatialTidal) {
+    return generateTidallyLockedTileTerrain(tileCount, rng, settlement, {
+      planetId: opts?.planetId,
+    });
+  }
+
+  const weights =
+    opts?.percentWeights ??
+    defaultTerrainPercentsForWorld(cls, type, {
+      planetId: opts?.planetId,
+      rng,
+    });
+  return generateTileTerrainByPercents(weights, tileCount, rng, settlement);
 }
 
 /**
@@ -362,19 +1244,38 @@ export function generateTileTerrainByPercents(
       return best;
     }
 
-    if (isEquatorialKind(kind)) {
+    if (isEquatorialKind(kind) || isDesertPocketKind(kind)) {
+      // Desert pockets: keep later seeds moderately apart so we get a few
+      // distinct equatorial basins, not one blob and not planet-wide scatter.
+      const spreadWeight = isDesertPocketKind(kind) ? 0.08 : 0.15;
       let best = free[0]!;
       let bestScore = -Infinity;
       for (const t of free) {
         const c = sphere.tiles[t]!.center;
+        // Desert must stay near the equator — hard reject polar free tiles.
+        if (isDesertPocketKind(kind) && Math.abs(c.y) > 0.42) continue;
         const score =
-          equatorScore(c.y, kind) * 4 +
-          spreadBonus(t) * 0.15 +
+          equatorScore(c.y, kind) * (isDesertPocketKind(kind) ? 6 : 4) +
+          spreadBonus(t) * spreadWeight +
           rng() * 1e-4;
         if (score > bestScore) {
           bestScore = score;
           best = t;
         }
+      }
+      if (bestScore > -Infinity) return best;
+      // Fallback: closest-to-equator free tile if every free hex was polar.
+      if (isDesertPocketKind(kind)) {
+        let bestLat = free[0]!;
+        let bestAbs = Infinity;
+        for (const t of free) {
+          const ay = Math.abs(sphere.tiles[t]!.center.y);
+          if (ay < bestAbs) {
+            bestAbs = ay;
+            bestLat = t;
+          }
+        }
+        return bestLat;
       }
       return best;
     }
@@ -405,7 +1306,9 @@ export function generateTileTerrainByPercents(
     const target = targets.get(kind) ?? 0;
     if (target <= 0) return;
     if (frontiers.some((f) => f.kind === kind)) return;
-    let seedsWanted = seedCountForShare(target, n);
+    let seedsWanted = isDesertPocketKind(kind)
+      ? desertPocketSeedCount(target)
+      : seedCountForShare(target, n);
     if (isPolarKind(kind) && target >= 2) {
       seedsWanted = Math.max(seedsWanted, Math.min(2, target));
     }
@@ -461,7 +1364,7 @@ export function generateTileTerrainByPercents(
       });
       return;
     }
-    if (isEquatorialKind(kind)) {
+    if (isEquatorialKind(kind) || isDesertPocketKind(kind)) {
       open.sort((a, b) => {
         const ya = Math.abs(sphere.tiles[a]!.center.y);
         const yb = Math.abs(sphere.tiles[b]!.center.y);
@@ -556,12 +1459,18 @@ export function generateTileTerrainByPercents(
   plantKind("jungle");
   plantKind("forest");
   plantKind("agri");
+  growKinds(new Set(["jungle", "forest", "agri"]));
+
+  // Desert as a few equatorial pockets before other land fills the belt.
+  plantKind("desert");
+  growKinds(new Set(["desert"]));
 
   for (const [kind] of kindsBySize) {
     if (
       isPolarKind(kind) ||
       isWaterKind(kind) ||
-      isGreenlandKind(kind)
+      isGreenlandKind(kind) ||
+      isDesertPocketKind(kind)
     ) {
       continue;
     }
@@ -617,10 +1526,12 @@ export function generateTileTerrainByPercents(
       if ((counts.get(kind) ?? 0) >= want) continue;
       let front = frontiers.find((f) => f.kind === kind);
       const highShare = shareOf(kind) >= HIGH_SHARE_THRESHOLD;
+      const desertPocket = isDesertPocketKind(kind);
 
       if (front && front.tiles.length > 0) continue;
 
-      if (highShare) {
+      // Prefer growing existing bodies (esp. desert pockets) over scattering.
+      if (highShare || desertPocket) {
         const rebuilt = rebuildFrontierFromOwned(kind);
         if (rebuilt.length > 0) {
           if (!front) {
@@ -637,6 +1548,14 @@ export function generateTileTerrainByPercents(
       const existingOwned: number[] = [];
       for (let i = 0; i < n; i++) {
         if (assignment[i] === kind) existingOwned.push(i);
+      }
+      // Cap desert pocket count — don't keep planting distant singles.
+      if (
+        desertPocket &&
+        existingOwned.length > 0 &&
+        existingOwned.length >= desertPocketSeedCount(want)
+      ) {
+        continue;
       }
       const seed = pickSpreadSeed(kind, existingOwned);
       if (seed == null) continue;
@@ -672,7 +1591,9 @@ export function generateTileTerrainByPercents(
   const polarNeedy = (): TerrainKind[] =>
     underQuotaKinds().filter(isPolarKind);
   const equatorNeedy = (): TerrainKind[] =>
-    underQuotaKinds().filter(isEquatorialKind);
+    underQuotaKinds().filter(
+      (k) => isEquatorialKind(k) || isDesertPocketKind(k),
+    );
   const greenlandNeedy = (): TerrainKind[] =>
     underQuotaKinds().filter(isGreenlandKind);
   leftovers.sort((a, b) => {
@@ -741,12 +1662,20 @@ export function generateTileTerrainByPercents(
         }
         if (chosen) break;
       }
-      // Dump under-quota jungle/forest onto clearly equatorial free tiles
-      // (jungle first when both need area).
+      // Dump under-quota jungle/forest/desert onto clearly equatorial free tiles
+      // (prefer expanding desert only when adjacent; else jungle first).
       if (!chosen && tileLat <= 0.35) {
-        chosen = equatorial.includes("jungle")
-          ? "jungle"
-          : equatorial[0]!;
+        if (equatorial.includes("desert")) {
+          const nextToDesert = (sphere.neighbors[tile] ?? []).some(
+            (nb) => nb < n && assignment[nb] === "desert",
+          );
+          if (nextToDesert) chosen = "desert";
+        }
+        if (!chosen) {
+          chosen = equatorial.includes("jungle")
+            ? "jungle"
+            : equatorial.find((k) => k !== "desert") ?? equatorial[0]!;
+        }
       }
     }
 

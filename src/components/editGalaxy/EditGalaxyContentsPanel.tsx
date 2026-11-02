@@ -11,16 +11,21 @@ import { hasHyperlaneEdits } from "../../lib/hyperlanes";
 import { StarNode } from "../galaxy/StarNode";
 import { useMapCamera } from "../../hooks/useMapCamera";
 import { useThrottledMapScale } from "../../hooks/useThrottledMapScale";
-import {
-  getDominantFactionForSystem,
-  useCampaignStore,
-} from "../../store/useCampaignStore";
+import { useCampaignStore } from "../../store/useCampaignStore";
 import { getSystemOwnership } from "../../lib/territory";
 import { campaignMapSize } from "../../types/campaign";
 import { EditGalaxyContentsInspector } from "./EditGalaxyContentsInspector";
 import { SystemView } from "../../views/SystemView";
 import { PlanetView } from "../../views/PlanetView";
 import { StrategicView } from "../../views/StrategicView";
+import {
+  packPointsInRect,
+  packSeedForRect,
+  STAR_DENSITY_ORDER,
+  STAR_DENSITY_PRESETS,
+  type StarDensityPreset,
+} from "../../lib/massGenerateSystems";
+import { compareByLabel } from "../../lib/sortOptions";
 
 type MarqueeRect = {
   x0: number;
@@ -100,6 +105,14 @@ export function EditGalaxyContentsPanel() {
   const [pendingDeleteIds, setPendingDeleteIds] = useState<string[] | null>(
     null,
   );
+  const [pendingGenerate, setPendingGenerate] = useState<{
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+  } | null>(null);
+  const [generateDensity, setGenerateDensity] =
+    useState<StarDensityPreset>("dense");
   const drawingRef = useRef(false);
   const marqueeRef = useRef<MarqueeRect | null>(null);
 
@@ -116,8 +129,10 @@ export function EditGalaxyContentsPanel() {
   const enterSystem = useCampaignStore((s) => s.enterSystem);
   const goBack = useCampaignStore((s) => s.goBack);
   const moveSystem = useCampaignStore((s) => s.moveSystem);
-  const addSystem = useCampaignStore((s) => s.addSystem);
   const deleteSystems = useCampaignStore((s) => s.deleteSystems);
+  const massGenerateSystemsInRect = useCampaignStore(
+    (s) => s.massGenerateSystemsInRect,
+  );
   const addHyperlane = useCampaignStore((s) => s.addHyperlane);
   const removeHyperlane = useCampaignStore((s) => s.removeHyperlane);
   const resetHyperlanesToAuto = useCampaignStore((s) => s.resetHyperlanesToAuto);
@@ -150,11 +165,13 @@ export function EditGalaxyContentsPanel() {
     (clientX: number, clientY: number, mapEl: HTMLElement) => {
       const pt = clientToMap(clientX, clientY, mapEl);
       if (!pt) return;
+      const { addSystem, selectSystem, selectPlanet } =
+        useCampaignStore.getState();
       const id = addSystem(pt.x, pt.y);
       selectSystem(id);
       selectPlanet(null);
     },
-    [addSystem, clientToMap, selectSystem, selectPlanet],
+    [clientToMap],
   );
 
   const marqueeNorm = marquee ? normalizeRect(marquee) : null;
@@ -169,6 +186,28 @@ export function EditGalaxyContentsPanel() {
     return hits;
   }, [campaign.systems, marqueeNorm]);
 
+  /** One ownership pass per campaign change — avoids 2×N live resolves per star. */
+  const ownershipBySystemId = useMemo(() => {
+    const map = new Map<
+      string,
+      ReturnType<typeof getSystemOwnership>
+    >();
+    for (const system of campaign.systems) {
+      map.set(system.id, getSystemOwnership(campaign, system.id));
+    }
+    return map;
+  }, [campaign]);
+
+  const starInteractionKey = `${tool}:${connectFromId ?? ""}`;
+
+  const pendingGenerateCount = useMemo(() => {
+    if (!pendingGenerate) return 0;
+    return packPointsInRect(pendingGenerate, campaign.systems, {
+      mapSize,
+      density: generateDensity,
+      seed: packSeedForRect(pendingGenerate, generateDensity),
+    }).length;
+  }, [pendingGenerate, campaign.systems, mapSize, generateDensity]);
   const pendingDeleteCount = pendingDeleteIds?.length ?? 0;
   const pendingPlanetCount = useMemo(() => {
     if (!pendingDeleteIds?.length) return 0;
@@ -178,7 +217,7 @@ export function EditGalaxyContentsPanel() {
 
   const onStarSelect = (systemId: string) => {
     setSelectedLaneId(null);
-    if (tool === "mass_delete") return;
+    if (tool === "mass_delete" || tool === "mass_generate") return;
     if (tool === "place") {
       // Stars already exist here — select instead of stacking
       selectSystem(systemId);
@@ -229,12 +268,23 @@ export function EditGalaxyContentsPanel() {
     return "Drag a box around stars to mass-delete · release to confirm · toggle tool to cancel";
   }, [tool, marqueeHitIds]);
 
+  const massGenerateHint = useMemo(() => {
+    if (tool !== "mass_generate") return null;
+    if (marqueeNorm && (marqueeNorm.width > 8 || marqueeNorm.height > 8)) {
+      return "Release to preview how many systems fit this region";
+    }
+    return "Drag a box over empty space to mass-generate systems · release to confirm · toggle tool to cancel";
+  }, [tool, marqueeNorm]);
+
   const clearMassDeleteGesture = () => {
     drawingRef.current = false;
     marqueeRef.current = null;
     setMarquee(null);
     setPendingDeleteIds(null);
+    setPendingGenerate(null);
   };
+
+  const isMarqueeTool = tool === "mass_delete" || tool === "mass_generate";
 
   const focusedSystem = campaign.systems.find((s) => s.id === focusedSystemId);
   const focusedPlanet = campaign.planets.find((p) => p.id === focusedPlanetId);
@@ -297,7 +347,8 @@ export function EditGalaxyContentsPanel() {
             disabled:
               tool === "select" ||
               tool === "place" ||
-              tool === "mass_delete",
+              tool === "mass_delete" ||
+              tool === "mass_generate",
             velocityDisabled: true,
           }}
           doubleClick={{ disabled: true }}
@@ -319,7 +370,9 @@ export function EditGalaxyContentsPanel() {
                 height: mapSize,
                 aspectRatio: "1 / 1",
                 cursor:
-                  tool === "place" || tool === "mass_delete"
+                  tool === "place" ||
+                  tool === "mass_delete" ||
+                  tool === "mass_generate"
                     ? "crosshair"
                     : undefined,
               }}
@@ -344,16 +397,21 @@ export function EditGalaxyContentsPanel() {
                 }}
               />
               {campaign.systems.map((system) => {
-                const ownership = getSystemOwnership(campaign, system.id);
+                const ownership = ownershipBySystemId.get(system.id);
                 const inMassSelect = marqueeHitIds.has(system.id);
                 return (
                   <StarNode
                     key={system.id}
                     system={system}
-                    faction={getDominantFactionForSystem(campaign, system.id)}
-                    contested={ownership.status === "contested"}
+                    faction={
+                      ownership?.status === "owned" ||
+                      ownership?.status === "contested"
+                        ? ownership.factions[0]
+                        : undefined
+                    }
+                    contested={ownership?.status === "contested"}
                     contestedFactions={
-                      ownership.status === "contested"
+                      ownership?.status === "contested"
                         ? ownership.factions
                         : undefined
                     }
@@ -365,19 +423,20 @@ export function EditGalaxyContentsPanel() {
                     editMode
                     canDrag={tool === "select"}
                     mapScale={mapScale}
+                    interactionKey={starInteractionKey}
                     onSelect={() => onStarSelect(system.id)}
                     onNavigate={() => enterSystem(system.id)}
                     onDrag={(x, y) => moveSystem(system.id, x, y)}
                   />
                 );
               })}
-              {tool === "mass_delete" && (
+              {isMarqueeTool && (
                 <div
                   className="absolute inset-0 z-30 touch-none"
                   style={{ cursor: "crosshair" }}
                   onPointerDown={(e) => {
                     if (e.button !== 0) return;
-                    if (pendingDeleteIds) return;
+                    if (pendingDeleteIds || pendingGenerate) return;
                     const pt = clientToMap(
                       e.clientX,
                       e.clientY,
@@ -442,11 +501,30 @@ export function EditGalaxyContentsPanel() {
                     marqueeRef.current = null;
                     setMarquee(null);
                     if (finalRect.width < 8 && finalRect.height < 8) return;
-                    const ids = campaign.systems
-                      .filter((sys) => pointInRect(sys.x, sys.y, finalRect))
-                      .map((sys) => sys.id);
-                    if (ids.length === 0) return;
-                    setPendingDeleteIds(ids);
+
+                    if (tool === "mass_delete") {
+                      const ids = campaign.systems
+                        .filter((sys) =>
+                          pointInRect(sys.x, sys.y, finalRect),
+                        )
+                        .map((sys) => sys.id);
+                      if (ids.length === 0) return;
+                      setPendingDeleteIds(ids);
+                      return;
+                    }
+
+                    const points = packPointsInRect(finalRect, campaign.systems, {
+                      mapSize,
+                      density: "dense",
+                    });
+                    if (points.length === 0) return;
+                    setGenerateDensity("dense");
+                    setPendingGenerate({
+                      left: finalRect.left,
+                      top: finalRect.top,
+                      right: finalRect.right,
+                      bottom: finalRect.bottom,
+                    });
                   }}
                   onPointerCancel={() => {
                     drawingRef.current = false;
@@ -457,7 +535,11 @@ export function EditGalaxyContentsPanel() {
                   {marqueeNorm &&
                     (marqueeNorm.width > 0 || marqueeNorm.height > 0) && (
                       <div
-                        className="pointer-events-none absolute border border-dashed border-rose-400/90 bg-rose-500/15"
+                        className={
+                          tool === "mass_generate"
+                            ? "pointer-events-none absolute border border-dashed border-cyan-400/90 bg-cyan-500/15"
+                            : "pointer-events-none absolute border border-dashed border-rose-400/90 bg-rose-500/15"
+                        }
                         style={{
                           left: marqueeNorm.left,
                           top: marqueeNorm.top,
@@ -523,6 +605,20 @@ export function EditGalaxyContentsPanel() {
           </button>
           <button
             type="button"
+            className={`hud-btn ${tool === "mass_generate" ? "hud-btn-active" : ""}`}
+            onClick={() => {
+              const next =
+                tool === "mass_generate" ? "select" : "mass_generate";
+              setGalaxyEditorTool(next);
+              setConnectFromId(null);
+              clearMassDeleteGesture();
+            }}
+            title="Draw a box over empty space to generate star systems with planets"
+          >
+            Mass generate
+          </button>
+          <button
+            type="button"
             className={`hud-btn ${tool === "mass_delete" ? "hud-btn-active" : ""}`}
             onClick={() => {
               const next = tool === "mass_delete" ? "select" : "mass_delete";
@@ -563,6 +659,7 @@ export function EditGalaxyContentsPanel() {
         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 hud-panel px-3 py-1.5 text-[11px] text-muted max-w-[90%]">
           {placeHint ??
             connectHint ??
+            massGenerateHint ??
             massDeleteHint ??
             (tool === "select"
               ? "Click to select · double-click to enter system · drag to move · Undo / Ctrl+Z"
@@ -571,6 +668,91 @@ export function EditGalaxyContentsPanel() {
             <span className="text-brass ml-2">Sticky lanes · Reset to rebuild</span>
           )}
         </div>
+
+        {pendingGenerate && (
+          <div className="absolute inset-0 z-40 flex items-center justify-center bg-void/70 px-4">
+            <div
+              className="hud-panel max-w-md w-full border border-cyan-400/40 px-4 py-4 shadow-lg shadow-black/50"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="mass-generate-title"
+            >
+              <h2
+                id="mass-generate-title"
+                className="font-display text-sm uppercase tracking-wider text-cyan"
+              >
+                Generate systems?
+              </h2>
+              <p className="mt-2 text-xs text-fog/90 leading-relaxed">
+                Fill this region with new stars — each gets planets, types,
+                climates, and surface settlements. Existing stars stay put.
+              </p>
+              <label className="mt-3 block text-[10px] uppercase tracking-wider text-muted">
+                Star density
+                <select
+                  className="hud-input mt-1 w-full"
+                  value={generateDensity}
+                  onChange={(e) =>
+                    setGenerateDensity(e.target.value as StarDensityPreset)
+                  }
+                >
+                  {[...STAR_DENSITY_ORDER]
+                    .sort((a, b) =>
+                      compareByLabel(
+                        STAR_DENSITY_PRESETS[a].label,
+                        STAR_DENSITY_PRESETS[b].label,
+                      ),
+                    )
+                    .map((key) => (
+                    <option key={key} value={key}>
+                      {STAR_DENSITY_PRESETS[key].label} —{" "}
+                      {STAR_DENSITY_PRESETS[key].blurb}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="mt-2 text-xs text-fog/90">
+                Will create{" "}
+                <span className="text-cyan font-medium">
+                  {pendingGenerateCount} star system
+                  {pendingGenerateCount === 1 ? "" : "s"}
+                </span>
+                {pendingGenerateCount === 0
+                  ? " at this density (region too crowded — try Crowded or a larger box)."
+                  : ". You can Undo afterward."}
+              </p>
+              <div className="mt-4 flex flex-wrap justify-end gap-2">
+                <button
+                  type="button"
+                  className="hud-btn"
+                  onClick={() => setPendingGenerate(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="hud-btn border-cyan-400/50 text-cyan"
+                  disabled={pendingGenerateCount === 0}
+                  onClick={() => {
+                    massGenerateSystemsInRect(
+                      {
+                        left: pendingGenerate.left,
+                        top: pendingGenerate.top,
+                        right: pendingGenerate.right,
+                        bottom: pendingGenerate.bottom,
+                      },
+                      generateDensity,
+                    );
+                    setPendingGenerate(null);
+                    setMarquee(null);
+                  }}
+                >
+                  Generate {pendingGenerateCount || ""}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {pendingDeleteIds && pendingDeleteIds.length > 0 && (
           <div className="absolute inset-0 z-40 flex items-center justify-center bg-void/70 px-4">

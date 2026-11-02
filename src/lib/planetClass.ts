@@ -1,4 +1,8 @@
-import type { Planet, PlanetClassification } from "../types/campaign";
+import type {
+  Planet,
+  PlanetClassification,
+  PlanetType,
+} from "../types/campaign";
 import { PLANET_CLASSIFICATION_ORDER } from "../types/campaign";
 
 export function isPlanetClassification(
@@ -103,4 +107,230 @@ export function pickRandomClassification(
     if (roll <= 0) return c;
   }
   return "earthlike";
+}
+
+type WorldRole = Exclude<PlanetType, "asteroid_belt" | "warp_gate">;
+
+function pickWeighted<T extends string>(
+  rng: () => number,
+  weights: Partial<Record<T, number>>,
+  fallback: T,
+): T {
+  const entries = Object.entries(weights).filter(
+    ([, w]) => typeof w === "number" && w > 0,
+  ) as [T, number][];
+  if (entries.length === 0) return fallback;
+  let total = 0;
+  for (const [, w] of entries) total += w;
+  let roll = rng() * total;
+  for (const [key, w] of entries) {
+    roll -= w;
+    if (roll <= 0) return key;
+  }
+  return entries[entries.length - 1]![0];
+}
+
+/**
+ * Role / world type that fits a climate classification (40k-flavored).
+ * Magma & volcanic lean death; jungle/swamp often death; hospitable worlds
+ * favor agri / feudal / hive / etc.
+ */
+export function pickPlanetTypeForClassification(
+  classification: PlanetClassification,
+  rng: () => number = Math.random,
+): WorldRole {
+  const c = normalizePlanetClassification(classification);
+  const weights: Partial<Record<WorldRole, number>> = (() => {
+    switch (c) {
+      case "magma":
+        return {
+          death: 66,
+          forge: 12,
+          mining: 10,
+          abandoned_colony: 8,
+          fortress: 8,
+          custom: 6,
+        };
+      case "volcanic":
+        return {
+          death: 38,
+          forge: 18,
+          mining: 14,
+          abandoned_colony: 10,
+          fortress: 10,
+          custom: 8,
+          feudal: 4,
+        };
+      case "toxic":
+        return {
+          death: 44,
+          abandoned_colony: 16,
+          forge: 14,
+          mining: 12,
+          custom: 10,
+          fortress: 6,
+          hive: 4,
+        };
+      case "jungle":
+        return {
+          death: 30,
+          feudal: 14,
+          archaeological: 12,
+          abandoned_colony: 10,
+          agri: 10,
+          custom: 10,
+          homeworld: 8,
+          trade: 6,
+          shrine: 6,
+          hive: 4,
+        };
+      case "swamp":
+        return {
+          death: 26,
+          feudal: 16,
+          archaeological: 12,
+          abandoned_colony: 10,
+          agri: 12,
+          custom: 12,
+          shrine: 8,
+          trade: 6,
+          hive: 4,
+          fortress: 4,
+        };
+      case "ice":
+        return {
+          death: 22,
+          fortress: 14,
+          feudal: 12,
+          archaeological: 12,
+          abandoned_colony: 12,
+          custom: 12,
+          shrine: 10,
+          forge: 6,
+          hive: 4,
+        };
+      case "tundra":
+        return {
+          feudal: 18,
+          agri: 14,
+          archaeological: 12,
+          abandoned_colony: 10,
+          death: 12,
+          fortress: 12,
+          homeworld: 10,
+          trade: 6,
+          custom: 8,
+          shrine: 6,
+          hive: 4,
+        };
+      case "desert":
+      case "arid":
+        return {
+          death: 14,
+          mining: 14,
+          archaeological: 12,
+          abandoned_colony: 14,
+          feudal: 12,
+          fortress: 10,
+          agri: 8,
+          shrine: 8,
+          hive: 6,
+          custom: 6,
+          forge: 4,
+        };
+      case "barren":
+        return {
+          mining: 20,
+          abandoned_colony: 18,
+          archaeological: 14,
+          death: 14,
+          fortress: 12,
+          forge: 10,
+          custom: 8,
+          hive: 4,
+          shrine: 4,
+        };
+      case "savannah":
+        return {
+          agri: 28,
+          feudal: 22,
+          homeworld: 12,
+          trade: 12,
+          custom: 14,
+          shrine: 8,
+          fortress: 6,
+          death: 6,
+          hive: 4,
+        };
+      case "islands":
+        return {
+          agri: 20,
+          feudal: 18,
+          trade: 16,
+          shrine: 14,
+          custom: 16,
+          homeworld: 10,
+          hive: 10,
+          fortress: 6,
+          death: 6,
+        };
+      case "water":
+        return {
+          custom: 28,
+          trade: 18,
+          agri: 16,
+          shrine: 14,
+          feudal: 12,
+          homeworld: 10,
+          hive: 8,
+          fortress: 6,
+          death: 6,
+        };
+      case "gas_giant":
+        return { custom: 100 };
+      case "tidally_locked":
+        return {
+          death: 20,
+          mining: 14,
+          abandoned_colony: 14,
+          fortress: 14,
+          forge: 12,
+          custom: 12,
+          hive: 8,
+          shrine: 6,
+          feudal: 4,
+        };
+      case "super_earth":
+        return {
+          hive: 22,
+          homeworld: 16,
+          trade: 14,
+          fortress: 14,
+          forge: 12,
+          agri: 10,
+          feudal: 10,
+          shrine: 8,
+          custom: 8,
+        };
+      case "earthlike":
+      default:
+        return {
+          agri: 14,
+          feudal: 12,
+          hive: 12,
+          trade: 12,
+          homeworld: 10,
+          shrine: 10,
+          fortress: 10,
+          forge: 10,
+          archaeological: 6,
+          abandoned_colony: 6,
+          mining: 6,
+          custom: 6,
+          death: 4,
+        };
+    }
+  })();
+
+  return pickWeighted(rng, weights, "custom");
 }

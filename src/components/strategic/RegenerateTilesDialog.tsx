@@ -5,16 +5,27 @@ import {
   TERRAIN_KIND_ORDER,
   type TerrainKind,
 } from "../../lib/planetTerrain";
+import { keysSortedByLabel } from "../../lib/sortOptions";
 import {
+  defaultTerrainPercentsForWorld,
   equalTerrainPercents,
   generateTileTerrainByPercents,
+  generateWorldTileTerrain,
+  normalizeTerrainPercents,
   sumTerrainPercents,
 } from "../../lib/terrainGenerate";
-import type { PlanetClassification } from "../../types/campaign";
+import type {
+  PlanetClassification,
+  PlanetType,
+} from "../../types/campaign";
 
 type RegenerateTilesDialogProps = {
   open: boolean;
   classification: PlanetClassification;
+  planetType: PlanetType;
+  planetId?: string;
+  /** Current on-map mix — prefills sliders when the dialog opens. */
+  currentPercents?: Record<TerrainKind, number> | null;
   /** City / district / structure tiles to keep off ocean/lava/toxic. */
   reservedTiles?: number[];
   /** City hub tiles — prefer urban. */
@@ -26,18 +37,33 @@ type RegenerateTilesDialogProps = {
 export function RegenerateTilesDialog({
   open,
   classification,
+  planetType,
+  planetId,
+  currentPercents = null,
   reservedTiles = [],
   cityHubTiles = [],
   onCancel,
   onConfirm,
 }: RegenerateTilesDialogProps) {
+  const worldDefault = useMemo(
+    () =>
+      defaultTerrainPercentsForWorld(classification, planetType, {
+        planetId,
+      }),
+    [classification, planetType, planetId],
+  );
   const [percents, setPercents] = useState<Record<TerrainKind, number>>(
-    equalTerrainPercents,
+    worldDefault,
   );
 
   useEffect(() => {
-    if (open) setPercents(equalTerrainPercents());
-  }, [open]);
+    if (!open) return;
+    if (currentPercents && sumTerrainPercents(currentPercents) > 0) {
+      setPercents(normalizeTerrainPercents(currentPercents));
+    } else {
+      setPercents(worldDefault);
+    }
+  }, [open, currentPercents, worldDefault]);
 
   const total = useMemo(() => sumTerrainPercents(percents), [percents]);
   const valid = total > 0;
@@ -50,24 +76,11 @@ export function RegenerateTilesDialog({
   };
 
   const normalizeTo100 = () => {
-    const sum = sumTerrainPercents(percents);
-    if (sum <= 0) {
-      setPercents(equalTerrainPercents());
+    if (sumTerrainPercents(percents) <= 0) {
+      setPercents(worldDefault);
       return;
     }
-    const next = { ...percents };
-    let rem = 100;
-    for (let i = 0; i < TERRAIN_KIND_ORDER.length; i++) {
-      const kind = TERRAIN_KIND_ORDER[i]!;
-      if (i === TERRAIN_KIND_ORDER.length - 1) {
-        next[kind] = Math.max(0, rem);
-      } else {
-        const v = Math.round(((percents[kind] ?? 0) / sum) * 100);
-        next[kind] = v;
-        rem -= v;
-      }
-    }
-    setPercents(next);
+    setPercents(normalizeTerrainPercents(percents));
   };
 
   return (
@@ -87,12 +100,11 @@ export function RegenerateTilesDialog({
               Regenerate tiles
             </h2>
             <p className="text-[11px] text-muted mt-1 leading-relaxed">
-              Higher % makes larger continuous regions (oceans, continents);
-              lower % makes more scattered smaller patches (lakes, groves).
-              Ice and tundra seed from the poles; jungle takes the equator
-              before forest; agri/forest/jungle prefer coasts near water.
-              Cities, districts, and structures stay on land (no ocean, lava,
-              or chem spill). Weights need not sum to 100.
+              Sliders start from this world’s current tile mix. Higher % makes
+              larger continuous regions; lower % makes smaller scattered
+              patches. Ice/tundra seed from the poles; jungle hugs the equator;
+              agri/forest/jungle prefer coasts. Settlements stay off ocean,
+              lava, and chem spill. Weights need not sum to 100.
             </p>
           </div>
           <button
@@ -116,6 +128,28 @@ export function RegenerateTilesDialog({
             <button
               type="button"
               className="hud-btn"
+              onClick={() =>
+                setPercents(
+                  currentPercents && sumTerrainPercents(currentPercents) > 0
+                    ? normalizeTerrainPercents(currentPercents)
+                    : worldDefault,
+                )
+              }
+              title="Restore this world’s current tile mix"
+            >
+              Current
+            </button>
+            <button
+              type="button"
+              className="hud-btn"
+              onClick={() => setPercents(worldDefault)}
+              title="Climate + world-type default mix"
+            >
+              World default
+            </button>
+            <button
+              type="button"
+              className="hud-btn"
               onClick={() => setPercents(equalTerrainPercents())}
             >
               Equal
@@ -127,7 +161,7 @@ export function RegenerateTilesDialog({
         </div>
 
         <ul className="space-y-3">
-          {TERRAIN_KIND_ORDER.map((kind) => {
+          {keysSortedByLabel(TERRAIN_KIND_LABELS).map((kind) => {
             const label = TERRAIN_KIND_LABELS[kind];
             const color = legendSwatch(kind, classification);
             const value = percents[kind] ?? 0;
@@ -185,10 +219,17 @@ export function RegenerateTilesDialog({
             disabled={!valid}
             onClick={() =>
               onConfirm(
-                generateTileTerrainByPercents(percents, undefined, undefined, {
-                  reservedTiles,
-                  cityHubTiles,
-                }),
+                classification === "tidally_locked"
+                  ? generateWorldTileTerrain(classification, planetType, {
+                      planetId,
+                      settlement: { reservedTiles, cityHubTiles },
+                    })
+                  : generateTileTerrainByPercents(
+                      percents,
+                      undefined,
+                      undefined,
+                      { reservedTiles, cityHubTiles },
+                    ),
               )
             }
           >

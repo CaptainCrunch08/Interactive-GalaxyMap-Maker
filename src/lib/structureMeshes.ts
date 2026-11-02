@@ -25,46 +25,49 @@ export function clearStructureGeometryCache() {
 
 /** Normalize legacy structure kinds from older saves. */
 export function normalizeStructureKind(kind: string): StructureKind {
-  if (kind === "void_dock") return "space_port";
-  return kind as StructureKind;
+  switch (kind) {
+    case "void_dock":
+      return "space_port";
+    case "slag_works":
+    case "mining_claim":
+    case "manufactorum_complex":
+      return "ore_mine";
+    case "reactor":
+    case "underhive_gate":
+    case "fortress_bastion":
+    case "spire_cluster":
+      return "outpost";
+    case "kill_zone":
+      return "trench_line";
+    case "agri_dome":
+    case "silo_complex":
+    case "reservoir_works":
+    case "cathedral_complex":
+    case "reliquary_vault":
+    case "pilgrim_station":
+      return "ruins_site";
+    case "space_port":
+    case "ore_mine":
+    case "trench_line":
+    case "relay":
+    case "relay_crown":
+    case "outpost":
+    case "ruins_site":
+    case "supply_network":
+      return kind;
+    default:
+      return "outpost";
+  }
 }
 
 function buildStructureGeometry(kind: StructureKind): THREE.BufferGeometry {
   switch (kind) {
     case "space_port":
       return finalize(buildSpacePort());
-    case "spire_cluster":
-      return finalize(buildSpireCluster());
-    case "underhive_gate":
-      return finalize(buildUnderhiveGate());
-    case "manufactorum_complex":
-      return finalize(buildManufactorum());
     case "ore_mine":
       return finalize(buildOreMine());
-    case "slag_works":
-      return finalize(buildSlagWorks());
-    case "reactor":
-      return finalize(buildReactor());
-    case "agri_dome":
-      return finalize(buildAgriDome());
-    case "silo_complex":
-      return finalize(buildSiloComplex());
-    case "reservoir_works":
-      return finalize(buildReservoirWorks());
-    case "fortress_bastion":
-      return finalize(buildFortressBastion());
     case "trench_line":
       return finalize(buildTrenchLine());
-    case "kill_zone":
-      return finalize(buildKillZone());
-    case "cathedral_complex":
-      return finalize(buildCathedral());
-    case "reliquary_vault":
-      return finalize(buildReliquaryVault());
-    case "pilgrim_station":
-      return finalize(buildPilgrimStation());
-    case "mining_claim":
-      return finalize(buildMiningClaim());
     case "relay":
       return finalize(buildRelay());
     case "relay_crown":
@@ -81,7 +84,19 @@ function buildStructureGeometry(kind: StructureKind): THREE.BufferGeometry {
 }
 
 function finalize(parts: Parts): THREE.BufferGeometry {
-  const usable = parts.filter(Boolean);
+  const raw = parts.filter(Boolean);
+  // mergeGeometries requires every part indexed or every part non-indexed.
+  // Mixed primitives (box + octa/cone) disagree — normalize to non-indexed.
+  const mixed =
+    raw.some((g) => g.index != null) && raw.some((g) => g.index == null);
+  const usable = mixed
+    ? raw.map((g) => {
+        if (g.index == null) return g;
+        const ni = g.toNonIndexed();
+        g.dispose();
+        return ni;
+      })
+    : raw;
   const merged = mergeGeometries(usable, false);
   for (const g of usable) g.dispose();
   if (!merged) {

@@ -1,8 +1,5 @@
 import type { Fleet, ShipChassis } from "../types/campaign";
-import {
-  SHIP_CHASSIS_LABELS,
-  SHIP_CHASSIS_ORDER,
-} from "../types/campaign";
+import { SHIP_CHASSIS_LABELS } from "../types/campaign";
 import {
   chassisSummary,
   locationLabel,
@@ -21,9 +18,11 @@ import {
 import { playMoveBlockReason } from "../lib/play";
 import { factionSymbolIds } from "../lib/factionSymbols";
 import { charactersOnFleet } from "../lib/characterLocation";
+import { keysSortedByLabel, sortedByName } from "../lib/sortOptions";
 import { factionsSortedByName, getFactionById } from "../lib/territory";
 import { normalizeCampaignPlay } from "../types/campaign";
 import { useCampaignStore } from "../store/useCampaignStore";
+import { AutoGrowTextarea } from "./AutoGrowTextarea";
 
 const inputClass = "hud-input";
 
@@ -217,13 +216,14 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
                   })`
                 : ""}
             </option>
-            {(fac ? factionSymbolIds(fac) : [])
-              .map((id) => (campaign.symbols ?? []).find((s) => s.id === id))
-              .filter(Boolean)
-              .map((s) => (
-                <option key={s!.id} value={s!.id}>
-                  {s!.name}
-                  {s!.id === fac?.defaultSymbolId ? " (primary)" : ""}
+            {sortedByName(
+              (fac ? factionSymbolIds(fac) : [])
+                .map((id) => (campaign.symbols ?? []).find((s) => s.id === id))
+                .filter((s): s is NonNullable<typeof s> => s != null),
+            ).map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                  {s.id === fac?.defaultSymbolId ? " (primary)" : ""}
                 </option>
               ))}
           </select>
@@ -293,7 +293,7 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
                 }}
               >
                 <option value="">+ Add chassis…</option>
-                {SHIP_CHASSIS_ORDER.map((c) => (
+                {keysSortedByLabel(SHIP_CHASSIS_LABELS).map((c) => (
                   <option key={c} value={c}>
                     {SHIP_CHASSIS_LABELS[c]}
                   </option>
@@ -344,7 +344,7 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
                       })
                     }
                   >
-                    {SHIP_CHASSIS_ORDER.map((c) => (
+                    {keysSortedByLabel(SHIP_CHASSIS_LABELS).map((c) => (
                       <option key={c} value={c}>
                         {SHIP_CHASSIS_LABELS[c]}
                       </option>
@@ -442,8 +442,8 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
 
         <section>
           <label className="block text-xs text-muted mb-1">Notes</label>
-          <textarea
-            className={inputClass + " min-h-20 resize-y"}
+          <AutoGrowTextarea
+            className={inputClass + " min-h-20"}
             value={fleet.notes}
             onChange={(e) => updateFleet(fleet.id, { notes: e.target.value })}
             placeholder="Orders, composition notes…"

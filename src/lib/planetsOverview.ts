@@ -1,7 +1,11 @@
 import type { Campaign, Planet, PlanetType } from "../types/campaign";
-import { PLANET_TYPE_LABELS } from "../types/campaign";
+import { planetTypeDisplayLabel } from "../types/campaign";
 import { armyStrength } from "./battleResolve";
-import { getFactionById } from "./territory";
+import {
+  getPlanetOwnership,
+  planetOwnershipLabel,
+  withLivePlanetOwner,
+} from "./territory";
 
 export type PlanetControlKind = "faction" | "contested" | "unclaimed";
 
@@ -29,28 +33,6 @@ function clamp(n: number, lo = 0, hi = 100): number {
   return Math.max(lo, Math.min(hi, Math.round(n)));
 }
 
-/** Factions with any surface stake on this world. */
-function presentFactionIds(planet: Planet): Set<string> {
-  const ids = new Set<string>();
-  if (planet.controllingFactionId) ids.add(planet.controllingFactionId);
-  for (const army of planet.armies ?? []) ids.add(army.factionId);
-  for (const city of planet.cities ?? []) {
-    for (const d of city.districts) {
-      if (d.controllingFactionId) ids.add(d.controllingFactionId);
-    }
-  }
-  for (const d of planet.independentDistricts ?? []) {
-    if (d.controllingFactionId) ids.add(d.controllingFactionId);
-  }
-  for (const st of planet.structures ?? []) {
-    if (st.controllingFactionId) ids.add(st.controllingFactionId);
-  }
-  for (const owner of Object.values(planet.tileClaims ?? {})) {
-    if (owner) ids.add(owner);
-  }
-  return ids;
-}
-
 /**
  * World strength: garrisons, fortifications, industry, settlements;
  * ruins and devastation pull the score down.
@@ -58,9 +40,9 @@ function presentFactionIds(planet: Planet): Set<string> {
  * Scoring (clamped 0–100):
  * - Base 18 (+ type bonus: hive 22, forge 20, death 16, shrine 12, agri 10, …)
  * - Each detachment: +14 × (army STR% / 100)
- * - Structures: fortress/trench +16, kill zone/outpost +9, space port +11,
- *   manufactorum/reactor/mine +8, ruins −12, other +4
- * - Cities +6 each; districts +4; fortress/bastion district +5; ruins district −4
+ * - Structures: trench +16, outpost +9, space port +11, ore mine +8,
+ *   ruins −12, other +4
+ * - Cities +6 each; districts +4; bastion district +5; ruins district −4
  * - Tile claims: up to +12 (0.25 each)
  * - Building points: up to +15 (BP / 50)
  * - Each logged battle: −2
@@ -90,6 +72,10 @@ export function computePlanetStrength(planet: Planet): number {
     feudal: 12,
     fortress: 24,
     homeworld: 20,
+    trade: 16,
+    mining: 14,
+    archaeological: 12,
+    abandoned_colony: 10,
     custom: 8,
   };
   score += typeBonus[planet.type] ?? 0;
@@ -99,16 +85,11 @@ export function computePlanetStrength(planet: Planet): number {
   }
 
   for (const st of planet.structures ?? []) {
-    if (st.kind === "fortress_bastion" || st.kind === "trench_line") score += 16;
-    else if (st.kind === "kill_zone" || st.kind === "outpost") score += 9;
+    if (st.kind === "trench_line") score += 16;
+    else if (st.kind === "outpost") score += 9;
     else if (st.kind === "space_port") score += 11;
-    else if (
-      st.kind === "manufactorum_complex" ||
-      st.kind === "reactor" ||
-      st.kind === "ore_mine"
-    ) {
-      score += 8;
-    } else if (st.kind === "ruins_site") score -= 12;
+    else if (st.kind === "ore_mine") score += 8;
+    else if (st.kind === "ruins_site") score -= 12;
     else score += 4;
   }
 
@@ -116,13 +97,13 @@ export function computePlanetStrength(planet: Planet): number {
     score += 6;
     score += city.districts.length * 4;
     for (const d of city.districts) {
-      if (d.kind === "fortress" || d.kind === "bastion") score += 5;
+      if (d.kind === "bastion") score += 5;
       if (d.kind === "ruins") score -= 4;
     }
   }
   for (const d of planet.independentDistricts ?? []) {
     score += 4;
-    if (d.kind === "fortress" || d.kind === "bastion") score += 5;
+    if (d.kind === "bastion") score += 5;
     if (d.kind === "ruins") score -= 4;
   }
 
@@ -140,20 +121,20 @@ export function computePlanetStrength(planet: Planet): number {
 
 function defaultDescription(
   planet: Planet,
-  controlLabel: string,
+  ownership: ReturnType<typeof getPlanetOwnership>,
   systemName: string,
 ): string {
-  const type = PLANET_TYPE_LABELS[planet.type] ?? "World";
-  if (controlLabel === "Contested") {
-    return `Multiple powers contest ${planet.name}. Front lines shift across this ${type.toLowerCase()} as reinforcements pour in.`;
+  const type = planetTypeDisplayLabel(planet);
+  if (ownership.status === "contested") {
+    return `City control is split on ${planet.name}. Front lines shift across this ${type.toLowerCase()} as reinforcements pour in.`;
   }
-  if (planet.controllingFactionId) {
+  if (ownership.status === "owned") {
     const n = (planet.armies ?? []).length;
     const garrison =
       n > 0
         ? `${n} detachment${n === 1 ? "" : "s"} hold the surface.`
         : "Garrison strength is thin.";
-    return `${controlLabel} maintains this ${type.toLowerCase()} in the ${systemName}. ${garrison}`;
+    return `${ownership.factions[0].name} maintains this ${type.toLowerCase()} in the ${systemName}. ${garrison}`;
   }
   return `Unclaimed ${type.toLowerCase()} in the ${systemName}. No permanent banner flies here yet.`;
 }
@@ -168,51 +149,45 @@ export function buildPlanetOverviewCard(
   campaign: Campaign,
   planet: Planet,
 ): PlanetOverviewCard {
-  const system = campaign.systems.find((s) => s.id === planet.systemId);
+  const live = withLivePlanetOwner(planet);
+  const system = campaign.systems.find((s) => s.id === live.systemId);
   const systemName = system?.name ?? "Unknown System";
-  const present = presentFactionIds(planet);
-  const owner = getFactionById(campaign, planet.controllingFactionId);
+  const ownership = getPlanetOwnership(campaign, live);
 
   let controlKind: PlanetControlKind;
   let controlLabel: string;
   let accent: string;
 
-  if (present.size >= 2) {
+  if (ownership.status === "contested") {
     controlKind = "contested";
-    controlLabel = "Contested";
+    controlLabel = planetOwnershipLabel(ownership);
     accent = NEUTRAL;
-  } else if (owner) {
+  } else if (ownership.status === "owned") {
     controlKind = "faction";
-    controlLabel = owner.name;
-    accent = owner.color;
-  } else if (present.size === 1) {
-    const onlyId = [...present][0]!;
-    const f = getFactionById(campaign, onlyId);
-    controlKind = f ? "faction" : "unclaimed";
-    controlLabel = f?.name ?? "Unclaimed";
-    accent = f?.color ?? NEUTRAL;
+    controlLabel = ownership.factions[0].name;
+    accent = ownership.factions[0].color;
   } else {
     controlKind = "unclaimed";
     controlLabel = "Unclaimed";
     accent = NEUTRAL;
   }
 
-  const notes = planet.notes?.trim();
+  const notes = live.notes?.trim();
   const description = truncate(
     notes && notes.length > 0
       ? notes
-      : defaultDescription(planet, controlLabel, systemName),
+      : defaultDescription(live, ownership, systemName),
   );
 
   return {
-    planetId: planet.id,
-    name: planet.name,
+    planetId: live.id,
+    name: live.name,
     systemName,
-    systemId: planet.systemId,
-    classification: PLANET_TYPE_LABELS[planet.type] ?? planet.type,
-    planetType: planet.type,
+    systemId: live.systemId,
+    classification: planetTypeDisplayLabel(live),
+    planetType: live.type,
     description,
-    strength: computePlanetStrength(planet),
+    strength: computePlanetStrength(live),
     controlKind,
     controlLabel,
     accent,

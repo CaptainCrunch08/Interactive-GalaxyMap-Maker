@@ -5,6 +5,7 @@ import {
   TERRAIN_KIND_ORDER,
   type TerrainKind,
 } from "../../lib/planetTerrain";
+import { keysSortedByLabel } from "../../lib/sortOptions";
 import { fillAllTileTerrain } from "../../lib/terrainGenerate";
 import type { PlanetClassification } from "../../types/campaign";
 
@@ -75,7 +76,7 @@ export function SelectAllTilesDialog({
         </div>
 
         <div className="flex flex-wrap gap-1">
-          {TERRAIN_KIND_ORDER.map((k) => (
+          {keysSortedByLabel(TERRAIN_KIND_LABELS).map((k) => (
             <button
               key={k}
               type="button"

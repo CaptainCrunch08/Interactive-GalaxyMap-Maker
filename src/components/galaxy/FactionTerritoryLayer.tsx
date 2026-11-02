@@ -16,6 +16,7 @@ import {
 import {
   CLAIM_RADIUS,
   getSystemOwnership,
+  territoryLayoutSignature,
 } from "../../lib/territory";
 
 interface FactionTerritoryLayerProps {
@@ -112,32 +113,47 @@ function emptyEntry(
 }
 
 /**
- * Grow toward the nearest rival (loosened meet fraction).
- * Unclaimed space is handled by invisible void kernels + soft blur.
+ * Grow toward the nearest claimed rival (loosened meet fraction), but never
+ * past the meet line toward an unclaimed star — otherwise BASE reach paints
+ * over void systems (claimed border cutting through unowned neighbors).
  */
 function claimRadiusForSystem(
   system: StarSystem,
   entryId: string,
   claims: ClaimRef[],
 ): number {
-  let nearestRival = Infinity;
+  let nearestClaimedRival = Infinity;
+  let nearestUnclaimed = Infinity;
   for (const other of claims) {
     if (other.system.id === system.id) continue;
     if (other.entryId === entryId) continue;
-    if (other.entryId.startsWith("unowned:")) continue;
     const dist = Math.hypot(
       other.system.x - system.x,
       other.system.y - system.y,
     );
-    nearestRival = Math.min(nearestRival, dist);
+    if (other.entryId.startsWith("unowned:")) {
+      nearestUnclaimed = Math.min(nearestUnclaimed, dist);
+    } else {
+      nearestClaimedRival = Math.min(nearestClaimedRival, dist);
+    }
   }
-  const reachRival = Number.isFinite(nearestRival)
-    ? nearestRival * MEET_FRACTION
-    : 0;
-  return Math.max(BASE_CLAIM_RADIUS, reachRival);
+
+  let radius = BASE_CLAIM_RADIUS;
+  if (Number.isFinite(nearestClaimedRival)) {
+    radius = Math.max(radius, nearestClaimedRival * MEET_FRACTION);
+  }
+  // Cap open flanks at the void meet so unclaimed stars stay outside the blob.
+  if (Number.isFinite(nearestUnclaimed)) {
+    radius = Math.min(radius, nearestUnclaimed * MEET_FRACTION);
+  }
+  return radius;
 }
 
-/** Void kernel radius — stop claimed blobs short of unclaimed stars. */
+/**
+ * Void kernel radius — reserve space around unclaimed stars without erasing
+ * nearby claims. Must NOT floor at BASE: a close unclaimed star with a full
+ * BASE void would out-compete and delete the claimed sphere.
+ */
 function voidRadiusForSystem(system: StarSystem, claims: ClaimRef[]): number {
   let nearestClaimed = Infinity;
   for (const other of claims) {
@@ -149,10 +165,9 @@ function voidRadiusForSystem(system: StarSystem, claims: ClaimRef[]): number {
     );
     nearestClaimed = Math.min(nearestClaimed, dist);
   }
-  const reach = Number.isFinite(nearestClaimed)
-    ? nearestClaimed * MEET_FRACTION
-    : 0;
-  return Math.max(BASE_CLAIM_RADIUS, reach);
+  if (!Number.isFinite(nearestClaimed)) return BASE_CLAIM_RADIUS;
+  // At most BASE, and never past the meet-fraction of the gap to a claim.
+  return Math.min(BASE_CLAIM_RADIUS, nearestClaimed * MEET_FRACTION);
 }
 
 function computeRegions(campaign: Campaign): TerritoryRegions {
@@ -209,7 +224,7 @@ function computeRegions(campaign: Campaign): TerritoryRegions {
       byFaction.set(faction.id, entry);
     } else {
       const a = ownership.factions[0]!;
-      const b = ownership.factions[1]!;
+      const b = ownership.factions[1] ?? a;
       const key = contestedKey(ownership.factions);
       const id = `contested:${key}`;
       const entry =
@@ -218,7 +233,11 @@ function computeRegions(campaign: Campaign): TerritoryRegions {
           id,
           color: a.color,
           kind: "contested",
-          stripeColors: [a.color, b.color],
+          // One-faction contested (unowned worlds remain) stripes with muted void.
+          stripeColors: [
+            a.color,
+            ownership.factions.length > 1 ? b.color : "#3a4550",
+          ],
         });
       entry.sources.push(source);
       byContested.set(id, entry);
@@ -310,17 +329,26 @@ export function FactionTerritoryLayer({ campaign }: FactionTerritoryLayerProps) 
   const uid = useId().replace(/:/g, "");
   const [dragging, setDragging] = useState(() => isSystemDragging());
   const lastRegionsRef = useRef<TerritoryRegions | null>(null);
+  const lastSigRef = useRef<string>("");
 
   useEffect(() => subscribeSystemDrag(() => setDragging(isSystemDragging())), []);
+
+  const layoutSig = territoryLayoutSignature(campaign);
 
   const regions = useMemo(() => {
     if (dragging && lastRegionsRef.current) {
       return lastRegionsRef.current;
     }
+    if (lastRegionsRef.current && layoutSig === lastSigRef.current) {
+      return lastRegionsRef.current;
+    }
     const next = computeRegions(campaign);
     lastRegionsRef.current = next;
+    lastSigRef.current = layoutSig;
     return next;
-  }, [campaign, dragging]);
+    // campaign is read inside computeRegions; layoutSig covers relevant fields.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- signature gates rebuilds
+  }, [layoutSig, dragging, campaign]);
 
   if (regions.fills.length === 0) return null;
 

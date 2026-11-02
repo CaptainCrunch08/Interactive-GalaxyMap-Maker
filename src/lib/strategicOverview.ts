@@ -122,10 +122,8 @@ function rawMilitary(campaign: Campaign, factionId: string): number {
     }
     for (const st of planet.structures ?? []) {
       if (st.controllingFactionId !== factionId) continue;
-      if (st.kind === "fortress_bastion" || st.kind === "trench_line") {
-        score += 18;
-      }
-      if (st.kind === "kill_zone" || st.kind === "outpost") score += 10;
+      if (st.kind === "trench_line") score += 18;
+      if (st.kind === "outpost") score += 10;
       if (st.kind === "space_port") score += 12;
     }
   }
@@ -172,7 +170,7 @@ function rawTerritory(campaign: Campaign, factionId: string): number {
 }
 
 /**
- * Supply: banked BP + manufactorum income capacity + agri/silos/foundries/ports.
+ * Supply: banked BP + manufactorum income capacity + ports/mines/relays.
  */
 function rawSupply(campaign: Campaign, factionId: string): number {
   let score = 0;
@@ -185,15 +183,9 @@ function rawSupply(campaign: Campaign, factionId: string): number {
     score += manus * 14;
     for (const st of planet.structures ?? []) {
       if (st.controllingFactionId !== factionId) continue;
-      if (st.kind === "agri_dome" || st.kind === "silo_complex") score += 10;
-      if (st.kind === "reservoir_works") score += 8;
-      if (st.kind === "manufactorum_complex" || st.kind === "reactor") {
-        score += 12;
-      }
       if (st.kind === "space_port") score += 8;
-      if (st.kind === "ore_mine" || st.kind === "mining_claim" || st.kind === "slag_works") {
-        score += 6;
-      }
+      if (st.kind === "ore_mine") score += 6;
+      if (st.kind === "supply_network" || st.kind === "relay") score += 5;
     }
     if (planet.controllingFactionId === factionId) {
       if (planet.type === "agri") score += 16;
@@ -201,7 +193,11 @@ function rawSupply(campaign: Campaign, factionId: string): number {
       if (planet.type === "hive") score += 10;
       if (planet.type === "fortress") score += 18;
       if (planet.type === "homeworld") score += 14;
+      if (planet.type === "trade") score += 12;
       if (planet.type === "feudal") score += 8;
+      if (planet.type === "mining") score += 12;
+      if (planet.type === "archaeological") score += 8;
+      if (planet.type === "abandoned_colony") score += 6;
     }
   }
   score += Math.min(80, bp / 40) + income * 2.5;
@@ -219,8 +215,12 @@ function rawGrowth(campaign: Campaign, factionId: string): number {
       if (planet.type === "forge") score += 22;
       if (planet.type === "hive") score += 12;
       if (planet.type === "homeworld") score += 16;
+      if (planet.type === "trade") score += 18;
       if (planet.type === "feudal") score += 14;
       if (planet.type === "fortress") score += 6;
+      if (planet.type === "mining") score += 18;
+      if (planet.type === "archaeological") score += 10;
+      if (planet.type === "abandoned_colony") score += 8;
       if (planet.type === "custom") score += 8;
     }
     score += countOwnedManufactorums(planet, factionId) * 11;
@@ -251,20 +251,13 @@ function rawMorale(campaign: Campaign, factionId: string): number {
     if (planet.controllingFactionId === factionId) {
       if (planet.type === "shrine") score += 24;
       if (planet.type === "hive") score += 10;
+      if (planet.type === "trade") score += 8;
       if (planet.type === "death") score -= 6;
       score += 8;
     }
     for (const st of planet.structures ?? []) {
       if (st.controllingFactionId !== factionId) continue;
       if (st.kind === "ruins_site") score -= 14;
-      if (
-        st.kind === "cathedral_complex" ||
-        st.kind === "reliquary_vault" ||
-        st.kind === "pilgrim_station"
-      ) {
-        score += 12;
-      }
-      if (st.kind === "fortress_bastion") score += 6;
     }
     for (const army of planet.armies ?? []) {
       if (army.factionId === factionId) score += 2;

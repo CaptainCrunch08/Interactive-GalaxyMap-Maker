@@ -6,7 +6,14 @@ import type {
 } from "../types/campaign";
 import { GALAXY_EDGE_PADDING } from "../types/campaign";
 import { HYPERLANE_MAX_DIST, buildHyperlanes, systemHopDistance } from "./hyperlanes";
-import { generatePlanetSurface, planetOwnerFromCities } from "./settlements";
+import {
+  generatePlanetSurface,
+  planetOwnerFromCities,
+  settlementTileSet,
+} from "./settlements";
+import {
+  generateWorldTileTerrain,
+} from "./terrainGenerate";
 import { generateWarpGateSurface } from "./warpGateSurface";
 import {
   applyWarpGateOwnership,
@@ -14,8 +21,9 @@ import {
   MIN_WARP_GATE_SYSTEM_HOPS,
 } from "./warpGates";
 import { pickDysonCoreStarClass, pickRandomStarClass } from "./stars";
-import { pickRandomClassification } from "./planetClass";
+import { pickRandomClassification, pickPlanetTypeForClassification } from "./planetClass";
 import { pickPlanetVisualModel } from "./planetModels";
+import { allocateUniqueSystemName } from "./systemNames";
 
 export type GalaxySize = "small" | "medium" | "large";
 
@@ -60,61 +68,16 @@ const PLANET_TYPES: PlanetType[] = [
   "feudal",
   "fortress",
   "homeworld",
+  "trade",
+  "mining",
+  "archaeological",
+  "abandoned_colony",
   "asteroid_belt",
   "custom",
 ];
 
-const NAME_A = [
-  "Ash",
-  "Black",
-  "Crimson",
-  "Dawn",
-  "Ember",
-  "Frost",
-  "Ghost",
-  "Hollow",
-  "Iron",
-  "Jade",
-  "Kron",
-  "Lumen",
-  "Mire",
-  "Null",
-  "Obsidian",
-  "Pale",
-  "Quasar",
-  "Rift",
-  "Sable",
-  "Thorn",
-  "Umbral",
-  "Void",
-  "Wraith",
-  "Xenos",
-  "Yonder",
-  "Zenith",
-];
-
-const NAME_B = [
-  "reach",
-  "gate",
-  "march",
-  "spire",
-  "well",
-  "deep",
-  "flare",
-  "hold",
-  "crown",
-  "wake",
-  "shard",
-  "veil",
-  "forge",
-  "haven",
-  "exodus",
-  "prime",
-  "nexus",
-  "cluster",
-  "expanse",
-  "terminus",
-];
+/** Chance a generated body is an asteroid belt rather than a climate world. */
+const ASTEROID_BELT_CHANCE = 1 / PLANET_TYPES.length;
 
 const WORLD_NAMES = [
   "Primaris",
@@ -161,19 +124,6 @@ function parseGalaxySize(raw: string): GalaxySize | null {
   if (s === "m" || s === "medium" || s === "med") return "medium";
   if (s === "l" || s === "large" || s === "big") return "large";
   return null;
-}
-
-function uniqueSystemName(rng: () => number, used: Set<string>): string {
-  for (let attempt = 0; attempt < 80; attempt++) {
-    const name = `${pick(rng, NAME_A)} ${pick(rng, NAME_B)}`;
-    if (!used.has(name)) {
-      used.add(name);
-      return name;
-    }
-  }
-  const fallback = `System ${used.size + 1}`;
-  used.add(fallback);
-  return fallback;
 }
 
 /**
@@ -410,7 +360,7 @@ export function generateGalaxyCampaign(
     const systemId = crypto.randomUUID();
     systems.push({
       id: systemId,
-      name: uniqueSystemName(rng, usedNames),
+      name: allocateUniqueSystemName(usedNames, rng),
       x: pt.x,
       y: pt.y,
       notes: "",
@@ -419,12 +369,27 @@ export function generateGalaxyCampaign(
 
     const planetCount = 1 + Math.floor(rng() * 5);
     for (let o = 0; o < planetCount; o++) {
-      const type = pick(rng, PLANET_TYPES);
       const planetId = crypto.randomUUID();
-      const classification =
-        type === "asteroid_belt" ? "barren" : pickRandomClassification(rng);
+      const isBelt = rng() < ASTEROID_BELT_CHANCE;
+      const classification = isBelt
+        ? "barren"
+        : pickRandomClassification(rng);
+      const type: PlanetType = isBelt
+        ? "asteroid_belt"
+        : pickPlanetTypeForClassification(classification, rng);
       const { cities, structures, independentDistricts } =
         generatePlanetSurface(planetId, type, { classification });
+      const reservedTiles = [
+        ...settlementTileSet(cities, structures, independentDistricts),
+      ];
+      const tileTerrain = generateWorldTileTerrain(classification, type, {
+        planetId,
+        rng,
+        settlement: {
+          reservedTiles,
+          cityHubTiles: cities.map((c) => c.tileIndex),
+        },
+      });
       planets.push({
         id: planetId,
         systemId,
@@ -447,7 +412,9 @@ export function generateGalaxyCampaign(
         cities,
         independentDistricts,
         structures,
+        surfaceReady: true,
         tileClaims: {},
+        tileTerrain,
         armies: [],
       });
     }
@@ -466,6 +433,7 @@ export function generateGalaxyCampaign(
     fleets: [],
     characters: [],
     timeline: { frames: [], events: [] },
+    battleLog: [],
     mapSize,
     hyperlanes: buildHyperlanes(systems),
   };

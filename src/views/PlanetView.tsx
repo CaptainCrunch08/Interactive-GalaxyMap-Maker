@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import {
   PLANET_CLASSIFICATION_LABELS,
-  PLANET_TYPE_LABELS,
+  planetTypeDisplayLabel,
 } from "../types/campaign";
 import { useCampaignStore } from "../store/useCampaignStore";
 import { AsteroidBeltView } from "./AsteroidBeltView";
@@ -10,6 +10,10 @@ import { WarpGateGlobe } from "../components/warpGate/WarpGateGlobe";
 import { atmosphereColor } from "../lib/planetTexture";
 import { resolvePlanetVisualModelId } from "../lib/planetModels";
 import { supportsStrategicSurface } from "../lib/planetClass";
+import {
+  getPlanetOwnership,
+  planetOwnershipLabel,
+} from "../lib/territory";
 
 export function PlanetView() {
   const campaign = useCampaignStore((s) => s.campaign);
@@ -27,9 +31,13 @@ export function PlanetView() {
   const system = planet
     ? campaign.systems.find((s) => s.id === planet.systemId)
     : undefined;
-  const faction = planet?.controllingFactionId
-    ? campaign.factions.find((f) => f.id === planet.controllingFactionId)
+  const planetOwnership = planet
+    ? getPlanetOwnership(campaign, planet)
     : undefined;
+  const faction =
+    planetOwnership?.status === "owned"
+      ? planetOwnership.factions[0]
+      : undefined;
 
   // Recover if focus was lost (HMR, map switch, deleted planet, etc.)
   useEffect(() => {
@@ -65,7 +73,6 @@ export function PlanetView() {
   }
 
   if (planet.type === "warp_gate") {
-    const owner = faction;
     const linkedId = planet.linkedGateId;
     const linked = linkedId
       ? campaign.planets.find((p) => p.id === linkedId)
@@ -73,7 +80,7 @@ export function PlanetView() {
     const linkedSys = linked
       ? campaign.systems.find((s) => s.id === linked.systemId)
       : undefined;
-    const accent = owner?.color ?? "#4fd2ff";
+    const accent = faction?.color ?? "#4fd2ff";
     return (
       <div className="relative h-full w-full galaxy-bg overflow-hidden flex flex-col items-center justify-center">
         <div className="galaxy-nebula pointer-events-none absolute inset-0 opacity-70" />
@@ -102,8 +109,10 @@ export function PlanetView() {
             </p>
             <h1 className="font-display text-3xl text-star">{planet.name}</h1>
             <p className="text-sm text-brass">
-              {owner
-                ? `Controlled by ${owner.name}`
+              {planetOwnership && planetOwnership.status !== "unowned"
+                ? planetOwnership.status === "owned"
+                  ? `Controlled by ${planetOwnership.factions[0].name}`
+                  : `Contested — ${planetOwnershipLabel(planetOwnership)}`
                 : "Unclaimed — open transit"}
             </p>
             <p className="text-xs text-muted leading-relaxed">
@@ -186,8 +195,10 @@ export function PlanetView() {
             {planet.name}
           </h1>
           <p className="text-sm text-brass">
-            {PLANET_TYPE_LABELS[planet.type]} · {classLabel}
-            {faction ? ` · ${faction.name}` : " · Unclaimed"}
+            {planetTypeDisplayLabel(planet)} · {classLabel}
+            {planetOwnership
+              ? ` · ${planetOwnershipLabel(planetOwnership)}`
+              : " · Unclaimed"}
           </p>
           <p className="text-[11px] text-muted mt-3">
             {supportsStrategicSurface(planet)

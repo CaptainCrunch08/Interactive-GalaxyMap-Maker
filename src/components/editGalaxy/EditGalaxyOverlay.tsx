@@ -12,7 +12,7 @@ const TABS = [
 export function EditGalaxyOverlay() {
   const open = useCampaignStore((s) => s.galaxyEditorOpen);
   const tab = useCampaignStore((s) => s.galaxyEditorTab);
-  const campaign = useCampaignStore((s) => s.campaign);
+  const campaignName = useCampaignStore((s) => s.campaign.name);
   const setGalaxyEditorTab = useCampaignStore((s) => s.setGalaxyEditorTab);
   const closeGalaxyEditor = useCampaignStore((s) => s.closeGalaxyEditor);
 
@@ -33,8 +33,8 @@ export function EditGalaxyOverlay() {
           >
             Edit Galaxy
           </h2>
-          <p className="text-[11px] text-muted mt-1 truncate" title={campaign.name}>
-            {campaign.name}
+          <p className="text-[11px] text-muted mt-1 truncate" title={campaignName}>
+            {campaignName}
           </p>
         </div>
         <nav className="flex-1 p-2 space-y-0.5">

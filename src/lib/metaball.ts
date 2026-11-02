@@ -624,6 +624,42 @@ export function buildCompetitiveTerritories(
     winners[idx] = best;
   }
 
+  // Claimed system cores always keep their faction — a nearby void kernel
+  // must not erase the sphere of influence around the star itself.
+  const coreRadius = Math.max(56, resolvedCell * 4);
+  const coreR2 = coreRadius * coreRadius;
+  for (let f = 0; f < active.length; f++) {
+    for (const s of active[f]!.sources) {
+      const i0 = Math.max(
+        0,
+        Math.floor((s.x - coreRadius - minX) / resolvedCell),
+      );
+      const i1 = Math.min(
+        cols - 1,
+        Math.ceil((s.x + coreRadius - minX) / resolvedCell),
+      );
+      const j0 = Math.max(
+        0,
+        Math.floor((s.y - coreRadius - minY) / resolvedCell),
+      );
+      const j1 = Math.min(
+        rows - 1,
+        Math.ceil((s.y + coreRadius - minY) / resolvedCell),
+      );
+      for (let j = j0; j <= j1; j++) {
+        const y = minY + j * resolvedCell;
+        for (let i = i0; i <= i1; i++) {
+          const x = minX + i * resolvedCell;
+          const dx = x - s.x;
+          const dy = y - s.y;
+          if (dx * dx + dy * dy <= coreR2) {
+            winners[j * cols + i] = f;
+          }
+        }
+      }
+    }
+  }
+
   const minArea = resolvedCell * resolvedCell * 10;
   const minLen = resolvedCell * 8;
   const fills: TerritoryFill[] = [];

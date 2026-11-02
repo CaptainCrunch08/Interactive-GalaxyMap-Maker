@@ -1,19 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   DISTRICT_KIND_LABELS,
-  DISTRICT_KIND_ORDER,
   PLANET_CLASSIFICATION_LABELS,
-  PLANET_TYPE_LABELS,
   STRUCTURE_KIND_LABELS,
+  planetTypeDisplayLabel,
   STRUCTURE_KIND_ORDER,
 } from "../types/campaign";
 import type { District } from "../types/campaign";
 import {
+  activeTerrainLegend,
   legendSwatch,
   TERRAIN_KIND_ERASE,
   TERRAIN_KIND_LABELS,
   TERRAIN_KIND_ORDER,
-  terrainLegend,
   type TerrainKind,
 } from "../lib/planetTerrain";
 import {
@@ -25,12 +24,19 @@ import { SelectAllTilesDialog } from "../components/strategic/SelectAllTilesDial
 import { useCampaignStore } from "../store/useCampaignStore";
 import { playMoveBlockReason } from "../lib/play";
 import { districtRuleViolations } from "../lib/activation";
-import { factionsPresentOnPlanet } from "../lib/territory";
+import { keysSortedByLabel, sortedByName } from "../lib/sortOptions";
+import {
+  getFactionById,
+  getPlanetOwnership,
+  planetOwnershipLabel,
+} from "../lib/territory";
 import { normalizeCampaignPlay } from "../types/campaign";
 import { VICTORY_KIND_LABELS } from "../lib/battleResolve";
 import { StationMapView } from "./StationMapView";
 import { supportsStrategicSurface } from "../lib/planetClass";
 import { settlementTileSet } from "../lib/settlements";
+import { terrainPercentsOnPlanet } from "../lib/terrainGenerate";
+import { planetFactionContribution } from "../lib/districtBuffs";
 
 export function StrategicView() {
   const campaign = useCampaignStore((s) => s.campaign);
@@ -80,7 +86,6 @@ export function StrategicView() {
   const buildDomedHabitatAtTile = useCampaignStore(
     (s) => s.buildDomedHabitatAtTile,
   );
-  const buildTrenchLineAtTile = useCampaignStore((s) => s.buildTrenchLineAtTile);
   const buildOreMineAtTile = useCampaignStore((s) => s.buildOreMineAtTile);
   const demolishSurfaceAtTile = useCampaignStore((s) => s.demolishSurfaceAtTile);
   const enterSystem = useCampaignStore((s) => s.enterSystem);
@@ -102,18 +107,16 @@ export function StrategicView() {
   const system = planet
     ? campaign.systems.find((s) => s.id === planet.systemId)
     : undefined;
-  const faction = planet?.controllingFactionId
-    ? campaign.factions.find((f) => f.id === planet.controllingFactionId)
+  const planetOwnership = planet
+    ? getPlanetOwnership(campaign, planet)
     : undefined;
-  const surfaceFactions = planet ? factionsPresentOnPlanet(planet) : new Set();
-  const controlLabel = faction
-    ? faction.name
-    : surfaceFactions.size >= 2
-      ? "Contested surface"
-      : surfaceFactions.size === 1
-        ? (campaign.factions.find((f) => f.id === [...surfaceFactions][0])
-            ?.name ?? "Contested surface")
-        : "Unclaimed";
+  const faction =
+    planetOwnership?.status === "owned"
+      ? planetOwnership.factions[0]
+      : undefined;
+  const controlLabel = planetOwnership
+    ? planetOwnershipLabel(planetOwnership)
+    : "Unclaimed";
 
   useEffect(() => {
     setSelectedFamousBattleId(null);
@@ -163,7 +166,15 @@ export function StrategicView() {
   }
 
   const accent = faction?.color ?? "#4fd2ff";
-  const legend = terrainLegend(planet.classification, planet.type);
+  const play = normalizeCampaignPlay(campaign.play);
+  const turnFactionId = play.active ? play.activeFactionId : null;
+  const turnFaction = turnFactionId
+    ? getFactionById(campaign, turnFactionId)
+    : undefined;
+  const turnContribution =
+    turnFactionId != null
+      ? planetFactionContribution(planet, turnFactionId)
+      : null;
   const cities = planet.cities ?? [];
   const structures = planet.structures ?? [];
   const settlementReservedTiles = useMemo(
@@ -182,6 +193,25 @@ export function StrategicView() {
   );
   const tileClaims = planet.tileClaims ?? {};
   const tileTerrain = planet.tileTerrain ?? {};
+  const legend = useMemo(
+    () =>
+      activeTerrainLegend(
+        planet.id,
+        planet.classification,
+        planet.type,
+        tileTerrain,
+      ),
+    [planet.id, planet.classification, planet.type, tileTerrain],
+  );
+  const currentTerrainPercents = useMemo(
+    () =>
+      regenTilesOpen
+        ? terrainPercentsOnPlanet(planet)
+        : null,
+    // Recompute when the dialog opens so sliders match the live map.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional open gate
+    [regenTilesOpen, planet.id, planet.classification, planet.type, tileTerrain],
+  );
   const armies = planet.armies ?? [];
   const famousBattleSites = planet.famousBattleSites ?? [];
   const selectedFamousBattle =
@@ -248,9 +278,9 @@ export function StrategicView() {
   else if (playBuildMode?.kind === "manufactorum")
     hint = "Click a free hex within 2 of the city to build a manufactorum";
   else if (playBuildMode?.kind === "bastion")
-    hint = "Click a free hex within 2 of the city to build a bastion (+2% STR)";
+    hint = "Click a free hex within 2 of the city to build a bastion (+10% STR on hex)";
   else if (playBuildMode?.kind === "outpost")
-    hint = "Click a free hex within 2 of the city to build an outpost (+1% STR)";
+    hint = "Click a free hex to build an outpost (+1% STR on/adjacent when owned)";
   else if (playBuildMode?.kind === "spire")
     hint =
       "Click a free hex within 2 of the city to build a Hive Spire (+2 AP; not next to another spire)";
@@ -260,11 +290,9 @@ export function StrategicView() {
   else if (playBuildMode?.kind === "domed_habitat")
     hint =
       "Click a free hex within 2 of the city to build a Domed Habitat (+1 AP)";
-  else if (playBuildMode?.kind === "trench_line")
-    hint = "Click a free hex to dig a trench line (+1% STR to any faction)";
   else if (playBuildMode?.kind === "ore_mine")
     hint =
-      "Click a free crater hex to build an ore mine (+5 BP when linked to a manufactorum)";
+      "Click a free crater or iron-rich hex to build an ore mine (+5 BP when linked to a manufactorum)";
   else if (playBuildMode?.kind === "demolish")
     hint = "Click an owned district/structure to demolish it for half its build cost";
   else if (placingArmyId) hint = "Click a hex to place the army";
@@ -277,15 +305,21 @@ export function StrategicView() {
     hint = "Click a city, district, or structure hex to delete it";
   else if (surfacePlaceMode?.kind === "district") {
     const kindLabel = DISTRICT_KIND_LABELS[surfacePlaceMode.districtKind];
-    const rule =
-      surfacePlaceMode.districtKind === "spire"
-        ? " (not adjacent to another Hive Spire)"
-        : surfacePlaceMode.districtKind === "underhive"
-          ? " (must be adjacent to a Hive Spire)"
-          : "";
-    hint = districtParent
-      ? `Click a free hex to place ${kindLabel} for ${districtParent.name}${rule}`
-      : "Select a parent city, then click a free hex";
+    if (surfacePlaceMode.districtKind === "ruins") {
+      hint = districtParent
+        ? `Click a free hex for Ruins (within 2 of ${districtParent.name} to attach, or anywhere as independent)`
+        : "Click a free hex to place independent Ruins";
+    } else {
+      const rule =
+        surfacePlaceMode.districtKind === "spire"
+          ? " (not adjacent to another Hive Spire)"
+          : surfacePlaceMode.districtKind === "underhive"
+            ? " (must be adjacent to a Hive Spire)"
+            : "";
+      hint = districtParent
+        ? `Click a free hex within 2 of ${districtParent.name} to place ${kindLabel}${rule}`
+        : "Select a parent city, then click a free hex";
+    }
   } else if (surfacePlaceMode?.kind === "structure")
     hint = `Click a free hex to place ${STRUCTURE_KIND_LABELS[surfacePlaceMode.structureKind]}`;
   else if (terrainPaintKind === TERRAIN_KIND_ERASE)
@@ -324,7 +358,7 @@ export function StrategicView() {
           {planet.name}
         </h1>
         <p className="text-xs text-brass mt-0.5">
-          {PLANET_TYPE_LABELS[planet.type]} ·{" "}
+          {planetTypeDisplayLabel(planet)} ·{" "}
           {PLANET_CLASSIFICATION_LABELS[planet.classification] ??
             PLANET_CLASSIFICATION_LABELS.earthlike}
           {` · ${controlLabel}`}
@@ -410,11 +444,7 @@ export function StrategicView() {
               return;
             }
             if (playBuildMode?.kind === "outpost") {
-              buildOutpostAtTile(
-                playBuildMode.planetId,
-                playBuildMode.cityId,
-                tileIndex,
-              );
+              buildOutpostAtTile(playBuildMode.planetId, "", tileIndex);
               return;
             }
             if (playBuildMode?.kind === "spire") {
@@ -441,10 +471,6 @@ export function StrategicView() {
               );
               return;
             }
-            if (playBuildMode?.kind === "trench_line") {
-              buildTrenchLineAtTile(playBuildMode.planetId, tileIndex);
-              return;
-            }
             if (playBuildMode?.kind === "ore_mine") {
               buildOreMineAtTile(playBuildMode.planetId, tileIndex);
               return;
@@ -464,11 +490,16 @@ export function StrategicView() {
             }
             if (surfacePlaceMode.kind === "district") {
               const cityId =
-                surfacePlaceMode.cityId ?? selectedCityId ?? cities[0]?.id;
-              if (!cityId) return;
+                surfacePlaceMode.cityId ??
+                selectedCityId ??
+                (surfacePlaceMode.districtKind === "ruins"
+                  ? null
+                  : cities[0]?.id) ??
+                null;
+              if (!cityId && surfacePlaceMode.districtKind !== "ruins") return;
               addDistrictAtTile(
                 planet.id,
-                cityId,
+                cityId ?? "",
                 tileIndex,
                 surfacePlaceMode.districtKind,
               );
@@ -482,6 +513,96 @@ export function StrategicView() {
           }}
         />
       </div>
+
+      {play.active && turnContribution && turnFaction && (
+        <div className="absolute top-16 left-4 z-[3] pointer-events-none">
+          <div className="hud-panel pointer-events-auto w-[min(15.5rem,calc(100vw-2rem))] px-3 py-2.5 space-y-2 border border-panel-border/80">
+            <div className="flex items-center gap-2">
+              <span
+                className="inline-block w-2.5 h-2.5 rounded-full shrink-0 border border-white/25"
+                style={{ background: turnFaction.color }}
+              />
+              <div className="min-w-0">
+                <p className="font-display text-[10px] uppercase tracking-[0.16em] text-cyan truncate">
+                  Your yield
+                </p>
+                <p className="text-[10px] text-muted truncate">
+                  {turnFaction.name} · {planet.name}
+                </p>
+              </div>
+            </div>
+            <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 text-[11px]">
+              <dt className="text-muted">Activation</dt>
+              <dd className="text-star text-right tabular-nums">
+                {turnContribution.apUsed}/{turnContribution.apPool} AP
+                {turnContribution.apGenerated > 0 && (
+                  <span className="text-muted">
+                    {" "}
+                    (+{turnContribution.apGenerated} gen)
+                  </span>
+                )}
+              </dd>
+              <dt className="text-muted">BP bank</dt>
+              <dd className="text-cyan text-right tabular-nums">
+                {turnContribution.bpBank}
+                {turnContribution.bpIncome > 0 && (
+                  <span className="text-brass">
+                    {" "}
+                    · +{turnContribution.bpIncome}/turn
+                  </span>
+                )}
+              </dd>
+            </dl>
+            <div className="flex flex-wrap gap-1.5 pt-0.5 border-t border-panel-border/60">
+              {turnContribution.generators > 0 && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-brass/10 text-brass">
+                  {turnContribution.generators} AP booster
+                  {turnContribution.generators === 1 ? "" : "s"}
+                </span>
+              )}
+              {turnContribution.manufactorums > 0 && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan/10 text-cyan">
+                  {turnContribution.manufactorums} manufactorum
+                  {turnContribution.manufactorums === 1 ? "" : "s"}
+                </span>
+              )}
+              {turnContribution.oreBoost > 0 && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-brass/10 text-brass">
+                  {turnContribution.oreBoost} ore link
+                  {turnContribution.oreBoost === 1 ? "" : "s"}
+                </span>
+              )}
+              {turnContribution.camps > 0 && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-panel-border/40 text-fog">
+                  {turnContribution.camps} war camp
+                  {turnContribution.camps === 1 ? "" : "s"}
+                </span>
+              )}
+              {turnContribution.docks > 0 && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-panel-border/40 text-fog">
+                  {turnContribution.docks} space port
+                  {turnContribution.docks === 1 ? "" : "s"}
+                </span>
+              )}
+              {turnContribution.bastions > 0 && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-panel-border/40 text-fog">
+                  {turnContribution.bastions} bastion
+                  {turnContribution.bastions === 1 ? "" : "s"}
+                </span>
+              )}
+              {turnContribution.generators === 0 &&
+                turnContribution.manufactorums === 0 &&
+                turnContribution.camps === 0 &&
+                turnContribution.docks === 0 &&
+                turnContribution.bastions === 0 && (
+                  <span className="text-[10px] text-muted">
+                    No active sites for you here
+                  </span>
+                )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {selectedFamousBattle && (
         <div className="absolute left-1/2 top-[4.5rem] z-[3] w-[min(22rem,calc(100%-2rem))] -translate-x-1/2 pointer-events-auto">
@@ -595,7 +716,8 @@ export function StrategicView() {
                       onChange={(e) => {
                         const cityId = e.target.value || null;
                         const kind =
-                          placeDistrictKind ?? DISTRICT_KIND_ORDER[0];
+                          placeDistrictKind ??
+                          keysSortedByLabel(DISTRICT_KIND_LABELS)[0]!;
                         setSurfacePlaceMode({
                           kind: "district",
                           districtKind: kind,
@@ -603,7 +725,7 @@ export function StrategicView() {
                         });
                       }}
                     >
-                      {cities.map((c) => (
+                      {sortedByName(cities).map((c) => (
                         <option key={c.id} value={c.id}>
                           {c.name}
                         </option>
@@ -611,7 +733,7 @@ export function StrategicView() {
                     </select>
                   </label>
                   <div className="flex flex-wrap gap-1">
-                    {DISTRICT_KIND_ORDER.map((kind) => (
+                    {keysSortedByLabel(DISTRICT_KIND_LABELS).map((kind) => (
                       <button
                         key={kind}
                         type="button"
@@ -723,7 +845,7 @@ export function StrategicView() {
               )}
             </div>
             <div className="flex flex-wrap gap-1">
-              {TERRAIN_KIND_ORDER.map((kind) => (
+              {keysSortedByLabel(TERRAIN_KIND_LABELS).map((kind) => (
                 <button
                   key={kind}
                   type="button"
@@ -753,17 +875,19 @@ export function StrategicView() {
           <p className="font-display uppercase tracking-wider text-cyan mb-1">
             Terrain
           </p>
-          {legend.map((item) => (
-            <div key={item.kind} className="flex items-center gap-2 text-muted">
-              <span
-                className="inline-block w-2.5 h-2.5 rounded-sm border border-white/20 shrink-0"
-                style={{
-                  background: legendSwatch(item.kind, planet.classification),
-                }}
-              />
-              <span>{item.label}</span>
-            </div>
-          ))}
+          {legend.length === 0 ? (
+            <p className="text-muted">No terrain sampled.</p>
+          ) : (
+            legend.map((item) => (
+              <div key={item.kind} className="flex items-center gap-2">
+                <span
+                  className="inline-block w-2.5 h-2.5 rounded-sm border border-white/20 shrink-0"
+                  style={{ background: item.color }}
+                />
+                <span style={{ color: item.color }}>{item.label}</span>
+              </div>
+            ))
+          )}
         </div>
       </div>
 
@@ -776,6 +900,9 @@ export function StrategicView() {
       <RegenerateTilesDialog
         open={regenTilesOpen}
         classification={planet.classification}
+        planetType={planet.type}
+        planetId={planet.id}
+        currentPercents={currentTerrainPercents}
         reservedTiles={settlementReservedTiles}
         cityHubTiles={cityHubTiles}
         onCancel={() => setRegenTilesOpen(false)}

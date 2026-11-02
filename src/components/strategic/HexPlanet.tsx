@@ -14,7 +14,10 @@ import type {
   PlanetType,
   SphereDir,
 } from "../../types/campaign";
-import { DISTRICT_KIND_LABELS } from "../../types/campaign";
+import {
+  DISTRICT_KIND_LABELS,
+  STRUCTURE_KIND_LABELS,
+} from "../../types/campaign";
 import { districtRuleViolations } from "../../lib/activation";
 import { buildHexSphere, nearestTileIndex } from "../../lib/hexSphere";
 import { engageTargetsForArmy } from "../../lib/battleResolve";
@@ -30,9 +33,16 @@ import {
   featureAtTileIndex,
   settlementTileSet,
   tileOwnerMap,
+  tilesAroundCity,
 } from "../../lib/settlements";
 import { getStructureGeometry } from "../../lib/structureMeshes";
+import {
+  createDistrictModel,
+  ensureDistrictModelsLoaded,
+  isDistrictModelKind,
+} from "../../lib/districtMeshes";
 import { supplyLinkSegments } from "../../lib/supplyNetwork";
+import { collectPlanetInteractionLinks } from "../../lib/districtBuffs";
 import { perfMark, perfMeasure, perfTime } from "../../lib/perfDebug";
 
 const FREQUENCY = SETTLEMENT_HEX_FREQUENCY;
@@ -529,6 +539,8 @@ function buildSettlementMarkers(
   opts?: {
     showRuleWarnings?: boolean;
     planet?: Pick<Planet, "cities" | "independentDistricts" | "structures">;
+    tileClaims?: Record<string, string>;
+    structures?: PlanetStructure[];
   },
 ): THREE.Group {
   const group = new THREE.Group();
@@ -537,6 +549,12 @@ function buildSettlementMarkers(
   const supplyStationGeo = new THREE.BoxGeometry(0.045, 0.045, 0.045);
   const planetForRules = opts?.planet;
   const showWarnings = Boolean(opts?.showRuleWarnings && planetForRules);
+  const owners = tileOwnerMap(
+    cities,
+    opts?.tileClaims,
+    opts?.structures ?? planetForRules?.structures ?? [],
+    independentDistricts,
+  );
 
   const addDistrictMarker = (
     district: District,
@@ -548,20 +566,35 @@ function buildSettlementMarkers(
       district.kind === "supply_station" ? "#5ec8a0" : "#6a8296",
     );
     const selected = selectedDistrictId === district.id;
-    const dMesh = new THREE.Mesh(
-      district.kind === "supply_station" ? supplyStationGeo : districtGeo,
-      new THREE.MeshStandardMaterial({
-        color: new THREE.Color(dCol),
-        emissive: new THREE.Color(dCol),
-        emissiveIntensity: selected ? 0.65 : 0.15,
-        roughness: 0.5,
-        metalness: district.kind === "supply_station" ? 0.45 : 0.15,
-      }),
-    );
-    dMesh.position.copy(placeOnSphere(district.dir, PLANET_RADIUS * 1.04));
-    if (district.kind === "supply_station") {
+    const districtDir = dirFromTileIndex(district.tileIndex);
+    const authored = isDistrictModelKind(district.kind)
+      ? createDistrictModel(district.kind, dCol, selected)
+      : null;
+    let dMesh: THREE.Object3D;
+    if (authored) {
+      dMesh = authored;
+      // Y-up GLBs: Object3D.lookAt(center) aims local -Z outward (not +Z),
+      // so rotateX(-π/2) maps +Y → -Z → out of the crust (not into it).
+      dMesh.position.copy(placeOnSphere(districtDir, PLANET_RADIUS * 1.018));
       dMesh.lookAt(0, 0, 0);
-      dMesh.rotateX(Math.PI / 2);
+      dMesh.rotateX(-Math.PI / 2);
+    } else {
+      const fallback = new THREE.Mesh(
+        district.kind === "supply_station" ? supplyStationGeo : districtGeo,
+        new THREE.MeshStandardMaterial({
+          color: new THREE.Color(dCol),
+          emissive: new THREE.Color(dCol),
+          emissiveIntensity: selected ? 0.65 : 0.15,
+          roughness: 0.5,
+          metalness: district.kind === "supply_station" ? 0.45 : 0.15,
+        }),
+      );
+      fallback.position.copy(placeOnSphere(districtDir, PLANET_RADIUS * 1.04));
+      if (district.kind === "supply_station") {
+        fallback.lookAt(0, 0, 0);
+        fallback.rotateX(Math.PI / 2);
+      }
+      dMesh = fallback;
     }
     dMesh.userData = {
       kind: "district",
@@ -576,7 +609,7 @@ function buildSettlementMarkers(
         : [];
     if (violations.length > 0) {
       const bang = makeWarningBangSprite();
-      bang.position.copy(placeOnSphere(district.dir, PLANET_RADIUS * 1.085));
+      bang.position.copy(placeOnSphere(districtDir, PLANET_RADIUS * 1.085));
       bang.userData = {
         kind: "decor",
         warningText: violations.join(" · "),
@@ -598,7 +631,7 @@ function buildSettlementMarkers(
       // Sit above the bang when both are present
       const tagRadius =
         violations.length > 0 ? PLANET_RADIUS * 1.12 : PLANET_RADIUS * 1.09;
-      kindTag.position.copy(placeOnSphere(district.dir, tagRadius));
+      kindTag.position.copy(placeOnSphere(districtDir, tagRadius));
       group.add(kindTag);
     }
   };
@@ -621,7 +654,8 @@ function buildSettlementMarkers(
         metalness: 0.25,
       }),
     );
-    const pos = placeOnSphere(city.dir, PLANET_RADIUS * 1.045);
+    const cityDir = dirFromTileIndex(city.tileIndex);
+    const pos = placeOnSphere(cityDir, PLANET_RADIUS * 1.045);
     cityMesh.position.copy(pos);
     cityMesh.lookAt(0, 0, 0);
     cityMesh.rotateX(Math.PI / 2);
@@ -638,10 +672,21 @@ function buildSettlementMarkers(
           opacity: 0.85,
         }),
       );
-      ring.position.copy(placeOnSphere(city.dir, PLANET_RADIUS * 1.02));
+      ring.position.copy(placeOnSphere(cityDir, PLANET_RADIUS * 1.02));
       ring.lookAt(0, 0, 0);
       ring.userData = { kind: "decor" };
       group.add(ring);
+
+      // Glow owned territory in the 2-hex footprint — never unowned / rival districts.
+      const ownerId = city.controllingFactionId;
+      if (ownerId) {
+        for (const tileIndex of tilesAroundCity(city)) {
+          if (owners.get(tileIndex) !== ownerId) continue;
+          const glow = buildTileHighlight(tileIndex, cityCol);
+          glow.userData = { kind: "decor" };
+          group.add(glow);
+        }
+      }
     }
 
     for (const district of city.districts) {
@@ -654,6 +699,37 @@ function buildSettlementMarkers(
   }
 
   return group;
+}
+
+function addSurfaceArc(
+  group: THREE.Group,
+  a: SphereDir,
+  b: SphereDir,
+  color: string,
+  opacity: number,
+  radius = PLANET_RADIUS * 1.048,
+) {
+  const pa = placeOnSphere(a, radius);
+  const pb = placeOnSphere(b, radius);
+  const mid = pa
+    .clone()
+    .add(pb)
+    .multiplyScalar(0.5)
+    .normalize()
+    .multiplyScalar(radius * 1.02);
+  const curve = new THREE.QuadraticBezierCurve3(pa, mid, pb);
+  const pts = curve.getPoints(12);
+  const geo = new THREE.BufferGeometry().setFromPoints(pts);
+  const line = new THREE.Line(
+    geo,
+    new THREE.LineBasicMaterial({
+      color,
+      transparent: true,
+      opacity,
+    }),
+  );
+  line.userData = { kind: "decor" };
+  group.add(line);
 }
 
 function buildSupplyLinkLines(
@@ -682,53 +758,42 @@ function buildSupplyLinkLines(
     if (s.kind === "supply_network") networkDir.set(s.id, s.dir);
   }
 
-  const r = PLANET_RADIUS * 1.048;
-  const addArc = (
-    a: SphereDir,
-    b: SphereDir,
-    color: string,
-    opacity: number,
-  ) => {
-    const pa = placeOnSphere(a, r);
-    const pb = placeOnSphere(b, r);
-    const mid = pa
-      .clone()
-      .add(pb)
-      .multiplyScalar(0.5)
-      .normalize()
-      .multiplyScalar(r * 1.02);
-    const curve = new THREE.QuadraticBezierCurve3(pa, mid, pb);
-    const pts = curve.getPoints(12);
-    const geo = new THREE.BufferGeometry().setFromPoints(pts);
-    const line = new THREE.Line(
-      geo,
-      new THREE.LineBasicMaterial({
-        color,
-        transparent: true,
-        opacity,
-      }),
-    );
-    line.userData = { kind: "decor" };
-    group.add(line);
-  };
-
   for (const seg of segments) {
     if (seg.kind === "station_network") {
       const a = stationDir.get(seg.from.id);
       const b = networkDir.get(seg.to.id);
       if (!a || !b) continue;
-      addArc(a, b, "#5ec8a0", 0.75);
+      addSurfaceArc(group, a, b, "#5ec8a0", 0.75);
     } else if (seg.kind === "station_station") {
       const a = stationDir.get(seg.from.id);
       const b = stationDir.get(seg.to.id);
       if (!a || !b) continue;
-      addArc(a, b, "#4eb890", 0.65);
+      addSurfaceArc(group, a, b, "#4eb890", 0.65);
     } else {
       const a = networkDir.get(seg.from.id);
       const b = networkDir.get(seg.to.id);
       if (!a || !b) continue;
-      addArc(a, b, "#3aa888", 0.55);
+      addSurfaceArc(group, a, b, "#3aa888", 0.55);
     }
+  }
+  return group;
+}
+
+/** AP feeds, spire↔underhive, ore→manufactorum arcs. */
+function buildInteractionLinkLines(planet: {
+  cities?: City[];
+  independentDistricts?: District[];
+  structures?: PlanetStructure[];
+}): THREE.Group {
+  const group = new THREE.Group();
+  const links = collectPlanetInteractionLinks(planet as Planet);
+  const r = PLANET_RADIUS * 1.052;
+  for (const link of links) {
+    const a = dirFromTileIndex(link.fromTile);
+    const b = dirFromTileIndex(link.toTile);
+    const opacity =
+      link.kind === "ap_feed" ? 0.85 : link.kind === "ore_feed" ? 0.8 : 0.7;
+    addSurfaceArc(group, a, b, link.color, opacity, r);
   }
   return group;
 }
@@ -885,6 +950,20 @@ function buildStructureMarkers(
       ring.lookAt(0, 0, 0);
       ring.userData = { kind: "decor" };
       group.add(ring);
+
+      const label =
+        structure.name.trim() || STRUCTURE_KIND_LABELS[structure.kind];
+      const nameTag = makeDistrictHudSprite(label, {
+        textColor: "#f2f6fa",
+        bgColor: "rgba(10, 18, 28, 0.92)",
+        borderColor: "#4fd2ff",
+        fontPx: 28,
+        bold: true,
+      });
+      nameTag.position.copy(
+        placeOnSphere(structure.dir, PLANET_RADIUS * 1.09),
+      );
+      group.add(nameTag);
     }
   }
   return group;
@@ -1361,6 +1440,8 @@ export function HexPlanet({
           independentDistricts,
           structures,
         },
+        tileClaims,
+        structures,
       },
     );
     planet.add(settlements);
@@ -1379,6 +1460,13 @@ export function HexPlanet({
       independentDistricts,
     );
     planet.add(supplyLinks);
+
+    let interactionLinks = buildInteractionLinkLines({
+      cities,
+      independentDistricts,
+      structures,
+    });
+    planet.add(interactionLinks);
 
     let armyMarkers = buildArmyMarkers(
       armies,
@@ -1758,7 +1846,8 @@ export function HexPlanet({
         ...structureMarkers.children,
         surface,
       ];
-      const hits = raycaster.intersectObjects(pickables, false);
+      // recursive: authored district GLBs may be groups (or share child meshes)
+      const hits = raycaster.intersectObjects(pickables, true);
 
       if (placingRef.current) {
         const surfaceHit = hits.find((h) => h.object === surface);
@@ -1977,11 +2066,12 @@ export function HexPlanet({
         prev.symbols !== state.symbols;
 
       if (meshDirty) {
-        planet.remove(surface, seams, borders, supplyLinks);
+        planet.remove(surface, seams, borders, supplyLinks, interactionLinks);
         disposeGroup(surface);
         disposeGroup(seams);
         disposeGroup(borders);
         disposeGroup(supplyLinks);
+        disposeGroup(interactionLinks);
 
         ({ surface, seams } = perfTime("buildPlanetMeshes", () =>
           buildPlanetMeshes(
@@ -2008,7 +2098,12 @@ export function HexPlanet({
           state.structures,
           state.independentDistricts,
         );
-        planet.add(surface, seams, borders, supplyLinks);
+        interactionLinks = buildInteractionLinkLines({
+          cities: state.cities,
+          independentDistricts: state.independentDistricts,
+          structures: state.structures,
+        });
+        planet.add(surface, seams, borders, supplyLinks, interactionLinks);
       }
 
       if (markersDirty) {
@@ -2037,6 +2132,8 @@ export function HexPlanet({
               independentDistricts: state.independentDistricts,
               structures: state.structures,
             },
+            tileClaims: state.tileClaims,
+            structures: state.structures,
           },
         );
         structureMarkers = buildStructureMarkers(
@@ -2087,6 +2184,18 @@ export function HexPlanet({
         __setAccent?: (color: string) => void;
       }
     ).__refreshOverlays = refreshOverlays;
+
+    // Swap in authored district GLBs once they finish loading.
+    void ensureDistrictModelsLoaded().then(() => {
+      if (!lastOverlayState) return;
+      const el = mount as HTMLDivElement & {
+        __refreshOverlays?: typeof refreshOverlays;
+      };
+      // Null prev so refreshOverlays treats overlays as dirty and rebuilds markers.
+      const snap = lastOverlayState;
+      lastOverlayState = null;
+      el.__refreshOverlays?.(snap);
+    });
     (
       mount as HTMLDivElement & {
         __faceFeature?: typeof faceFeature;
@@ -2124,6 +2233,7 @@ export function HexPlanet({
       disposeGroup(settlements);
       disposeGroup(structureMarkers);
       disposeGroup(supplyLinks);
+      disposeGroup(interactionLinks);
       disposeGroup(armyMarkers);
       disposeGroup(famousBattleMarkers);
       renderer.dispose();
@@ -2238,19 +2348,19 @@ export function HexPlanet({
           (d) => d.id === selectedDistrictId,
         );
         if (district) {
-          dir = district.dir;
+          dir = dirFromTileIndex(district.tileIndex);
           break;
         }
       }
       if (!dir) {
-        dir =
-          independentDistrictsRef.current.find(
-            (d) => d.id === selectedDistrictId,
-          )?.dir ?? null;
+        const indie = independentDistrictsRef.current.find(
+          (d) => d.id === selectedDistrictId,
+        );
+        if (indie) dir = dirFromTileIndex(indie.tileIndex);
       }
     } else if (selectedCityId) {
-      dir =
-        citiesRef.current.find((c) => c.id === selectedCityId)?.dir ?? null;
+      const city = citiesRef.current.find((c) => c.id === selectedCityId);
+      if (city) dir = dirFromTileIndex(city.tileIndex);
     }
 
     if (dir) mount.__faceFeature(dir);
