@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { AppShell } from "./components/AppShell";
+import { CloudBootstrap } from "./components/CloudBootstrap";
 import { useCampaignStore } from "./store/useCampaignStore";
 
 function App() {
@@ -78,7 +79,11 @@ function App() {
     undoContentsEdit,
   ]);
 
-  return <AppShell />;
+  return (
+    <CloudBootstrap>
+      <AppShell />
+    </CloudBootstrap>
+  );
 }
 
 export default App;

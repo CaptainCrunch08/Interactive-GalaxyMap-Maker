@@ -531,11 +531,11 @@ export function buildMergedTerritoryPath(
 }
 
 /**
- * Competitive territories with Stellaris-like soft borders:
- * 1) Hard influence winners (loosened ~halfway reach from callers)
- * 2) Blur each faction occupancy so Voronoi flats become organic curves
- * 3) Contour the soft field — neighbors naturally leave a slim gap
+ * Competitive territories with flush rival contacts:
+ *   field_f = infl_f - max(bestRivalOrVoid, threshold)
+ * Zero-contours share one curve at contacts (Option B dual strokes sit flush).
  * Optional `neutralSources` (unclaimed) compete invisibly.
+ * Light blur on the difference field rounds flats without opening a crease.
  */
 export function buildCompetitiveTerritories(
   factions: FactionInfluence[],
@@ -545,7 +545,7 @@ export function buildCompetitiveTerritories(
     pad?: number;
     /** Unclaimed systems — compete for space, never rendered. */
     neutralSources?: InfluenceSource[];
-    /** Occupancy blur passes — higher = rounder, slightly gappier contacts. */
+    /** Softening passes on the difference field (not occupancy crease blur). */
     blurPasses?: number;
   },
 ): {
@@ -560,7 +560,7 @@ export function buildCompetitiveTerritories(
   const cellSize = options?.cellSize ?? 14;
   const threshold = options?.threshold ?? 0.4;
   const pad = options?.pad ?? 56;
-  const blurPasses = options?.blurPasses ?? 6;
+  const blurPasses = options?.blurPasses ?? 2;
   const neutralSources = options?.neutralSources ?? [];
   const neutralFaction: FactionInfluence | null =
     neutralSources.length > 0
@@ -608,27 +608,11 @@ export function buildCompetitiveTerritories(
     }
   }
 
-  // Hard winners first (includes void). Empty space stays -1.
-  const winners = new Int16Array(cols * rows);
-  winners.fill(-1);
-  for (let idx = 0; idx < winners.length; idx++) {
-    let best = -1;
-    let bestVal = threshold;
-    for (let f = 0; f < competitors.length; f++) {
-      const v = inflByFaction[f]![idx]!;
-      if (v > bestVal) {
-        bestVal = v;
-        best = f;
-      }
-    }
-    winners[idx] = best;
-  }
-
-  // Claimed system cores always keep their faction — a nearby void kernel
-  // must not erase the sphere of influence around the star itself.
+  // Claimed system cores keep a floor of influence so void cannot erase the star.
   const coreRadius = Math.max(56, resolvedCell * 4);
   const coreR2 = coreRadius * coreRadius;
   for (let f = 0; f < active.length; f++) {
+    const field = inflByFaction[f]!;
     for (const s of active[f]!.sources) {
       const i0 = Math.max(
         0,
@@ -653,7 +637,8 @@ export function buildCompetitiveTerritories(
           const dx = x - s.x;
           const dy = y - s.y;
           if (dx * dx + dy * dy <= coreR2) {
-            winners[j * cols + i] = f;
+            const idx = j * cols + i;
+            field[idx] = Math.max(field[idx]!, threshold + 0.05);
           }
         }
       }
@@ -666,13 +651,23 @@ export function buildCompetitiveTerritories(
   const borders: TerritoryBorder[] = [];
 
   for (let f = 0; f < active.length; f++) {
-    const occupancy = new Float32Array(cols * rows);
-    for (let idx = 0; idx < occupancy.length; idx++) {
-      occupancy[idx] = winners[idx] === f ? 1 : 0;
+    const mine = inflByFaction[f]!;
+    const diff = new Float32Array(cols * rows);
+    for (let idx = 0; idx < diff.length; idx++) {
+      let bestRival = threshold;
+      for (let o = 0; o < competitors.length; o++) {
+        if (o === f) continue;
+        const v = inflByFaction[o]![idx]!;
+        if (v > bestRival) bestRival = v;
+      }
+      diff[idx] = mine[idx]! - bestRival;
     }
-    // Blur rounds straight midlines into soft complementary curves and
-    // pulls neighbors slightly apart (Stellaris-style dark crease).
-    const soft = blurScalarField(occupancy, cols, rows, blurPasses);
+
+    // Light blur rounds Voronoi flats without the occupancy crease gap.
+    const soft =
+      blurPasses > 0
+        ? blurScalarField(diff, cols, rows, blurPasses)
+        : diff;
 
     const grid: Grid = {
       originX: minX,
@@ -682,8 +677,9 @@ export function buildCompetitiveTerritories(
       values: soft,
       cellSize: resolvedCell,
     };
+    // Zero level set — both rivals share the same contact curve.
     const rings = filterClosedRings(
-      contourPaths(grid, 0.48, 5),
+      contourPaths(grid, 0, 5),
       minArea,
       minLen,
     );

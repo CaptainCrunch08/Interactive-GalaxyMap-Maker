@@ -23,14 +23,20 @@ interface FactionTerritoryLayerProps {
   campaign: Campaign;
 }
 
-/** Default blob size toward empty space / friendlies. */
-const BASE_CLAIM_RADIUS = CLAIM_RADIUS * 1.25;
+/** Desired open-space contour reach (~half of ~800 NN). */
+const BASE_REACH = CLAIM_RADIUS;
+/** True midpoint meet — rivals and voids both stop halfway. */
+const MEET_FRACTION = 0.5;
 /**
- * Reach toward rivals / void as a fraction of separation.
- * Under 0.5 leaves a slim crease (Stellaris-like) and gives blur room
- * to round the contact instead of a hard flat midline.
+ * Metaball kernels hit ~threshold (0.4) near this fraction of `radius`.
+ * Convert desired meet/contour distance → kernel param so contacts land
+ * on the geometric midpoint instead of short of it.
  */
-const MEET_FRACTION = 0.43;
+const KERNEL_CONTOUR_T = 0.6;
+
+function toKernelRadius(desiredReach: number): number {
+  return desiredReach / KERNEL_CONTOUR_T;
+}
 
 function stripePatternId(a: string, b: string, uid: string) {
   return `stripe-${uid}-${a.slice(0, 8)}-${b.slice(0, 8)}`;
@@ -113,9 +119,9 @@ function emptyEntry(
 }
 
 /**
- * Grow toward the nearest claimed rival (loosened meet fraction), but never
- * past the meet line toward an unclaimed star — otherwise BASE reach paints
- * over void systems (claimed border cutting through unowned neighbors).
+ * Midpoint-first SOI: reach the nearest claimed rival's halfway line, use
+ * BASE toward open space, and never past halfway to an unclaimed star.
+ * Returns a metaball kernel radius (see KERNEL_CONTOUR_T).
  */
 function claimRadiusForSystem(
   system: StarSystem,
@@ -138,15 +144,16 @@ function claimRadiusForSystem(
     }
   }
 
-  let radius = BASE_CLAIM_RADIUS;
+  let reach = BASE_REACH;
   if (Number.isFinite(nearestClaimedRival)) {
-    radius = Math.max(radius, nearestClaimedRival * MEET_FRACTION);
+    // True midpoint — not max(BASE, …), or dense maps keep oversized BASE.
+    reach = nearestClaimedRival * MEET_FRACTION;
   }
   // Cap open flanks at the void meet so unclaimed stars stay outside the blob.
   if (Number.isFinite(nearestUnclaimed)) {
-    radius = Math.min(radius, nearestUnclaimed * MEET_FRACTION);
+    reach = Math.min(reach, nearestUnclaimed * MEET_FRACTION);
   }
-  return radius;
+  return toKernelRadius(reach);
 }
 
 /**
@@ -165,9 +172,10 @@ function voidRadiusForSystem(system: StarSystem, claims: ClaimRef[]): number {
     );
     nearestClaimed = Math.min(nearestClaimed, dist);
   }
-  if (!Number.isFinite(nearestClaimed)) return BASE_CLAIM_RADIUS;
-  // At most BASE, and never past the meet-fraction of the gap to a claim.
-  return Math.min(BASE_CLAIM_RADIUS, nearestClaimed * MEET_FRACTION);
+  if (!Number.isFinite(nearestClaimed)) return toKernelRadius(BASE_REACH);
+  // Halfway to the nearest claim — matches rival meet distance.
+  const reach = Math.min(BASE_REACH, nearestClaimed * MEET_FRACTION);
+  return toKernelRadius(reach);
 }
 
 function computeRegions(campaign: Campaign): TerritoryRegions {
@@ -204,7 +212,7 @@ function computeRegions(campaign: Campaign): TerritoryRegions {
   for (const system of campaign.systems) {
     const ownership = getSystemOwnership(campaign, system.id);
     if (ownership.status === "unowned") continue;
-    const radius = radiusBySystemId.get(system.id) ?? BASE_CLAIM_RADIUS;
+    const radius = radiusBySystemId.get(system.id) ?? toKernelRadius(BASE_REACH);
     const source: InfluenceSource = {
       x: system.x,
       y: system.y,
@@ -255,8 +263,8 @@ function computeRegions(campaign: Campaign): TerritoryRegions {
   ) => {
     const key = pairKey(sysA.id, sysB.id);
     if (bridgedPairs.has(key)) return;
-    const rA = radiusBySystemId.get(sysA.id) ?? BASE_CLAIM_RADIUS;
-    const rB = radiusBySystemId.get(sysB.id) ?? BASE_CLAIM_RADIUS;
+    const rA = radiusBySystemId.get(sysA.id) ?? toKernelRadius(BASE_REACH);
+    const rB = radiusBySystemId.get(sysB.id) ?? toKernelRadius(BASE_REACH);
     const segment = corridorSegment(sysA.x, sysA.y, sysB.x, sysB.y, rA, rB);
     if (!segment) return;
     bridgedPairs.add(key);
@@ -297,10 +305,10 @@ function computeRegions(campaign: Campaign): TerritoryRegions {
     if (!entry) continue;
     for (let i = 0; i < systems.length; i++) {
       const sysA = systems[i]!;
-      const rA = radiusBySystemId.get(sysA.id) ?? BASE_CLAIM_RADIUS;
+      const rA = radiusBySystemId.get(sysA.id) ?? toKernelRadius(BASE_REACH);
       for (let j = i + 1; j < systems.length; j++) {
         const sysB = systems[j]!;
-        const rB = radiusBySystemId.get(sysB.id) ?? BASE_CLAIM_RADIUS;
+        const rB = radiusBySystemId.get(sysB.id) ?? toKernelRadius(BASE_REACH);
         const dist = Math.hypot(sysA.x - sysB.x, sysA.y - sysB.y);
         if (dist > (rA + rB) * 1.15) continue;
         tryBridge(sysA, sysB, entry);
@@ -313,7 +321,8 @@ function computeRegions(campaign: Campaign): TerritoryRegions {
     buildCompetitiveTerritories(claims, {
       cellSize: 12,
       threshold: 0.4,
-      blurPasses: 7,
+      // Light difference-field blur only — occupancy crease blur opened gaps.
+      blurPasses: 2,
       neutralSources,
     }),
   );

@@ -1,0 +1,23 @@
+# Cloudflare Pages + Functions bindings for cloud map saves.
+# Replace database_id after: npx wrangler d1 create galaxy-map-saves
+# Create R2 bucket:      npx wrangler r2 bucket create galaxy-map-saves
+#
+# Required Pages secrets / vars:
+#   CF_ACCESS_TEAM_DOMAIN  e.g. yourteam.cloudflareaccess.com
+#   CF_ACCESS_AUD          Access application Audience tag
+# Optional for local/dev without Access:
+#   DEV_AUTH_EMAIL         e.g. you@example.com
+
+name = "galaxy-map-maker"
+compatibility_date = "2025-11-01"
+pages_build_output_dir = "dist"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "galaxy-map-saves"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "MAPS"
+bucket_name = "galaxy-map-saves"

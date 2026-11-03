@@ -4,10 +4,14 @@ A passion project I used to explore Cursor AI capabilities and how to best work 
 
 Allows for custom or procedural generation of interactive galaxies for long term campaigns. Includes an optional hotseat turn tracker per faction, fleet movements, regiment movements, area control, a timelapse of events, and more.
 
-Interactive sector map for narrative wargame campaigns. Pan and zoom a galaxy view, drill into star systems and planets, and track factions, notes, and battle logs. Data auto-saves in the browser and can be exported as JSON.
+Interactive sector map for narrative wargame campaigns. Pan and zoom a galaxy view, drill into star systems and planets, and track factions, notes, and battle logs. Maps sync to Cloudflare (D1 + R2) after invite-only login; the browser keeps a local cache. Export/Import JSON remains available as backup.
+
+**Live site:** [galaxymapmaker.com](https://galaxymapmaker.com) (Cloudflare Access — allowlisted emails only)
 
 ## Features
 
+- **Private login** — Cloudflare Access OTP / IdP; unauthenticated visitors never reach the app
+- **Cloud saves** — galaxy maps stored per allowlisted email (D1 metadata + R2 JSON blobs)
 - **Galaxy view** — pan/zoom (mouse wheel, drag), click a star to open its system
 - **System view** — planets on orbital rings; click a planet for details
 - **Planet / strategic view** — settlements, armies, and battle logs
@@ -16,7 +20,7 @@ Interactive sector map for narrative wargame campaigns. Pan and zoom a galaxy vi
 - **Hotseat turns (Play mode)** — **Start campaign** in the top bar; only the active faction can move fleets/armies (one move each per turn). **Edit Galaxy** and free editing stay fully unrestricted. Building points: each owned manufactorum on a planet banks **10 BP/turn** on that world; spend **500** at a War Camp for a detachment, **1000** to build a manufactorum next to an owned city, or build ships at a Space Port (**50 BP** escort, other hulls scaled by class)
 - **Galactic chronicle** — in-game recorded timelapse of ownership and fleet history with event markers
 - **Editor** — **Maps → Edit Galaxy** for factions, galaxy contents (stars, hyperlanes, planets, structures), and upcoming events; Details panel for selection-focused edits
-- **Persistence** — `localStorage` auto-save; **Save** / **Export** / **Import** JSON for backup and sharing
+- **Persistence** — cloud autosave (source of truth); `localStorage` as cache; **Save** / Export / Import JSON for backup and sharing
 
 ## Keyboard shortcuts
 
@@ -28,15 +32,92 @@ Interactive sector map for narrative wargame campaigns. Pan and zoom a galaxy vi
 
 ```bash
 npm install
-npm run dev
+npm run dev          # Vite SPA on http://localhost:5173
 ```
 
-The app stays at [http://localhost:5173](http://localhost:5173). That command starts the dev server on that address when it is not already running, and opening this folder in Cursor does the same thing.
+For cloud API locally (second terminal):
 
 ```bash
-npm run build   # production build
-npm run preview # preview production build
+npm run db:migrate:local   # once: apply D1 schema to local DB
+npm run pages:dev          # Pages Functions + local D1/R2 on :8788
 ```
+
+Vite proxies `/api/*` to port `8788`. Open [http://localhost:5173](http://localhost:5173). Auth uses `VITE_DEV_AUTH_EMAIL` (`.env.development`) and the matching `DEV_AUTH_EMAIL` binding on Wrangler — no Access JWT required locally.
+
+```bash
+npm run build          # production build → dist/
+npm run pages:deploy   # deploy dist + functions/ to Cloudflare Pages
+npm run preview        # vite preview of dist only (no Functions)
+```
+
+## Cloudflare setup (production)
+
+### 1. D1 + R2
+
+```bash
+npx wrangler d1 create galaxy-map-saves
+npx wrangler r2 bucket create galaxy-map-saves
+```
+
+Paste the D1 `database_id` into `wrangler.toml` (`REPLACE_WITH_D1_DATABASE_ID`). Then:
+
+```bash
+npm run db:migrate:remote
+```
+
+In the Pages project → **Settings → Bindings**, confirm:
+
+| Binding | Type | Resource |
+|---------|------|----------|
+| `DB` | D1 | `galaxy-map-saves` |
+| `MAPS` | R2 | `galaxy-map-saves` |
+
+### 2. Cloudflare Access (invite-only login)
+
+1. Zero Trust → **Access** → **Applications** → Add application → **Self-hosted**
+2. Application domain: `galaxymapmaker.com` (and optionally `*.pages.dev` for preview URLs)
+3. Policy: **Allow** → include specific emails (or an email domain). This allowlist is the invite list — there is no public signup.
+4. Copy:
+   - **Team domain** (e.g. `yourteam.cloudflareaccess.com`)
+   - Application **Audience (AUD)** tag
+5. Pages → **Settings → Environment variables** (production):
+
+| Name | Value |
+|------|--------|
+| `CF_ACCESS_TEAM_DOMAIN` | `yourteam.cloudflareaccess.com` |
+| `CF_ACCESS_AUD` | *(AUD tag from the Access app)* |
+
+Do **not** set `DEV_AUTH_EMAIL` in production.
+
+### 3. Deploy
+
+```bash
+npx wrangler login
+# ensure wrangler.toml database_id is set, migrations applied, Access vars configured
+npm run pages:deploy
+```
+
+Or connect the Git repo to Cloudflare Pages (build: `npm run build`, output: `dist`). The `functions/` directory is picked up automatically. After the first Git deploy, attach the D1/R2 bindings and Access env vars in the Pages dashboard if Wrangler did not already.
+
+### Verify
+
+1. Incognito → `https://galaxymapmaker.com` → Access login (email OTP or IdP), not the public SPA
+2. After login, app shows your email (corner) and loads maps from `/api/maps`
+3. Edit a galaxy → wait ~1s → reload → changes persist
+4. Second allowlisted email sees only their own maps
+
+## API
+
+Authenticated via Cloudflare Access JWT (`Cf-Access-Jwt-Assertion` / `CF_Authorization` cookie). Locally: `X-Dev-Email` / `DEV_AUTH_EMAIL` when Access env vars are unset.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/me` | Signed-in email |
+| `GET` | `/api/maps` | List map metadata for current user |
+| `GET` | `/api/maps/:id` | Full campaign JSON |
+| `PUT` | `/api/maps/:id` | Upsert metadata + body |
+| `POST` | `/api/maps` | Create map |
+| `DELETE` | `/api/maps/:id` | Delete metadata + R2 object |
 
 ## Campaign JSON format
 
@@ -63,4 +144,4 @@ Planet `type` is one of: `hive`, `forge`, `agri`, `death`, `shrine`, `custom`.
 
 ## Stack
 
-Vite, React, TypeScript, Tailwind CSS, Zustand, Zod, react-zoom-pan-pinch, Three.js.
+Vite, React, TypeScript, Tailwind CSS, Zustand, Zod, react-zoom-pan-pinch, Three.js, Cloudflare Pages Functions, D1, R2, Access (Zero Trust).

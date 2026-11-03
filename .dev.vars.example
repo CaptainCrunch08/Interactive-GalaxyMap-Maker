@@ -1,0 +1,6 @@
+# Copy to .dev.vars for `wrangler pages dev` (never commit real secrets).
+# When these are unset, DEV_AUTH_EMAIL / X-Dev-Email bypass is used.
+#
+# CF_ACCESS_TEAM_DOMAIN=yourteam.cloudflareaccess.com
+# CF_ACCESS_AUD=access-application-audience-tag
+DEV_AUTH_EMAIL=you@example.com

@@ -247,11 +247,12 @@ export function systemOwnerSelectValue(
 }
 
 /**
- * Base sphere-of-influence scale (world units). Actual per-system radii are
- * derived in FactionTerritoryLayer: larger toward friendlies, capped at
- * halfway to the nearest unclaimed / enemy system.
+ * Desired open-space contour reach (world units) before kernel conversion.
+ * Tuned to ~half of Save_5 nearest-neighbor spacing (~791 avg / ~795 median).
+ * FactionTerritoryLayer converts this to a metaball kernel radius so the
+ * visible contour (influence ≈ threshold) lands near this distance.
  */
-export const CLAIM_RADIUS = 480;
+export const CLAIM_RADIUS = 400;
 
 /**
  * Cheap signature of data that affects territory fills. Typing notes / names

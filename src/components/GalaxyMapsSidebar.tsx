@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useCampaignStore } from "../store/useCampaignStore";
 import { NewGalaxyDialog } from "./NewGalaxyDialog";
 import type { GalaxySize } from "../lib/generateGalaxy";
+import { createMapOnCloud, deleteMapOnCloud } from "../lib/cloudSync";
 
 type LeaveAction =
   | { kind: "switch"; mapId: string }
@@ -16,8 +17,7 @@ export function GalaxyMapsSidebar() {
   const campaign = useCampaignStore((s) => s.campaign);
   const isDirty = useCampaignStore((s) => s.isDirty);
   const switchMap = useCampaignStore((s) => s.switchMap);
-  const createMap = useCampaignStore((s) => s.createMap);
-  const deleteMap = useCampaignStore((s) => s.deleteMap);
+  const [busy, setBusy] = useState(false);
   const saveGalaxy = useCampaignStore((s) => s.saveGalaxy);
   const openGalaxyEditor = useCampaignStore((s) => s.openGalaxyEditor);
   const openGalaxyOverview = useCampaignStore((s) => s.openGalaxyOverview);
@@ -41,9 +41,23 @@ export function GalaxyMapsSidebar() {
   }, []);
 
   const runLeaveAction = (action: LeaveAction) => {
-    if (action.kind === "switch") switchMap(action.mapId);
-    else if (action.kind === "create") createMap(action.options);
-    else deleteMap(action.mapId);
+    if (action.kind === "switch") {
+      switchMap(action.mapId);
+      return;
+    }
+    setBusy(true);
+    const run =
+      action.kind === "create"
+        ? createMapOnCloud(action.options)
+        : deleteMapOnCloud(action.mapId);
+    void run
+      .catch((err) => {
+        console.warn("[maps] cloud action failed", err);
+        window.alert(
+          err instanceof Error ? err.message : "Cloud map action failed",
+        );
+      })
+      .finally(() => setBusy(false));
   };
 
   const requestLeave = (action: LeaveAction) => {
@@ -154,6 +168,7 @@ export function GalaxyMapsSidebar() {
           <button
             type="button"
             className="hud-btn w-full"
+            disabled={busy}
             onClick={() => setNewGalaxyOpen(true)}
           >
             + New galaxy map
@@ -214,7 +229,17 @@ export function GalaxyMapsSidebar() {
                   if (id === activeMapId && isDirty) {
                     requestLeave({ kind: "delete", mapId: id, name });
                   } else {
-                    deleteMap(id);
+                    setBusy(true);
+                    void deleteMapOnCloud(id)
+                      .catch((err) => {
+                        console.warn("[maps] delete failed", err);
+                        window.alert(
+                          err instanceof Error
+                            ? err.message
+                            : "Failed to delete map",
+                        );
+                      })
+                      .finally(() => setBusy(false));
                   }
                 }}
               >
