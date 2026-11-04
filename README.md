@@ -91,13 +91,16 @@ Do **not** set `DEV_AUTH_EMAIL` in production.
 
 ### 3. Deploy
 
+**Git auto-deploy** uses Cloudflare **Workers Builds** for `interactive-galaxymap-maker` (`wrangler.toml` → static `dist/` SPA). That is what updates galaxymapmaker.com on push to `main`.
+
+Cloud map saves (D1 / R2 / `functions/`) are configured in [`wrangler.pages.toml`](wrangler.pages.toml) — enable those bindings with real resource IDs before relying on `/api`.
+
 ```bash
 npx wrangler login
-# ensure wrangler.toml database_id is set, migrations applied, Access vars configured
-npm run pages:deploy
+npm run workers:deploy   # same SPA path as Git Workers Builds
+# optional Pages API host once D1/R2 IDs are set in wrangler.pages.toml:
+# npm run pages:deploy
 ```
-
-Or connect the Git repo to Cloudflare Pages (build: `npm run build`, output: `dist`). The `functions/` directory is picked up automatically. After the first Git deploy, attach the D1/R2 bindings and Access env vars in the Pages dashboard if Wrangler did not already.
 
 ### Verify
 

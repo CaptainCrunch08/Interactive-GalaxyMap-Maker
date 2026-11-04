@@ -1,0 +1,24 @@
+# Cloudflare Pages deploy (cloud map saves: D1 + R2 + functions/).
+# Use after creating resources and filling real IDs:
+#   npx wrangler d1 create galaxy-map-saves
+#   npx wrangler r2 bucket create galaxy-map-saves
+#   npx wrangler pages deploy dist -c wrangler.pages.toml
+#
+# Required Pages env:
+#   CF_ACCESS_TEAM_DOMAIN, CF_ACCESS_AUD
+# Optional local:
+#   DEV_AUTH_EMAIL
+
+name = "galaxy-map-maker"
+compatibility_date = "2025-11-01"
+pages_build_output_dir = "dist"
+
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "galaxy-map-saves"
+# database_id = "PASTE_D1_DATABASE_ID"
+# migrations_dir = "migrations"
+#
+# [[r2_buckets]]
+# binding = "MAPS"
+# bucket_name = "galaxy-map-saves"
