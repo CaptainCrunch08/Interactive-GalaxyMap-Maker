@@ -259,7 +259,7 @@ export const CLAIM_RADIUS = 400;
  * (without moving stars or changing ownership) should not rebuild metaballs.
  */
 export function territoryLayoutSignature(campaign: Campaign): string {
-  let sig = `${campaign.systems.length}|${campaign.factions.length}|`;
+  let sig = `${campaign.systems.length}|${campaign.factions.length}|${campaign.territoryMode ?? "soi"}|`;
   for (const s of campaign.systems) {
     sig += `${s.id}:${s.x | 0},${s.y | 0};`;
   }

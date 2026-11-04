@@ -85,6 +85,7 @@ export function GalaxyChronicleMap({
               systems={campaign.systems}
               mapSize={mapSize}
               campaign={campaign}
+              mapScale={mapScale}
             />
             {campaign.systems.map((system) => {
               const ownership = getSystemOwnership(campaign, system.id);

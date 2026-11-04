@@ -3,6 +3,7 @@ import type {
   Planet,
   PlanetType,
   StarSystem,
+  TerritoryMode,
 } from "../types/campaign";
 import { GALAXY_EDGE_PADDING } from "../types/campaign";
 import { HYPERLANE_MAX_DIST, buildHyperlanes, systemHopDistance } from "./hyperlanes";
@@ -254,6 +255,7 @@ export function generateGalaxyCampaign(
   size: GalaxySize,
   name: string,
   seed = Date.now(),
+  territoryMode?: TerritoryMode,
 ): Campaign {
   const rng = mulberry32(seed);
   const mapSize = GALAXY_MAP_SIZE[size];
@@ -436,13 +438,14 @@ export function generateGalaxyCampaign(
     battleLog: [],
     mapSize,
     hyperlanes: buildHyperlanes(systems),
+    ...(territoryMode ? { territoryMode } : {}),
   };
 }
 
 /**
  * Place a small number of bidirectional warp-gate pairs on distant stars.
- * Every gate system (paired or not) stays ≥ {@link MIN_WARP_GATE_SYSTEM_HOPS}
- * hyperlane hops from every other gate system.
+ * Generated pairs stay ≥ {@link MIN_WARP_GATE_SYSTEM_HOPS} hyperlane hops
+ * apart (link distance); unlinked gates may sit closer when placed by hand.
  */
 function spawnWarpGatePairs(
   rng: () => number,

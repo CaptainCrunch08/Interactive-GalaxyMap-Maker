@@ -675,7 +675,7 @@ export function InspectorPanel() {
                         </p>
                         {candidates.length === 0 ? (
                           <p className="text-[10px] text-brass leading-snug">
-                            No other warp gates to connect to
+                            No other gates ≥8 hyperlane hops away
                           </p>
                         ) : (
                           <label className="flex flex-col gap-0.5 text-[10px] text-muted">

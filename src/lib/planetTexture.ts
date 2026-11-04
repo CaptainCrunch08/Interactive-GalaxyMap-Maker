@@ -1,4 +1,4 @@
-﻿import type { PlanetClassification } from "../types/campaign";
+import type { PlanetClassification } from "../types/campaign";
 import { normalizePlanetClassification } from "./planetClass";
 import {
   getPlanetVisualModel,

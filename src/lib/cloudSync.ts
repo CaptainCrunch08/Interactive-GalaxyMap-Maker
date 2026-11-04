@@ -1,4 +1,4 @@
-import type { Campaign } from "../types/campaign";
+import type { Campaign, TerritoryMode } from "../types/campaign";
 import type { GalaxySize } from "./generateGalaxy";
 import {
   createCloudMap,
@@ -127,6 +127,7 @@ export function enableCloudSync(): () => void {
 export async function createMapOnCloud(options?: {
   kind: "empty" | "generated";
   size?: GalaxySize;
+  territoryMode?: TerritoryMode;
 }): Promise<void> {
   useCampaignStore.getState().createMap(options);
   const { activeMapId, campaign } = useCampaignStore.getState();

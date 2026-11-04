@@ -21,7 +21,10 @@ import {
 
 export const RELAY_CROWN_KIND = "relay_crown" as const;
 
-/** Minimum hyperlane hops between any two warp-gate systems. */
+/**
+ * Minimum hyperlane hops between *linked* warp-gate systems.
+ * Gates may be placed closer; only connections require this spacing.
+ */
 export const MIN_WARP_GATE_SYSTEM_HOPS = 8;
 
 /** Faction that owns the relay crown (sole controller of a warp gate). */
@@ -85,7 +88,8 @@ export function warpGateSystemIds(
 
 /**
  * True if `systemId` is within {@link MIN_WARP_GATE_SYSTEM_HOPS} of any
- * existing warp-gate system (paired or not).
+ * existing warp-gate system. Used when *linking* gates (and for paired
+ * generation), not for mere placement.
  */
 export function isWarpGateSystemTooClose(
   systems: StarSystem[],
@@ -113,19 +117,53 @@ export function isWarpGateSystemTooClose(
   return false;
 }
 
-/** Human-readable block reason, or null when placement is allowed. */
+/** Hyperlane hops between two systems (∞ if disconnected). */
+export function warpGateSystemHops(
+  campaign: Campaign,
+  systemAId: string,
+  systemBId: string,
+): number {
+  if (systemAId === systemBId) return 0;
+  return systemHopDistance(
+    campaign.systems,
+    systemAId,
+    systemBId,
+    getCampaignHyperlanes(campaign),
+  );
+}
+
+/** Human-readable block reason for placing/converting a gate, or null if ok. */
 export function warpGatePlacementBlockedReason(
   campaign: Campaign,
   systemId: string,
   excludePlanetId?: string,
 ): string | null {
-  if (
-    isWarpGateSystemTooClose(campaign.systems, campaign.planets, systemId, {
-      lanes: getCampaignHyperlanes(campaign),
-      excludePlanetId,
-    })
-  ) {
-    return `Warp gates must be at least ${MIN_WARP_GATE_SYSTEM_HOPS} systems apart along hyperlanes`;
+  // Placement may be near other gates; only one gate per system.
+  const occupied = warpGateSystemIds(campaign.planets, excludePlanetId);
+  if (occupied.includes(systemId)) {
+    return "This system already has a warp gate";
+  }
+  return null;
+}
+
+/** Block reason when linking two gates, or null if the link is allowed. */
+export function warpGateLinkBlockedReason(
+  campaign: Campaign,
+  gateAId: string,
+  gateBId: string,
+): string | null {
+  if (gateAId === gateBId) return "Select two different warp gates to link";
+  const a = campaign.planets.find((p) => p.id === gateAId);
+  const b = campaign.planets.find((p) => p.id === gateBId);
+  if (!a || !b || a.type !== "warp_gate" || b.type !== "warp_gate") {
+    return "Select two different warp gates to link";
+  }
+  if (a.systemId === b.systemId) {
+    return "Linked warp gates must be in different systems";
+  }
+  const hops = warpGateSystemHops(campaign, a.systemId, b.systemId);
+  if (hops < MIN_WARP_GATE_SYSTEM_HOPS) {
+    return `Linked warp gates must be at least ${MIN_WARP_GATE_SYSTEM_HOPS} systems apart along hyperlanes`;
   }
   return null;
 }
@@ -218,14 +256,17 @@ export function unlinkWarpGate(planets: Planet[], gateId: string): Planet[] {
   });
 }
 
-/** Other warp gates available as link targets (excluding self). */
+/** Other warp gates available as link targets (far enough along hyperlanes). */
 export function warpGateLinkCandidates(
   campaign: Campaign,
   gateId: string,
 ): Planet[] {
-  return campaign.planets.filter(
-    (p) => p.type === "warp_gate" && p.id !== gateId,
-  );
+  const gate = campaign.planets.find((p) => p.id === gateId);
+  if (!gate || gate.type !== "warp_gate") return [];
+  return campaign.planets.filter((p) => {
+    if (p.type !== "warp_gate" || p.id === gateId) return false;
+    return warpGateLinkBlockedReason(campaign, gateId, p.id) === null;
+  });
 }
 
 export function randomOtherSystemId(

@@ -540,9 +540,26 @@ export interface Campaign {
    * Defaults to GALAXY_SIZE when missing (older saves).
    */
   mapSize?: number;
+  /**
+   * How faction territory is drawn on the galaxy map.
+   * Missing / `metaball` → spheres of influence (legacy alias).
+   * `soi` → circular SOIs meeting at midpoints.
+   * `voronoi` → star-driven sector tiles (shared geometric edges).
+   * `voronoi_soft` → smooth inset sectors with empty gaps; same-claim merges.
+   * `voronoi_shaky` → organic wobble on shared Voronoi edges.
+   */
+  territoryMode?: TerritoryMode;
   /** Hotseat turns; missing or inactive means free Edit. */
   play?: CampaignPlay;
 }
+
+/** Galaxy territory rendering mode. */
+export type TerritoryMode =
+  | "soi"
+  | "metaball"
+  | "voronoi"
+  | "voronoi_soft"
+  | "voronoi_shaky";
 
 export const PLANET_TYPE_LABELS: Record<PlanetType, string> = {
   hive: "Hive World",
@@ -725,6 +742,21 @@ export function campaignMapSize(campaign: { mapSize?: number }): number {
   const n = campaign.mapSize;
   if (typeof n === "number" && n >= 2000) return n;
   return GALAXY_SIZE;
+}
+
+/** Territory draw mode (defaults to spheres of influence for older saves). */
+export function campaignTerritoryMode(campaign: {
+  territoryMode?: TerritoryMode;
+}): TerritoryMode {
+  if (
+    campaign.territoryMode === "voronoi" ||
+    campaign.territoryMode === "voronoi_soft" ||
+    campaign.territoryMode === "voronoi_shaky"
+  ) {
+    return campaign.territoryMode;
+  }
+  // `metaball` kept as a legacy alias for SOI.
+  return "soi";
 }
 
 /** Default inactive play state (free Edit). */

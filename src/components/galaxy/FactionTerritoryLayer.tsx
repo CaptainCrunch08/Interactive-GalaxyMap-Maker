@@ -1,41 +1,21 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import type { Campaign, Faction, StarSystem } from "../../types/campaign";
-import { campaignMapSize } from "../../types/campaign";
+import type { Campaign } from "../../types/campaign";
 import {
-  buildCompetitiveTerritories,
-  type FactionInfluence,
-  type InfluenceSegment,
-  type InfluenceSource,
-} from "../../lib/metaball";
-import { getCampaignHyperlanes } from "../../lib/hyperlanes";
+  campaignMapSize,
+  campaignTerritoryMode,
+} from "../../types/campaign";
+import type { TerritoryBorder, TerritoryFill } from "../../lib/metaball";
 import { perfTime } from "../../lib/perfDebug";
 import {
   isSystemDragging,
   subscribeSystemDrag,
 } from "../../lib/systemDrag";
-import {
-  CLAIM_RADIUS,
-  getSystemOwnership,
-  territoryLayoutSignature,
-} from "../../lib/territory";
+import { territoryLayoutSignature } from "../../lib/territory";
+import { buildSoiTerritories } from "../../lib/soiTerritory";
+import { buildVoronoiTerritories } from "../../lib/voronoiTerritory";
 
 interface FactionTerritoryLayerProps {
   campaign: Campaign;
-}
-
-/** Desired open-space contour reach (~half of ~800 NN). */
-const BASE_REACH = CLAIM_RADIUS;
-/** True midpoint meet — rivals and voids both stop halfway. */
-const MEET_FRACTION = 0.5;
-/**
- * Metaball kernels hit ~threshold (0.4) near this fraction of `radius`.
- * Convert desired meet/contour distance → kernel param so contacts land
- * on the geometric midpoint instead of short of it.
- */
-const KERNEL_CONTOUR_T = 0.6;
-
-function toKernelRadius(desiredReach: number): number {
-  return desiredReach / KERNEL_CONTOUR_T;
 }
 
 function stripePatternId(a: string, b: string, uid: string) {
@@ -46,293 +26,33 @@ function clipId(regionId: string, uid: string) {
   return `clip-${uid}-${regionId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 24)}`;
 }
 
-function contestedKey(factions: Faction[]) {
-  return [...factions.map((f) => f.id)].sort().join("|");
-}
-
-type TerritoryRegions = ReturnType<typeof buildCompetitiveTerritories>;
-
-type ClaimRef = {
-  system: StarSystem;
-  entryId: string;
+type TerritoryRegions = {
+  fills: TerritoryFill[];
+  borders: TerritoryBorder[];
 };
 
-/**
- * Smooth capsule between two same-claim systems so merges stay organic
- * (no beaded waist from stacked point kernels).
- */
-function corridorSegment(
-  ax: number,
-  ay: number,
-  bx: number,
-  by: number,
-  radiusA: number,
-  radiusB: number,
-): InfluenceSegment | null {
-  const dist = Math.hypot(bx - ax, by - ay);
-  if (dist < 1) return null;
-
-  // Already overlapping enough to merge at threshold ~0.4.
-  const mergeDist = (radiusA + radiusB) * 0.75;
-  if (dist <= mergeDist) return null;
-
-  return {
-    x1: ax,
-    y1: ay,
-    x2: bx,
-    y2: by,
-    // Slightly under the point radii so the waist reads as a soft link.
-    radius: Math.min(radiusA, radiusB) * 0.85,
-  };
-}
-
-function claimEntryIdForOwnership(
-  ownership: ReturnType<typeof getSystemOwnership>,
-): string | null {
-  if (ownership.status === "owned") return ownership.factions[0]!.id;
-  if (ownership.status === "contested") {
-    return `contested:${contestedKey(ownership.factions)}`;
-  }
-  return null;
-}
-
-function claimEntryForOwnership(
-  ownership: ReturnType<typeof getSystemOwnership>,
-  byFaction: Map<string, FactionInfluence>,
-  byContested: Map<string, FactionInfluence>,
-): FactionInfluence | null {
-  if (ownership.status === "owned") {
-    return byFaction.get(ownership.factions[0]!.id) ?? null;
-  }
-  if (ownership.status === "contested") {
-    return (
-      byContested.get(`contested:${contestedKey(ownership.factions)}`) ?? null
-    );
-  }
-  return null;
-}
-
-function emptyEntry(
-  partial: Omit<FactionInfluence, "sources" | "segments">,
-): FactionInfluence {
-  return { ...partial, sources: [], segments: [] };
-}
-
-/**
- * Midpoint-first SOI: reach the nearest claimed rival's halfway line, use
- * BASE toward open space, and never past halfway to an unclaimed star.
- * Returns a metaball kernel radius (see KERNEL_CONTOUR_T).
- */
-function claimRadiusForSystem(
-  system: StarSystem,
-  entryId: string,
-  claims: ClaimRef[],
-): number {
-  let nearestClaimedRival = Infinity;
-  let nearestUnclaimed = Infinity;
-  for (const other of claims) {
-    if (other.system.id === system.id) continue;
-    if (other.entryId === entryId) continue;
-    const dist = Math.hypot(
-      other.system.x - system.x,
-      other.system.y - system.y,
-    );
-    if (other.entryId.startsWith("unowned:")) {
-      nearestUnclaimed = Math.min(nearestUnclaimed, dist);
-    } else {
-      nearestClaimedRival = Math.min(nearestClaimedRival, dist);
-    }
-  }
-
-  let reach = BASE_REACH;
-  if (Number.isFinite(nearestClaimedRival)) {
-    // True midpoint — not max(BASE, …), or dense maps keep oversized BASE.
-    reach = nearestClaimedRival * MEET_FRACTION;
-  }
-  // Cap open flanks at the void meet so unclaimed stars stay outside the blob.
-  if (Number.isFinite(nearestUnclaimed)) {
-    reach = Math.min(reach, nearestUnclaimed * MEET_FRACTION);
-  }
-  return toKernelRadius(reach);
-}
-
-/**
- * Void kernel radius — reserve space around unclaimed stars without erasing
- * nearby claims. Must NOT floor at BASE: a close unclaimed star with a full
- * BASE void would out-compete and delete the claimed sphere.
- */
-function voidRadiusForSystem(system: StarSystem, claims: ClaimRef[]): number {
-  let nearestClaimed = Infinity;
-  for (const other of claims) {
-    if (other.system.id === system.id) continue;
-    if (other.entryId.startsWith("unowned:")) continue;
-    const dist = Math.hypot(
-      other.system.x - system.x,
-      other.system.y - system.y,
-    );
-    nearestClaimed = Math.min(nearestClaimed, dist);
-  }
-  if (!Number.isFinite(nearestClaimed)) return toKernelRadius(BASE_REACH);
-  // Halfway to the nearest claim — matches rival meet distance.
-  const reach = Math.min(BASE_REACH, nearestClaimed * MEET_FRACTION);
-  return toKernelRadius(reach);
-}
-
 function computeRegions(campaign: Campaign): TerritoryRegions {
-  const byFaction = new Map<string, FactionInfluence>();
-  const byContested = new Map<string, FactionInfluence>();
-  const systemById = new Map(campaign.systems.map((s) => [s.id, s]));
-
-  const allClaims: ClaimRef[] = campaign.systems.map((system) => ({
-    system,
-    entryId:
-      claimEntryIdForOwnership(getSystemOwnership(campaign, system.id)) ??
-      `unowned:${system.id}`,
-  }));
-
-  const radiusBySystemId = new Map<string, number>();
-  for (const claim of allClaims) {
-    if (claim.entryId.startsWith("unowned:")) continue;
-    radiusBySystemId.set(
-      claim.system.id,
-      claimRadiusForSystem(claim.system, claim.entryId, allClaims),
+  const mode = campaignTerritoryMode(campaign);
+  if (
+    mode === "voronoi" ||
+    mode === "voronoi_soft" ||
+    mode === "voronoi_shaky"
+  ) {
+    return perfTime("buildVoronoiTerritories", () =>
+      buildVoronoiTerritories(campaign, {
+        soft: mode === "voronoi_soft",
+        shaky: mode === "voronoi_shaky",
+      }),
     );
   }
-
-  const neutralSources: InfluenceSource[] = [];
-  for (const claim of allClaims) {
-    if (!claim.entryId.startsWith("unowned:")) continue;
-    neutralSources.push({
-      x: claim.system.x,
-      y: claim.system.y,
-      radius: voidRadiusForSystem(claim.system, allClaims),
-    });
-  }
-
-  for (const system of campaign.systems) {
-    const ownership = getSystemOwnership(campaign, system.id);
-    if (ownership.status === "unowned") continue;
-    const radius = radiusBySystemId.get(system.id) ?? toKernelRadius(BASE_REACH);
-    const source: InfluenceSource = {
-      x: system.x,
-      y: system.y,
-      radius,
-    };
-
-    if (ownership.status === "owned") {
-      const faction = ownership.factions[0]!;
-      const entry =
-        byFaction.get(faction.id) ??
-        emptyEntry({
-          id: faction.id,
-          color: faction.color,
-          kind: "owned",
-        });
-      entry.sources.push(source);
-      byFaction.set(faction.id, entry);
-    } else {
-      const a = ownership.factions[0]!;
-      const b = ownership.factions[1] ?? a;
-      const key = contestedKey(ownership.factions);
-      const id = `contested:${key}`;
-      const entry =
-        byContested.get(id) ??
-        emptyEntry({
-          id,
-          color: a.color,
-          kind: "contested",
-          // One-faction contested (unowned worlds remain) stripes with muted void.
-          stripeColors: [
-            a.color,
-            ownership.factions.length > 1 ? b.color : "#3a4550",
-          ],
-        });
-      entry.sources.push(source);
-      byContested.set(id, entry);
-    }
-  }
-
-  const bridgedPairs = new Set<string>();
-  const pairKey = (a: string, b: string) =>
-    a < b ? `${a}|${b}` : `${b}|${a}`;
-
-  const tryBridge = (
-    sysA: StarSystem,
-    sysB: StarSystem,
-    entry: FactionInfluence,
-  ) => {
-    const key = pairKey(sysA.id, sysB.id);
-    if (bridgedPairs.has(key)) return;
-    const rA = radiusBySystemId.get(sysA.id) ?? toKernelRadius(BASE_REACH);
-    const rB = radiusBySystemId.get(sysB.id) ?? toKernelRadius(BASE_REACH);
-    const segment = corridorSegment(sysA.x, sysA.y, sysB.x, sysB.y, rA, rB);
-    if (!segment) return;
-    bridgedPairs.add(key);
-    entry.segments = entry.segments ?? [];
-    entry.segments.push(segment);
-  };
-
-  // Hyperlane bridges: same-claim systems on a lane always try to merge.
-  for (const lane of getCampaignHyperlanes(campaign)) {
-    const sysA = systemById.get(lane.a);
-    const sysB = systemById.get(lane.b);
-    if (!sysA || !sysB) continue;
-
-    const ownA = getSystemOwnership(campaign, sysA.id);
-    const ownB = getSystemOwnership(campaign, sysB.id);
-    if (ownA.status === "unowned" || ownB.status === "unowned") continue;
-
-    const entryA = claimEntryForOwnership(ownA, byFaction, byContested);
-    const entryB = claimEntryForOwnership(ownB, byFaction, byContested);
-    if (!entryA || !entryB || entryA.id !== entryB.id) continue;
-
-    tryBridge(sysA, sysB, entryA);
-  }
-
-  // Friendly near-miss (no hyperlane required): close same-claim systems merge.
-  const claimedByEntry = new Map<string, StarSystem[]>();
-  for (const system of campaign.systems) {
-    const ownership = getSystemOwnership(campaign, system.id);
-    const entry = claimEntryForOwnership(ownership, byFaction, byContested);
-    if (!entry) continue;
-    const list = claimedByEntry.get(entry.id) ?? [];
-    list.push(system);
-    claimedByEntry.set(entry.id, list);
-  }
-  for (const [entryId, systems] of claimedByEntry) {
-    const entry =
-      byFaction.get(entryId) ?? byContested.get(entryId) ?? null;
-    if (!entry) continue;
-    for (let i = 0; i < systems.length; i++) {
-      const sysA = systems[i]!;
-      const rA = radiusBySystemId.get(sysA.id) ?? toKernelRadius(BASE_REACH);
-      for (let j = i + 1; j < systems.length; j++) {
-        const sysB = systems[j]!;
-        const rB = radiusBySystemId.get(sysB.id) ?? toKernelRadius(BASE_REACH);
-        const dist = Math.hypot(sysA.x - sysB.x, sysA.y - sysB.y);
-        if (dist > (rA + rB) * 1.15) continue;
-        tryBridge(sysA, sysB, entry);
-      }
-    }
-  }
-
-  const claims = [...byFaction.values(), ...byContested.values()];
-  return perfTime("buildCompetitiveTerritories", () =>
-    buildCompetitiveTerritories(claims, {
-      cellSize: 12,
-      threshold: 0.4,
-      // Light difference-field blur only — occupancy crease blur opened gaps.
-      blurPasses: 2,
-      neutralSources,
-    }),
-  );
+  return perfTime("buildSoiTerritories", () => buildSoiTerritories(campaign));
 }
 
 /**
- * Stellaris-style territories:
- * - owned + contested claims compete via soft influence fields
- * - dual faction-colored borders clipped to each fill
- * - deferred while a star is being dragged (rebuild on pointer-up)
+ * Territory overlays:
+ * - soi (default): circular spheres of influence meeting at midpoints
+ * - voronoi / soft / shaky: star-driven sector tiles
+ * Deferred while a star is being dragged (rebuild on pointer-up).
  */
 export function FactionTerritoryLayer({ campaign }: FactionTerritoryLayerProps) {
   const uid = useId().replace(/:/g, "");

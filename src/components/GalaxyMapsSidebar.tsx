@@ -1,12 +1,18 @@
 import { useEffect, useState } from "react";
 import { useCampaignStore } from "../store/useCampaignStore";
-import { NewGalaxyDialog } from "./NewGalaxyDialog";
-import type { GalaxySize } from "../lib/generateGalaxy";
+import {
+  NewGalaxyDialog,
+  type NewGalaxyOptions,
+} from "./NewGalaxyDialog";
 import { createMapOnCloud, deleteMapOnCloud } from "../lib/cloudSync";
+import {
+  campaignTerritoryMode,
+  type TerritoryMode,
+} from "../types/campaign";
 
 type LeaveAction =
   | { kind: "switch"; mapId: string }
-  | { kind: "create"; options: { kind: "empty" | "generated"; size?: GalaxySize } }
+  | { kind: "create"; options: NewGalaxyOptions }
   | { kind: "delete"; mapId: string; name: string };
 
 export function GalaxyMapsSidebar() {
@@ -22,7 +28,9 @@ export function GalaxyMapsSidebar() {
   const openGalaxyEditor = useCampaignStore((s) => s.openGalaxyEditor);
   const openGalaxyOverview = useCampaignStore((s) => s.openGalaxyOverview);
   const setCampaignName = useCampaignStore((s) => s.setCampaignName);
+  const setTerritoryMode = useCampaignStore((s) => s.setTerritoryMode);
   const toggleSideMenu = useCampaignStore((s) => s.toggleSideMenu);
+  const territoryMode = campaignTerritoryMode(campaign);
   const [newGalaxyOpen, setNewGalaxyOpen] = useState(false);
   const [leaveAction, setLeaveAction] = useState<LeaveAction | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{
@@ -156,6 +164,29 @@ export function GalaxyMapsSidebar() {
             onClick={() => openGalaxyEditor("factions")}
           >
             Edit Galaxy
+          </button>
+          <button
+            type="button"
+            className="hud-btn w-full"
+            title="Cycle territory style: SOI → clean → soft → shaky sectors"
+            onClick={() => {
+              const order: TerritoryMode[] = [
+                "soi",
+                "voronoi",
+                "voronoi_soft",
+                "voronoi_shaky",
+              ];
+              const i = order.indexOf(territoryMode);
+              setTerritoryMode(order[(i + 1) % order.length]!);
+            }}
+          >
+            {territoryMode === "soi"
+              ? "Territories: spheres of influence"
+              : territoryMode === "voronoi"
+                ? "Territories: clean sectors"
+                : territoryMode === "voronoi_soft"
+                  ? "Territories: soft sectors"
+                  : "Territories: shaky sectors"}
           </button>
           <button
             type="button"

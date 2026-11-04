@@ -100,6 +100,7 @@ import type {
   SphereDir,
   StarSystem,
   StructureKind,
+  TerritoryMode,
   TimelineEvent,
   ViewLevel,
 } from "../types/campaign";
@@ -226,6 +227,7 @@ import {
   RELAY_CROWN_KIND,
   stationDockTiles,
   unlinkWarpGate,
+  warpGateLinkBlockedReason,
   warpGatePlacementBlockedReason,
   warpTravelBlockedReason,
 } from "../lib/warpGates";
@@ -605,6 +607,7 @@ interface CampaignState {
   createMap: (options?: {
     kind: "empty" | "generated";
     size?: GalaxySize;
+    territoryMode?: TerritoryMode;
   }) => void;
   switchMap: (mapId: string) => void;
   deleteMap: (mapId: string) => void;
@@ -612,6 +615,7 @@ interface CampaignState {
   saveGalaxy: () => void;
   markSaved: () => void;
 
+  setTerritoryMode: (mode: TerritoryMode) => void;
   setCampaignName: (name: string) => void;
   importCampaign: (campaign: Campaign) => void;
   resetToDemo: () => void;
@@ -1025,10 +1029,20 @@ export const useCampaignStore = create<CampaignState>()(
       createMap: (options) => {
         const id = crypto.randomUUID();
         const name = `Galaxy ${get().mapOrder.length + 1}`;
+        const mode = options?.territoryMode;
         const campaign =
           options?.kind === "generated"
-            ? generateGalaxyCampaign(options.size ?? "medium", name)
-            : { ...createEmptyCampaign(), name };
+            ? generateGalaxyCampaign(
+                options.size ?? "medium",
+                name,
+                Date.now(),
+                mode,
+              )
+            : {
+                ...createEmptyCampaign(),
+                name,
+                ...(mode ? { territoryMode: mode } : {}),
+              };
         set((s) => ({
           maps: { ...withCampaign(s, s.campaign, { dirty: false, skipUndo: true }).maps, [id]: campaign },
           mapOrder: [...s.mapOrder, id],
@@ -1093,6 +1107,14 @@ export const useCampaignStore = create<CampaignState>()(
 
       setCampaignName: (name) =>
         set((s) => withCampaign(s, { ...s.campaign, name })),
+
+      setTerritoryMode: (mode) =>
+        set((s) =>
+          withCampaign(s, {
+            ...s.campaign,
+            territoryMode: mode,
+          }),
+        ),
 
       importCampaign: (campaign) =>
         set((s) => ({
@@ -1873,6 +1895,15 @@ export const useCampaignStore = create<CampaignState>()(
 
       linkWarpGates: (gateAId, gateBId) => {
         const state = get();
+        const blocked = warpGateLinkBlockedReason(
+          state.campaign,
+          gateAId,
+          gateBId,
+        );
+        if (blocked) {
+          set({ playMoveHint: blocked });
+          return false;
+        }
         const next = linkWarpGates(state.campaign.planets, gateAId, gateBId);
         if (!next) {
           set({

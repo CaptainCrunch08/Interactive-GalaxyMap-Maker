@@ -11,6 +11,8 @@ interface HyperlaneLayerProps {
   mapSize: number;
   /** Full campaign — uses persisted lanes when present. */
   campaign?: Campaign;
+  /** Current galaxy zoom — thickens warp lanes when zoomed out. */
+  mapScale?: number;
   /** When true, lanes can be clicked (editor connect mode). */
   interactive?: boolean;
   selectedLaneId?: string | null;
@@ -19,11 +21,14 @@ interface HyperlaneLayerProps {
 
 /**
  * Stellaris-style hyperlanes — thin cyan links between nearby systems.
+ * Linked warp gates draw as brighter gold dashed lanes that stay readable
+ * when zoomed out.
  */
 export function HyperlaneLayer({
   systems,
   mapSize,
   campaign,
+  mapScale = 1,
   interactive = false,
   selectedLaneId,
   onLaneClick,
@@ -49,6 +54,13 @@ export function HyperlaneLayer({
 
   if (lanes.length === 0 && warpLanes.length === 0) return null;
 
+  const scale = Math.max(0.05, mapScale);
+  // World-space stroke so screen thickness stays ~constant when zooming out.
+  const warpCore = Math.min(18, Math.max(3.5, 4.5 / scale));
+  const warpGlow = warpCore * 2.4;
+  const dashOn = Math.min(48, Math.max(10, 14 / scale));
+  const dashOff = Math.min(36, Math.max(8, 10 / scale));
+
   return (
     <svg
       className={`absolute left-0 top-0 ${interactive ? "pointer-events-auto" : "pointer-events-none"}`}
@@ -69,10 +81,20 @@ export function HyperlaneLayer({
               y1={a.y}
               x2={b.x}
               y2={b.y}
-              stroke="rgba(232, 197, 71, 0.55)"
-              strokeWidth={2}
+              stroke="rgba(232, 197, 71, 0.28)"
+              strokeWidth={warpGlow}
               strokeLinecap="round"
-              strokeDasharray="10 8"
+              className="pointer-events-none"
+            />
+            <line
+              x1={a.x}
+              y1={a.y}
+              x2={b.x}
+              y2={b.y}
+              stroke="rgba(255, 220, 120, 0.92)"
+              strokeWidth={warpCore}
+              strokeLinecap="round"
+              strokeDasharray={`${dashOn} ${dashOff}`}
               className="pointer-events-none"
             />
           </g>

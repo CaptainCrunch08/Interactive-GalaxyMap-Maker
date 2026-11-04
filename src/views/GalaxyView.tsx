@@ -130,6 +130,7 @@ export function GalaxyView() {
               systems={campaign.systems}
               mapSize={mapSize}
               campaign={campaign}
+              mapScale={mapScale}
             />
             {campaign.systems.length === 0 && (
               <div

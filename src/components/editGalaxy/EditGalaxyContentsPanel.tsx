@@ -388,6 +388,7 @@ export function EditGalaxyContentsPanel() {
                 systems={campaign.systems}
                 mapSize={mapSize}
                 campaign={campaign}
+                mapScale={mapScale}
                 interactive={tool === "connect"}
                 selectedLaneId={selectedLaneId}
                 onLaneClick={(laneId) => {
