@@ -77,6 +77,7 @@ import {
   withSymbolAssigned,
   withSymbolUnassigned,
 } from "../lib/factionSymbols";
+import { eligibleParentFactions } from "../lib/federation";
 import type {
   Army,
   ArmySymbol,
@@ -229,10 +230,15 @@ import {
   fleetMovementRemaining,
   playMoveBlockReason,
   turnLabel,
+  withArmyActionsExhausted,
   withFleetBattled,
   withFleetMpSpent,
   withPlay,
 } from "../lib/play";
+import {
+  applyClaimToPlanet,
+  claimCheckForArmy,
+} from "../lib/cityClaim";
 import {
   buildHexSphere,
   hexTileDistance,
@@ -374,6 +380,7 @@ function buildPlayCityDistrict(
           s.campaign.systems,
           planets,
           touched.systemId,
+          s.campaign.factions,
         )
       : s.campaign.systems;
     return {
@@ -519,6 +526,7 @@ function ensureCampaignSettlements(campaign: Campaign): Campaign {
           contestedRate: rivalFor(p) ? 0.3 : 0,
         },
       ),
+      campaign.factions,
     ),
   );
   return {
@@ -545,6 +553,7 @@ function ensureCampaignSettlements(campaign: Campaign): Campaign {
         starClass: normalizeStarClass(s.starClass),
       })),
       planets,
+      campaign.factions,
     ),
   };
 }
@@ -890,6 +899,11 @@ interface CampaignState {
     armyId: string,
     aimDir: SphereDir,
   ) => boolean;
+  /**
+   * Claim the city / independent district / structure under a detachment.
+   * Requires a clear 2-hex zone of enemies; exhausts remaining army actions.
+   */
+  claimWithArmy: (planetId: string, armyId: string) => boolean;
   /** Open the post-tabletop battle result dialog (Play mode). */
   openBattleResolve: (
     planetId: string,
@@ -1880,10 +1894,11 @@ export const useCampaignStore = create<CampaignState>()(
               ...s.campaign,
               planets,
               systems: syncSystemOwnerInSystems(
-                s.campaign.systems,
-                planets,
-                systemId,
-              ),
+          s.campaign.systems,
+          planets,
+          systemId,
+          s.campaign.factions,
+        ),
             }),
             selectedPlanetId: id,
           };
@@ -1961,10 +1976,11 @@ export const useCampaignStore = create<CampaignState>()(
           let systems = s.campaign.systems;
           if (planet && "controllingFactionId" in patch) {
             systems = syncSystemOwnerInSystems(
-              s.campaign.systems,
-              planets,
-              planet.systemId,
-            );
+          s.campaign.systems,
+          planets,
+          planet.systemId,
+          s.campaign.factions,
+        );
           }
           // Warp gates require a Dyson Sphere megastructure in their system.
           if (planet && patch.type === "warp_gate") {
@@ -2086,10 +2102,11 @@ export const useCampaignStore = create<CampaignState>()(
               ...s.campaign,
               planets,
               systems: syncSystemOwnerInSystems(
-                s.campaign.systems,
-                planets,
-                planet.systemId,
-              ),
+          s.campaign.systems,
+          planets,
+          planet.systemId,
+          s.campaign.factions,
+        ),
             }),
           );
         }),
@@ -2133,10 +2150,11 @@ export const useCampaignStore = create<CampaignState>()(
               ...s.campaign,
               planets,
               systems: syncSystemOwnerInSystems(
-                s.campaign.systems,
-                planets,
-                planet.systemId,
-              ),
+          s.campaign.systems,
+          planets,
+          planet.systemId,
+          s.campaign.factions,
+        ),
             }),
           );
         }),
@@ -2172,10 +2190,11 @@ export const useCampaignStore = create<CampaignState>()(
               ...s.campaign,
               planets,
               systems: syncSystemOwnerInSystems(
-                s.campaign.systems,
-                planets,
-                planet.systemId,
-              ),
+          s.campaign.systems,
+          planets,
+          planet.systemId,
+          s.campaign.factions,
+        ),
             }),
           );
         }),
@@ -2271,10 +2290,11 @@ export const useCampaignStore = create<CampaignState>()(
               ...s.campaign,
               planets,
               systems: syncSystemOwnerInSystems(
-                s.campaign.systems,
-                planets,
-                planet.systemId,
-              ),
+          s.campaign.systems,
+          planets,
+          planet.systemId,
+          s.campaign.factions,
+        ),
             }),
           );
         }),
@@ -2302,10 +2322,11 @@ export const useCampaignStore = create<CampaignState>()(
               ...s.campaign,
               planets,
               systems: syncSystemOwnerInSystems(
-                s.campaign.systems,
-                planets,
-                planet.systemId,
-              ),
+          s.campaign.systems,
+          planets,
+          planet.systemId,
+          s.campaign.factions,
+        ),
             }),
           );
         }),
@@ -2469,10 +2490,11 @@ export const useCampaignStore = create<CampaignState>()(
                 planets,
                 systems: touched
                   ? syncSystemOwnerInSystems(
-                      s.campaign.systems,
-                      planets,
-                      touched.systemId,
-                    )
+          s.campaign.systems,
+          planets,
+          touched.systemId,
+          s.campaign.factions,
+        )
                   : s.campaign.systems,
               }),
             ),
@@ -2585,10 +2607,11 @@ export const useCampaignStore = create<CampaignState>()(
                 planets,
                 systems: touched
                   ? syncSystemOwnerInSystems(
-                      s.campaign.systems,
-                      planets,
-                      touched.systemId,
-                    )
+          s.campaign.systems,
+          planets,
+          touched.systemId,
+          s.campaign.factions,
+        )
                   : s.campaign.systems,
               }),
             ),
@@ -2669,10 +2692,11 @@ export const useCampaignStore = create<CampaignState>()(
                 planets,
                 systems: touched
                   ? syncSystemOwnerInSystems(
-                      s.campaign.systems,
-                      planets,
-                      touched.systemId,
-                    )
+          s.campaign.systems,
+          planets,
+          touched.systemId,
+          s.campaign.factions,
+        )
                   : s.campaign.systems,
               }),
             ),
@@ -2770,10 +2794,11 @@ export const useCampaignStore = create<CampaignState>()(
                 planets,
                 systems: touched
                   ? syncSystemOwnerInSystems(
-                      s.campaign.systems,
-                      planets,
-                      touched.systemId,
-                    )
+          s.campaign.systems,
+          planets,
+          touched.systemId,
+          s.campaign.factions,
+        )
                   : s.campaign.systems,
               }),
             ),
@@ -2832,10 +2857,11 @@ export const useCampaignStore = create<CampaignState>()(
               planets,
               systems: touched
                 ? syncSystemOwnerInSystems(
-                    s.campaign.systems,
-                    planets,
-                    touched.systemId,
-                  )
+          s.campaign.systems,
+          planets,
+          touched.systemId,
+          s.campaign.factions,
+        )
                 : s.campaign.systems,
             }),
             selectedCityId: city.id,
@@ -2920,10 +2946,11 @@ export const useCampaignStore = create<CampaignState>()(
               planets,
               systems: touched
                 ? syncSystemOwnerInSystems(
-                    s.campaign.systems,
-                    planets,
-                    touched.systemId,
-                  )
+          s.campaign.systems,
+          planets,
+          touched.systemId,
+          s.campaign.factions,
+        )
                 : s.campaign.systems,
             }),
             selectedCityId: parentCity?.id ?? null,
@@ -2976,10 +3003,11 @@ export const useCampaignStore = create<CampaignState>()(
               planets,
               systems: touched
                 ? syncSystemOwnerInSystems(
-                    s.campaign.systems,
-                    planets,
-                    touched.systemId,
-                  )
+          s.campaign.systems,
+          planets,
+          touched.systemId,
+          s.campaign.factions,
+        )
                 : s.campaign.systems,
             }),
             selectedStructureId: structure.id,
@@ -3037,10 +3065,11 @@ export const useCampaignStore = create<CampaignState>()(
                 ...s.campaign,
                 planets,
                 systems: syncSystemOwnerInSystems(
-                  s.campaign.systems,
-                  planets,
-                  planet.systemId,
-                ),
+          s.campaign.systems,
+          planets,
+          planet.systemId,
+          s.campaign.factions,
+        ),
               }),
               selectedCityId:
                 s.selectedCityId === cityHit.id ? null : s.selectedCityId,
@@ -3112,10 +3141,11 @@ export const useCampaignStore = create<CampaignState>()(
                 ...s.campaign,
                 planets,
                 systems: syncSystemOwnerInSystems(
-                  s.campaign.systems,
-                  planets,
-                  planet.systemId,
-                ),
+          s.campaign.systems,
+          planets,
+          planet.systemId,
+          s.campaign.factions,
+        ),
               }),
               selectedDistrictId:
                 s.selectedDistrictId === removedDistrictId
@@ -3162,10 +3192,11 @@ export const useCampaignStore = create<CampaignState>()(
                 ...s.campaign,
                 planets,
                 systems: syncSystemOwnerInSystems(
-                  s.campaign.systems,
-                  planets,
-                  planet.systemId,
-                ),
+          s.campaign.systems,
+          planets,
+          planet.systemId,
+          s.campaign.factions,
+        ),
               }),
               selectedStructureId:
                 s.selectedStructureId === structureHit.id
@@ -3207,10 +3238,11 @@ export const useCampaignStore = create<CampaignState>()(
               ...s.campaign,
               planets,
               systems: syncSystemOwnerInSystems(
-                s.campaign.systems,
-                planets,
-                planet.systemId,
-              ),
+          s.campaign.systems,
+          planets,
+          planet.systemId,
+          s.campaign.factions,
+        ),
             }),
             selectedCityId: null,
             selectedDistrictId: null,
@@ -3269,10 +3301,11 @@ export const useCampaignStore = create<CampaignState>()(
               ...s.campaign,
               planets,
               systems: syncSystemOwnerInSystems(
-                s.campaign.systems,
-                planets,
-                planet.systemId,
-              ),
+          s.campaign.systems,
+          planets,
+          planet.systemId,
+          s.campaign.factions,
+        ),
             }),
             selectedCityId: null,
             selectedDistrictId: null,
@@ -3313,10 +3346,11 @@ export const useCampaignStore = create<CampaignState>()(
             ...s.campaign,
             planets,
             systems: syncSystemOwnerInSystems(
-              s.campaign.systems,
-              planets,
-              planet.systemId,
-            ),
+          s.campaign.systems,
+          planets,
+          planet.systemId,
+          s.campaign.factions,
+        ),
           });
         });
         return structure.id;
@@ -3357,10 +3391,11 @@ export const useCampaignStore = create<CampaignState>()(
             ...s.campaign,
             planets,
             systems: syncSystemOwnerInSystems(
-              s.campaign.systems,
-              planets,
-              planet.systemId,
-            ),
+          s.campaign.systems,
+          planets,
+          planet.systemId,
+          s.campaign.factions,
+        ),
           });
         });
         return city.id;
@@ -3412,10 +3447,11 @@ export const useCampaignStore = create<CampaignState>()(
               ...s.campaign,
               planets,
               systems: syncSystemOwnerInSystems(
-                s.campaign.systems,
-                planets,
-                planet.systemId,
-              ),
+          s.campaign.systems,
+          planets,
+          planet.systemId,
+          s.campaign.factions,
+        ),
             }),
             selectedCityId:
               s.selectedCityId === cityId ? null : s.selectedCityId,
@@ -3458,10 +3494,11 @@ export const useCampaignStore = create<CampaignState>()(
             ...s.campaign,
             planets,
             systems: syncSystemOwnerInSystems(
-              s.campaign.systems,
-              planets,
-              planet.systemId,
-            ),
+          s.campaign.systems,
+          planets,
+          planet.systemId,
+          s.campaign.factions,
+        ),
           });
         });
         return result.district.id;
@@ -3506,10 +3543,11 @@ export const useCampaignStore = create<CampaignState>()(
               ...s.campaign,
               planets,
               systems: syncSystemOwnerInSystems(
-                s.campaign.systems,
-                planets,
-                planet.systemId,
-              ),
+          s.campaign.systems,
+          planets,
+          planet.systemId,
+          s.campaign.factions,
+        ),
             }),
             selectedDistrictId:
               s.selectedDistrictId === districtId
@@ -3529,16 +3567,17 @@ export const useCampaignStore = create<CampaignState>()(
             );
             const next = { ...p, cities };
             return "controllingFactionId" in patch
-              ? withLivePlanetOwner(next)
+              ? withLivePlanetOwner(next, s.campaign.factions)
               : next;
           });
           const systems =
             "controllingFactionId" in patch
               ? syncSystemOwnerInSystems(
-                  s.campaign.systems,
-                  planets,
-                  current.systemId,
-                )
+          s.campaign.systems,
+          planets,
+          current.systemId,
+          s.campaign.factions,
+        )
               : s.campaign.systems;
           return withCampaign(
             s,
@@ -3986,6 +4025,63 @@ export const useCampaignStore = create<CampaignState>()(
               : tileIndex === aimTile
                 ? `${army.name} landed on the aimed hex`
                 : `${army.name} scattered to a hex near the aim point`,
+          };
+        });
+        return true;
+      },
+
+      claimWithArmy: (planetId, armyId) => {
+        const state = get();
+        const planet = state.campaign.planets.find((p) => p.id === planetId);
+        const army = planet?.armies?.find((a) => a.id === armyId);
+        if (!planet || !army) return false;
+        const check = claimCheckForArmy(state.campaign, planet, army);
+        if (!check.ok) {
+          set({ playMoveHint: check.reason });
+          return false;
+        }
+        const play = normalizeCampaignPlay(state.campaign.play);
+        set((s) => {
+          let nextPlanet = applyClaimToPlanet(planet, army, check.target);
+          nextPlanet = withLivePlanetOwner(nextPlanet, s.campaign.factions);
+          const planets = s.campaign.planets.map((p) =>
+            p.id === planetId ? nextPlanet : p,
+          );
+          let campaign = {
+            ...s.campaign,
+            planets,
+            systems: syncSystemOwnerInSystems(
+              s.campaign.systems,
+              planets,
+              nextPlanet.systemId,
+              s.campaign.factions,
+            ),
+          };
+          if (play.active) {
+            campaign = withPlay(
+              campaign,
+              withArmyActionsExhausted(play, armyId),
+            );
+            campaign = withPlay(
+              campaign,
+              playAfterArmyMoved(
+                normalizeCampaignPlay(campaign.play),
+                nextPlanet,
+                army,
+                1,
+              ),
+            );
+          }
+          const kindLabel =
+            check.target.kind === "city"
+              ? "city"
+              : check.target.kind === "independent_district"
+                ? "district"
+                : "structure";
+          return {
+            ...withCampaign(s, withHistoryCapture(campaign)),
+            selectedArmyId: armyId,
+            playMoveHint: `${army.name} claimed ${check.target.label} (${kindLabel}) · no movement left`,
           };
         });
         return true;
@@ -4846,10 +4942,11 @@ export const useCampaignStore = create<CampaignState>()(
                 planets,
                 systems: touched
                   ? syncSystemOwnerInSystems(
-                      s.campaign.systems,
-                      planets,
-                      touched.systemId,
-                    )
+          s.campaign.systems,
+          planets,
+          touched.systemId,
+          s.campaign.factions,
+        )
                   : s.campaign.systems,
               }),
             ),
@@ -5720,10 +5817,11 @@ export const useCampaignStore = create<CampaignState>()(
             planets: remaining,
             fleets,
             systems: syncSystemOwnerInSystems(
-              s.campaign.systems,
-              remaining,
-              planet.systemId,
-            ),
+          s.campaign.systems,
+          remaining,
+          planet.systemId,
+          s.campaign.factions,
+        ),
           };
           return {
             ...withCampaign(s, {
@@ -5760,9 +5858,33 @@ export const useCampaignStore = create<CampaignState>()(
 
       updateFaction: (id, patch) =>
         set((s) => {
-          let factions = s.campaign.factions.map((f) =>
-            f.id === id ? { ...f, ...patch } : f,
-          );
+          let nextPatch = { ...patch };
+          if ("parentFactionId" in nextPatch) {
+            const raw = nextPatch.parentFactionId;
+            if (raw == null || raw === "" || raw === id) {
+              nextPatch = { ...nextPatch, parentFactionId: undefined };
+            } else {
+              const eligible = eligibleParentFactions(
+                s.campaign.factions,
+                id,
+              );
+              if (!eligible.some((f) => f.id === raw)) {
+                nextPatch = { ...nextPatch, parentFactionId: undefined };
+              }
+            }
+          }
+          let factions = s.campaign.factions.map((f) => {
+            if (f.id !== id) return f;
+            const merged = { ...f, ...nextPatch };
+            if (
+              "parentFactionId" in nextPatch &&
+              nextPatch.parentFactionId === undefined
+            ) {
+              const { parentFactionId: _drop, ...rest } = merged;
+              return rest;
+            }
+            return merged;
+          });
           // If primary / roster patched, keep ownership exclusive.
           if ("defaultSymbolId" in patch || "symbolIds" in patch) {
             const next = factions.find((f) => f.id === id);
@@ -5777,15 +5899,30 @@ export const useCampaignStore = create<CampaignState>()(
               factions = enforceUniqueSymbolOwnership(factions);
             }
           }
+          let planets = s.campaign.planets;
+          let systems = s.campaign.systems;
+          if ("parentFactionId" in nextPatch) {
+            planets = planets.map((p) =>
+              withLivePlanetOwner(p, factions),
+            );
+            systems = syncAllSystemOwners(systems, planets, factions);
+          }
           return withCampaign(
             s,
-            { ...s.campaign, factions },
+            { ...s.campaign, factions, planets, systems },
             { coalesceKey: `faction:${id}` },
           );
         }),
 
       deleteFaction: (id) =>
         set((s) => {
+          const remainingFactions = s.campaign.factions
+            .filter((f) => f.id !== id)
+            .map((f) => {
+              if (f.parentFactionId !== id) return f;
+              const { parentFactionId: _drop, ...rest } = f;
+              return rest;
+            });
           const planets = s.campaign.planets.map((p) => {
             const cities = (p.cities ?? []).map((c) => ({
               ...c,
@@ -5825,13 +5962,14 @@ export const useCampaignStore = create<CampaignState>()(
                 tileClaims,
                 structures,
                 independentDistricts,
+                remainingFactions,
               ),
               armies: (p.armies ?? []).filter((a) => a.factionId !== id),
             };
           });
           return withCampaign(s, {
             ...s.campaign,
-            factions: s.campaign.factions.filter((f) => f.id !== id),
+            factions: remainingFactions,
             fleets: (s.campaign.fleets ?? []).filter((f) => f.factionId !== id),
             characters: (s.campaign.characters ?? []).map((c) =>
               c.factionId === id ? { ...c, factionId: undefined } : c,
@@ -5839,7 +5977,7 @@ export const useCampaignStore = create<CampaignState>()(
             planets,
             systems: s.campaign.systems.map((sys) => ({
               ...sys,
-              controllingFactionId: deriveSystemOwnerId(planets, sys.id),
+              controllingFactionId: deriveSystemOwnerId(planets, sys.id, remainingFactions),
             })),
           });
         }),

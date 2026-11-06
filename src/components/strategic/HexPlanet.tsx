@@ -43,6 +43,7 @@ import {
 } from "../../lib/districtMeshes";
 import { supplyLinkSegments } from "../../lib/supplyNetwork";
 import { collectPlanetInteractionLinks } from "../../lib/districtBuffs";
+import { bannerColor, unitColor } from "../../lib/federation";
 import { perfMark, perfMeasure, perfTime } from "../../lib/perfDebug";
 
 const FREQUENCY = SETTLEMENT_HEX_FREQUENCY;
@@ -150,12 +151,13 @@ function displayRgb(r: number, g: number, b: number): [number, number, number] {
   ];
 }
 
-function factionColor(
+/** Territory paint (borders, cities, districts) — federation banner color. */
+function territoryColor(
   factions: Faction[],
   factionId: string | undefined,
   fallback: string,
 ): string {
-  return factions.find((f) => f.id === factionId)?.color ?? fallback;
+  return bannerColor(factions, factionId, fallback);
 }
 
 function buildTileHighlight(
@@ -322,7 +324,7 @@ function buildPlanetMeshes(
     // Subtle faction tint when a city/district owns this tile
     const ownerId = owners.get(ti);
     if (ownerId) {
-      const oc = hexToRgb(factionColor(factions, ownerId, fill));
+      const oc = hexToRgb(territoryColor(factions, ownerId, fill));
       cr = Math.round(cr * 0.72 + oc[0] * 0.28);
       cg = Math.round(cg * 0.72 + oc[1] * 0.28);
       cb = Math.round(cb * 0.72 + oc[2] * 0.28);
@@ -346,7 +348,7 @@ function buildPlanetMeshes(
     });
 
     const borderCol = ownerId
-      ? hexToRgb(factionColor(factions, ownerId, "#9eb6c8"))
+      ? hexToRgb(territoryColor(factions, ownerId, "#9eb6c8"))
       : ([110, 130, 150] as [number, number, number]);
 
     for (let i = 0; i < ring.length; i++) {
@@ -571,7 +573,7 @@ function buildSettlementMarkers(
     district: District,
     cityId: string | null,
   ) => {
-    const dCol = factionColor(
+    const dCol = territoryColor(
       factions,
       district.controllingFactionId,
       district.kind === "supply_station" ? "#5ec8a0" : "#6a8296",
@@ -648,8 +650,8 @@ function buildSettlementMarkers(
   };
 
   for (const city of cities) {
-    // City hub color is its own owner — not majority of districts.
-    const cityCol = factionColor(
+    // City hub uses the federation banner color (subfactions share the paint).
+    const cityCol = territoryColor(
       factions,
       city.controllingFactionId,
       "#6a8296",
@@ -923,7 +925,7 @@ function buildStructureMarkers(
 ): THREE.Group {
   const group = new THREE.Group();
   for (const structure of structures) {
-    const col = factionColor(
+    const col = territoryColor(
       factions,
       structure.controllingFactionId,
       "#6a8296",
@@ -1288,14 +1290,13 @@ function buildArmyMarkers(
   const group = new THREE.Group();
   const stackByTile = new Map<number, number>();
   for (const army of armies) {
-    const fac = factions.find((f) => f.id === army.factionId);
     const tileIndex = nearestTileIndex(planetSphere(), army.dir);
     const stackIndex = stackByTile.get(tileIndex) ?? 0;
     stackByTile.set(tileIndex, stackIndex + 1);
     group.add(
       createArmyWallMarker(
         army,
-        fac?.color ?? "#4fd2ff",
+        unitColor(factions, army.factionId, "#4fd2ff"),
         selectedArmyId === army.id,
         tileIndex,
         stackIndex,

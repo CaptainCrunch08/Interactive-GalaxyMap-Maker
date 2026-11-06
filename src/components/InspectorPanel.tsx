@@ -87,6 +87,7 @@ import {
   armyMovementRemaining,
   playMoveBlockReason,
 } from "../lib/play";
+import { claimCheckForArmy } from "../lib/cityClaim";
 import { armyStrength, VICTORY_KIND_LABELS } from "../lib/battleResolve";
 import { charactersOnArmy } from "../lib/characterLocation";
 import { factionSymbolIds } from "../lib/factionSymbols";
@@ -252,6 +253,7 @@ export function InspectorPanel() {
   const mergeArmies = useCampaignStore((s) => s.mergeArmies);
   const selectArmy = useCampaignStore((s) => s.selectArmy);
   const setPlacingArmy = useCampaignStore((s) => s.setPlacingArmy);
+  const claimWithArmy = useCampaignStore((s) => s.claimWithArmy);
   const selectSystem = useCampaignStore((s) => s.selectSystem);
   const enterSystem = useCampaignStore((s) => s.enterSystem);
   const enterPlanet = useCampaignStore((s) => s.enterPlanet);
@@ -2086,6 +2088,9 @@ export function InspectorPanel() {
                     const movesLeft = play.active
                       ? armyMovementRemaining(play, army.id)
                       : null;
+                    const claimCheck = play.active
+                      ? claimCheckForArmy(campaign, planet, army)
+                      : null;
                     const str = armyStrength(army);
                     const aboard = charactersOnArmy(
                       campaign.characters,
@@ -2256,6 +2261,34 @@ export function InspectorPanel() {
                         >
                           {placing ? "Click map to place…" : "Place on planet"}
                         </button>
+                        {claimCheck?.ok && (
+                          <button
+                            type="button"
+                            className="hud-btn w-full"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              selectArmy(army.id);
+                              claimWithArmy(planet.id, army.id);
+                            }}
+                          >
+                            Claim {claimCheck.target.label}
+                            {claimCheck.target.kind === "city"
+                              ? " (city)"
+                              : claimCheck.target.kind === "independent_district"
+                                ? " (district)"
+                                : " (structure)"}
+                          </button>
+                        )}
+                        {claimCheck &&
+                          !claimCheck.ok &&
+                          play.active &&
+                          !armyMoveBlock &&
+                          claimCheck.reason !==
+                            "Stand on a city, independent district, or structure to claim it" && (
+                            <p className="text-[10px] text-brass leading-snug">
+                              {claimCheck.reason}
+                            </p>
+                          )}
                         {movesLeft != null && !armyMoveBlock && (
                           <p className="text-[10px] text-muted leading-snug">
                             Movement {movesLeft}/{ARMY_MOVE_RANGE} hexes left

@@ -82,6 +82,21 @@ export function withFleetBattled(
   };
 }
 
+/** Exhaust a detachment's remaining hexes for the turn (claim / battle). */
+export function withArmyActionsExhausted(
+  play: CampaignPlay,
+  armyId: string,
+): Pick<CampaignPlay, "armyMovementUsed" | "movedArmyIds"> {
+  const moved = play.movedArmyIds ?? [];
+  return {
+    armyMovementUsed: {
+      ...(play.armyMovementUsed ?? {}),
+      [armyId]: ARMY_MOVE_RANGE,
+    },
+    movedArmyIds: moved.includes(armyId) ? moved : [...moved, armyId],
+  };
+}
+
 /** Why a unit move was blocked in Play mode (null = allowed). */
 export function playMoveBlockReason(
   campaign: Campaign,

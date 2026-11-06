@@ -70,6 +70,12 @@ export interface Faction {
   id: string;
   name: string;
   color: string;
+  /**
+   * Optional banner this faction serves under (e.g. Blood Angels → Imperium).
+   * Territory borders and city paints use the banner's color; fleets and
+   * detachments keep this faction's own color. Omit / clear for a root banner.
+   */
+  parentFactionId?: string;
   /** Named commander / sovereign shown in Galactic Overview. */
   leader?: string;
   /** Short tagline under the faction name on the dossier. */

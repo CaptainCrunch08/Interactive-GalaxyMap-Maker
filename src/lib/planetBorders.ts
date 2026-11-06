@@ -4,6 +4,7 @@ import type {
   Faction,
   PlanetStructure,
 } from "../types/campaign";
+import { bannerColor, bannerFactionId } from "./federation";
 import type { HexSphere, Vec3 } from "./hexSphere";
 import { tileOwnerMap } from "./settlements";
 
@@ -49,8 +50,13 @@ export function buildFactionBorders(
   const colors: number[] = [];
 
   const colorFor = (factionId: string | undefined) => {
-    const hex = factions.find((f) => f.id === factionId)?.color ?? "#8a9aab";
-    return parseColor(hex);
+    return parseColor(bannerColor(factions, factionId, "#8a9aab"));
+  };
+
+  const sameBanner = (a: string | undefined, b: string | undefined) => {
+    const ba = bannerFactionId(factions, a);
+    const bb = bannerFactionId(factions, b);
+    return ba != null && bb != null && ba === bb;
   };
 
   const pushEdge = (
@@ -90,7 +96,7 @@ export function buildFactionBorders(
       seen.add(key);
       const oi = owners.get(i);
       const oj = owners.get(j);
-      if (!oi || !oj || oi === oj) continue;
+      if (!oi || !oj || oi === oj || sameBanner(oi, oj)) continue;
 
       const tileA = sphere.tiles[i]!;
       const tileB = sphere.tiles[j]!;

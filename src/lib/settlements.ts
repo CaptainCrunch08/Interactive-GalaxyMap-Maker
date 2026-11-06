@@ -2,6 +2,7 @@ import type {
   City,
   District,
   DistrictKind,
+  Faction,
   Planet,
   PlanetClassification,
   PlanetStructure,
@@ -13,6 +14,7 @@ import {
   DISTRICT_KIND_LABELS,
   STRUCTURE_KIND_LABELS,
 } from "../types/campaign";
+import { bannerFactionId } from "./federation";
 import { buildHexSphere, hexTileDistance, type HexSphere } from "./hexSphere";
 import { normalizePlanetClassification } from "./planetClass";
 import { generateWarpGateSurface, ensureWarpGateSurface } from "./warpGateSurface";
@@ -1548,11 +1550,20 @@ export function planetOwnerFromCities(
   _tileClaims?: Record<string, string>,
   _structures: PlanetStructure[] = [],
   _independentDistricts: District[] = [],
+  /**
+   * When provided, city owners collapse to their federation banner so allied
+   * subfactions (Blood Angels + Black Templars) count as one controller.
+   */
+  factions?: Faction[],
 ): string | undefined {
   const counts = new Map<string, number>();
   for (const city of cities) {
-    const id = city.controllingFactionId;
-    if (!id) continue;
+    const raw = city.controllingFactionId;
+    if (!raw) continue;
+    const id =
+      factions && factions.length > 0
+        ? (bannerFactionId(factions, raw) ?? raw)
+        : raw;
     counts.set(id, (counts.get(id) ?? 0) + 1);
   }
   if (counts.size === 0) return undefined;

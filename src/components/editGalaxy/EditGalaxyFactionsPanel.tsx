@@ -4,6 +4,10 @@ import {
   factionSymbolIds,
   symbolOwnerMap,
 } from "../../lib/factionSymbols";
+import {
+  childFactions,
+  eligibleParentFactions,
+} from "../../lib/federation";
 import { sortedByName } from "../../lib/sortOptions";
 import { factionsSortedByName } from "../../lib/territory";
 import { useCampaignStore } from "../../store/useCampaignStore";
@@ -64,8 +68,9 @@ export function EditGalaxyFactionsPanel() {
             Factions
           </h3>
           <p className="text-xs text-muted mt-1">
-            Create factions, set colors, leaders, and symbols. Each symbol can
-            belong to only one faction; mark one as the primary emblem.
+            Create factions, set colors, leaders, and symbols. Nest subfactions
+            under a banner (e.g. Blood Angels under Imperium) — territory and
+            cities share the banner color; fleets and detachments keep their own.
           </p>
         </div>
         <button
@@ -89,6 +94,14 @@ export function EditGalaxyFactionsPanel() {
             const unowned = (campaign.symbols ?? []).filter(
               (s) => !owners.has(s.id),
             );
+            const parentChoices = eligibleParentFactions(
+              campaign.factions,
+              f.id,
+            );
+            const children = childFactions(campaign.factions, f.id);
+            const parent = campaign.factions.find(
+              (x) => x.id === f.parentFactionId,
+            );
             return (
               <li
                 key={f.id}
@@ -102,7 +115,11 @@ export function EditGalaxyFactionsPanel() {
                     onChange={(e) =>
                       updateFaction(f.id, { color: e.target.value })
                     }
-                    title="Faction color"
+                    title={
+                      parent
+                        ? "Unit color (fleets / detachments)"
+                        : "Banner & unit color"
+                    }
                   />
                   <input
                     className={inputClass + " flex-1"}
@@ -127,6 +144,42 @@ export function EditGalaxyFactionsPanel() {
                     Delete
                   </button>
                 </div>
+
+                <label className="block text-[10px] uppercase tracking-wider text-muted">
+                  Federation banner
+                  <select
+                    className={inputClass + " mt-1"}
+                    value={f.parentFactionId ?? ""}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      updateFaction(f.id, {
+                        parentFactionId: v || undefined,
+                      });
+                    }}
+                  >
+                    <option value="">None — this is a primary banner</option>
+                    {factionsSortedByName(parentChoices).map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                  {parent ? (
+                    <span className="mt-1 flex items-center gap-1.5 text-[10px] text-muted normal-case tracking-normal">
+                      Territory / cities paint as
+                      <span
+                        className="inline-block w-2.5 h-2.5 rounded-full border border-white/20"
+                        style={{ background: parent.color }}
+                      />
+                      {parent.name}
+                    </span>
+                  ) : children.length > 0 ? (
+                    <span className="mt-1 block text-[10px] text-muted normal-case tracking-normal">
+                      Banner for{" "}
+                      {children.map((c) => c.name).join(", ")}
+                    </span>
+                  ) : null}
+                </label>
 
                 <label className="block text-[10px] uppercase tracking-wider text-muted">
                   Leader

@@ -25,20 +25,42 @@ function devHeaders(): HeadersInit {
   return email ? { "X-Dev-Email": email } : {};
 }
 
+/** Abort hung /api calls (dead pages:dev used to freeze "Checking session…"). */
+const API_TIMEOUT_MS = 8_000;
+
 async function api<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
-  const res = await fetch(path, {
-    ...init,
-    credentials: "same-origin",
-    headers: {
-      Accept: "application/json",
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      ...devHeaders(),
-      ...(init?.headers ?? {}),
-    },
-  });
+  const timeout = AbortSignal.timeout(API_TIMEOUT_MS);
+  const signal =
+    init?.signal != null
+      ? AbortSignal.any([init.signal, timeout])
+      : timeout;
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      ...init,
+      signal,
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        ...(init?.body ? { "Content-Type": "application/json" } : {}),
+        ...devHeaders(),
+        ...(init?.headers ?? {}),
+      },
+    });
+  } catch (err) {
+    if (
+      err instanceof DOMException &&
+      (err.name === "TimeoutError" || err.name === "AbortError")
+    ) {
+      throw new TypeError(
+        "Cannot reach /api (timed out). Run `npm run pages:dev` on port 8788 alongside Vite.",
+      );
+    }
+    throw err;
+  }
   if (res.status === 204) return undefined as T;
   const text = await res.text();
   let data: unknown = null;

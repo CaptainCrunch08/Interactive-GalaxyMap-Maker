@@ -149,7 +149,7 @@ export function buildPlanetOverviewCard(
   campaign: Campaign,
   planet: Planet,
 ): PlanetOverviewCard {
-  const live = withLivePlanetOwner(planet);
+  const live = withLivePlanetOwner(planet, campaign.factions);
   const system = campaign.systems.find((s) => s.id === live.systemId);
   const systemName = system?.name ?? "Unknown System";
   const ownership = getPlanetOwnership(campaign, live);

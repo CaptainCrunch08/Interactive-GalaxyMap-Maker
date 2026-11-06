@@ -192,6 +192,17 @@ export function CloudBootstrap({ children }: { children: ReactNode }) {
             >
               Retry
             </button>
+            {import.meta.env.DEV && (
+              <button
+                type="button"
+                className="hud-btn w-full"
+                onClick={() =>
+                  setPhase({ kind: "ready", email: "local@dev (offline)" })
+                }
+              >
+                Continue with local maps only
+              </button>
+            )}
           </>
         )}
       </div>

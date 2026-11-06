@@ -17,6 +17,8 @@ const factionSchema = z.object({
   id: z.string(),
   name: z.string(),
   color: z.string(),
+  /** Banner this subfaction serves under; omit for a root federation. */
+  parentFactionId: z.string().optional(),
   leader: z.string().optional(),
   epithet: z.string().optional(),
   origin: z.string().optional(),

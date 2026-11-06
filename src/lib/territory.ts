@@ -4,6 +4,7 @@ import type {
   Planet,
   StarSystem,
 } from "../types/campaign";
+import { bannerFactionId } from "./federation";
 import { planetOwnerFromCities } from "./settlements";
 import { warpGateController } from "./warpGates";
 
@@ -25,19 +26,30 @@ export type PlanetOwnership =
  */
 export function resolvePlanetControllingFactionId(
   planet: Planet,
+  factions: Faction[] = [],
 ): string | undefined {
-  if (planet.type === "warp_gate") return warpGateController(planet);
+  if (planet.type === "warp_gate") {
+    const crown = warpGateController(planet);
+    return bannerFactionId(factions, crown) ?? crown;
+  }
   return planetOwnerFromCities(
     planet.cities ?? [],
     planet.tileClaims,
     planet.structures ?? [],
     planet.independentDistricts ?? [],
+    factions,
   );
 }
 
 /** Keep `planet.controllingFactionId` aligned with live city / gate rules. */
-export function withLivePlanetOwner(planet: Planet): Planet {
-  const controllingFactionId = resolvePlanetControllingFactionId(planet);
+export function withLivePlanetOwner(
+  planet: Planet,
+  factions: Faction[] = [],
+): Planet {
+  const controllingFactionId = resolvePlanetControllingFactionId(
+    planet,
+    factions,
+  );
   if (controllingFactionId === planet.controllingFactionId) return planet;
   return { ...planet, controllingFactionId };
 }
@@ -50,7 +62,10 @@ export function getPlanetOwnership(
   campaign: Campaign,
   planet: Planet,
 ): PlanetOwnership {
-  const ownerId = resolvePlanetControllingFactionId(planet);
+  const ownerId = resolvePlanetControllingFactionId(
+    planet,
+    campaign.factions,
+  );
   if (ownerId) {
     const f = campaign.factions.find((x) => x.id === ownerId);
     return f
@@ -58,17 +73,19 @@ export function getPlanetOwnership(
       : { status: "unowned", factions: [] };
   }
 
-  const ids = new Set<string>();
+  const bannerIds = new Set<string>();
   if (planet.type === "warp_gate") {
     for (const st of planet.structures ?? []) {
-      if (st.controllingFactionId) ids.add(st.controllingFactionId);
+      const b = bannerFactionId(campaign.factions, st.controllingFactionId);
+      if (b) bannerIds.add(b);
     }
   } else {
     for (const city of planet.cities ?? []) {
-      if (city.controllingFactionId) ids.add(city.controllingFactionId);
+      const b = bannerFactionId(campaign.factions, city.controllingFactionId);
+      if (b) bannerIds.add(b);
     }
   }
-  const factions = campaign.factions.filter((f) => ids.has(f.id));
+  const factions = campaign.factions.filter((f) => bannerIds.has(f.id));
   if (factions.length >= 2) {
     return {
       status: "contested",
@@ -130,13 +147,14 @@ export function getFactionsControllingSystem(
 function ownedPlanetFactionIds(
   planets: Planet[],
   systemId: string,
+  factions: Faction[] = [],
 ): string[] {
   const ids: string[] = [];
   for (const p of planets) {
     if (p.systemId !== systemId) continue;
     // Belts never hold cities / system claim weight.
     if (p.type === "asteroid_belt") continue;
-    const owner = resolvePlanetControllingFactionId(p);
+    const owner = resolvePlanetControllingFactionId(p, factions);
     if (owner) ids.push(owner);
   }
   return ids;
@@ -157,7 +175,9 @@ export function getSystemOwnership(
   const planets = campaign.planets.filter((p) => p.systemId === systemId);
   if (planets.length === 0) return { status: "unowned", factions: [] };
 
-  const unique = [...new Set(ownedPlanetFactionIds(planets, systemId))];
+  const unique = [
+    ...new Set(ownedPlanetFactionIds(planets, systemId, campaign.factions)),
+  ];
   const factions = campaign.factions.filter((f) => unique.includes(f.id));
 
   if (unique.length === 1) {
@@ -206,8 +226,9 @@ export function factionsSortedByName(factions: Faction[]): Faction[] {
 export function deriveSystemOwnerId(
   planets: Planet[],
   systemId: string,
+  factions: Faction[] = [],
 ): string | undefined {
-  const ids = new Set(ownedPlanetFactionIds(planets, systemId));
+  const ids = new Set(ownedPlanetFactionIds(planets, systemId, factions));
   if (ids.size === 1) return [...ids][0];
   return undefined;
 }
@@ -217,8 +238,9 @@ export function syncSystemOwnerInSystems(
   systems: StarSystem[],
   planets: Planet[],
   systemId: string,
+  factions: Faction[] = [],
 ): StarSystem[] {
-  const owner = deriveSystemOwnerId(planets, systemId);
+  const owner = deriveSystemOwnerId(planets, systemId, factions);
   return systems.map((sys) =>
     sys.id === systemId
       ? { ...sys, controllingFactionId: owner }
@@ -230,10 +252,11 @@ export function syncSystemOwnerInSystems(
 export function syncAllSystemOwners(
   systems: StarSystem[],
   planets: Planet[],
+  factions: Faction[] = [],
 ): StarSystem[] {
   return systems.map((sys) => ({
     ...sys,
-    controllingFactionId: deriveSystemOwnerId(planets, sys.id),
+    controllingFactionId: deriveSystemOwnerId(planets, sys.id, factions),
   }));
 }
 
@@ -264,11 +287,12 @@ export function territoryLayoutSignature(campaign: Campaign): string {
     sig += `${s.id}:${s.x | 0},${s.y | 0};`;
   }
   for (const f of campaign.factions) {
-    sig += `${f.id}:${f.color};`;
+    sig += `${f.id}:${f.color}:${f.parentFactionId ?? ""};`;
   }
   for (const p of campaign.planets) {
     if (p.type === "asteroid_belt") continue;
-    const owner = resolvePlanetControllingFactionId(p) ?? "";
+    const owner =
+      resolvePlanetControllingFactionId(p, campaign.factions) ?? "";
     sig += `${p.id}:${owner};`;
   }
   const lanes = campaign.hyperlanes;
