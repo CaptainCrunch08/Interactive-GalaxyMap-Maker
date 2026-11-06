@@ -179,7 +179,6 @@ import {
 } from "../lib/perfDebug";
 import { createDebouncedPersistStorage } from "../lib/debouncedStorage";
 
-const campaignPersistStorage = createDebouncedPersistStorage();
 import {
   applyTurnIncome,
   BASTION_BP_COST,
@@ -202,7 +201,6 @@ import {
   creditBuildingPoints,
   DETACHMENT_BP_COST,
   DOMED_HABITAT_BP_COST,
-  factionHasSpacePort,
   getBuildingPoints,
   MANUFACTORUM_BP_COST,
   ORE_MINE_BP_COST,
@@ -1072,6 +1070,15 @@ type PersistedMaps = {
   activeMapId?: string;
   campaign?: Campaign;
 };
+
+/** Slice written to localStorage (UI/nav state is session-only). */
+type PersistedSlice = {
+  maps: Record<string, Campaign>;
+  mapOrder: string[];
+  activeMapId: string;
+};
+
+const campaignPersistStorage = createDebouncedPersistStorage<PersistedSlice>();
 
 export const useCampaignStore = create<CampaignState>()(
   devtools(
@@ -6410,22 +6417,24 @@ export const useCampaignStore = create<CampaignState>()(
     {
       name: "galaxy-campaign-map",
       version: 3,
-      migrate: (persistedState, version) => {
+      migrate: (persistedState, version): PersistedSlice => {
         const p = persistedState as PersistedMaps;
-        if (!p) return persistedState;
+        const asSlice = (value: unknown): PersistedSlice =>
+          value as PersistedSlice;
+        if (!p) return asSlice(persistedState);
 
         if (version < 2) {
           if (p.maps) {
-            return {
+            return asSlice({
               ...p,
               maps: migrateMapsToExpandedGalaxy(p.maps),
-            };
+            });
           }
           if (p.campaign) {
-            return {
+            return asSlice({
               ...p,
               campaign: recenterSystemsFromLegacy(p.campaign),
-            };
+            });
           }
         }
         if (version < 3) {
@@ -6434,26 +6443,26 @@ export const useCampaignStore = create<CampaignState>()(
             for (const [id, campaign] of Object.entries(p.maps)) {
               maps[id] = ensureCampaignSettlements(campaign);
             }
-            return { ...p, maps };
+            return asSlice({ ...p, maps });
           }
           if (p.campaign) {
-            return {
+            return asSlice({
               ...p,
               campaign: ensureCampaignSettlements(p.campaign),
-            };
+            });
           }
         }
-        return persistedState;
+        return asSlice(persistedState);
       },
       // Object-level debounce: stringify only on flush (not every set()).
       storage: campaignPersistStorage,
-      partialize: (state) => {
+      partialize: (state): PersistedSlice => {
         // Ensure active campaign is written even if coalesced edits deferred maps sync.
         const maps = {
           ...state.maps,
           [state.activeMapId]: state.campaign,
         };
-        const sliced = {
+        const sliced: PersistedSlice = {
           maps,
           mapOrder: state.mapOrder,
           activeMapId: state.activeMapId,

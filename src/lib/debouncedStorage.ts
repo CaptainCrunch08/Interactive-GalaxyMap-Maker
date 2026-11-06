@@ -6,20 +6,19 @@
  * keeps the object pending and only serializes on flush.
  */
 
+import type { PersistStorage, StorageValue } from "zustand/middleware";
+
 const DEFAULT_DELAY_MS = 450;
 
-type Pending = { name: string; value: unknown };
+type Pending<S> = { name: string; value: StorageValue<S> };
 
-export function createDebouncedPersistStorage(delayMs = DEFAULT_DELAY_MS): {
-  getItem: (name: string) => unknown | null;
-  setItem: (name: string, value: unknown) => void;
-  removeItem: (name: string) => void;
-  flush: () => void;
-} {
+export function createDebouncedPersistStorage<S>(
+  delayMs = DEFAULT_DELAY_MS,
+): PersistStorage<S> & { flush: () => void } {
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let pending: Pending | null = null;
+  let pending: Pending<S> | null = null;
 
-  const writeNow = (name: string, value: unknown) => {
+  const writeNow = (name: string, value: StorageValue<S>) => {
     try {
       localStorage.setItem(name, JSON.stringify(value));
     } catch (err) {
@@ -50,7 +49,7 @@ export function createDebouncedPersistStorage(delayMs = DEFAULT_DELAY_MS): {
       try {
         if (pending && pending.name === name) return pending.value;
         const raw = localStorage.getItem(name);
-        return raw == null ? null : JSON.parse(raw);
+        return raw == null ? null : (JSON.parse(raw) as StorageValue<S>);
       } catch {
         return null;
       }
