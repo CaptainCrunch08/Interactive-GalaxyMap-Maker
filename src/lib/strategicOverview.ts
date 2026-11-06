@@ -5,7 +5,7 @@ import {
   incomeForFaction,
 } from "./buildingPoints";
 import { armyStrength, totalBattleCasualties } from "./battleResolve";
-import { CHASSIS_RANK } from "./shipMeshes";
+import { fleetPower, shipRole } from "./fleetPower";
 import { getSystemOwnership } from "./territory";
 
 export type PowerAxisId =
@@ -104,15 +104,13 @@ function countKeywordHits(texts: string[], patterns: RegExp[]): number {
 }
 
 /**
- * Military: fleet hull tonnage (chassis ranks) + surface detachments + forts/ports.
+ * Military: fleet power + surface detachments + forts/ports.
  */
 function rawMilitary(campaign: Campaign, factionId: string): number {
   let score = 0;
   for (const fleet of campaign.fleets ?? []) {
     if (fleet.factionId !== factionId) continue;
-    for (const ship of fleet.ships ?? []) {
-      score += CHASSIS_RANK[ship.chassis] ?? 15;
-    }
+    score += fleetPower(fleet) * 0.35;
   }
   for (const planet of campaign.planets) {
     for (const army of planet.armies ?? []) {
@@ -236,7 +234,7 @@ function rawGrowth(campaign: Campaign, factionId: string): number {
   for (const fleet of campaign.fleets ?? []) {
     if (fleet.factionId !== factionId) continue;
     for (const ship of fleet.ships ?? []) {
-      if (ship.chassis === "transport") score += 8;
+      if (shipRole(ship) === "transport") score += 8;
     }
   }
   return score;
@@ -313,10 +311,7 @@ function rawMomentum(campaign: Campaign, factionId: string): number {
   for (const fleet of campaign.fleets ?? []) {
     if (fleet.factionId !== factionId) continue;
     const sys = fleet.location.systemId;
-    const shipWeight = (fleet.ships ?? []).reduce(
-      (n, s) => n + (CHASSIS_RANK[s.chassis] ?? 15),
-      0,
-    );
+    const shipWeight = fleetPower(fleet);
     if (!homeSystemIds.has(sys)) score += 18 + shipWeight * 0.08;
     else score += 4 + shipWeight * 0.03;
   }

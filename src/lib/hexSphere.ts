@@ -251,6 +251,20 @@ export function hexTileDistance(
   start: number,
   goal: number,
 ): number {
+  return hexTileDistanceAvoiding(sphere, start, goal);
+}
+
+/**
+ * Graph distance (BFS) that refuses to enter `blocked` tiles
+ * (endpoints are always allowed so a goal on a blocked tile can still match).
+ */
+export function hexTileDistanceAvoiding(
+  sphere: HexSphere,
+  start: number,
+  goal: number,
+  blocked?: ReadonlySet<number>,
+  maxDist = Number.POSITIVE_INFINITY,
+): number {
   if (start === goal) return 0;
   const q = [start];
   let head = 0;
@@ -258,10 +272,14 @@ export function hexTileDistance(
   while (head < q.length) {
     const cur = q[head++]!;
     const d = dist.get(cur)!;
+    if (d >= maxDist) continue;
     for (const n of sphere.neighbors[cur] ?? []) {
       if (dist.has(n)) continue;
-      if (n === goal) return d + 1;
-      dist.set(n, d + 1);
+      if (blocked?.has(n) && n !== goal) continue;
+      const next = d + 1;
+      if (n === goal) return next;
+      if (next > maxDist) continue;
+      dist.set(n, next);
       q.push(n);
     }
   }

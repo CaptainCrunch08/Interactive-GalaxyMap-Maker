@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { ShipChassis } from "../types/campaign";
+import type { ShipRole } from "../types/campaign";
 import { getShipGeometry } from "./shipMeshes";
 
 const ICON_SIZE = 128;
@@ -71,19 +71,19 @@ function parseColor(hex: string): THREE.Color {
 
 /** Render a low-poly ship icon (data URL). Cached per chassis + faction color. */
 export function getShipIconDataUrl(
-  chassis: ShipChassis,
+  role: ShipRole,
   color: string,
 ): string {
   if (typeof document === "undefined") return "";
 
-  const key = `${chassis}|${color.toLowerCase()}`;
+  const key = `${role}|${color.toLowerCase()}`;
   const hit = cache.get(key);
   if (hit) return hit;
 
   ensurePipeline();
   if (!renderer || !scene || !camera || !mesh || !material) return "";
 
-  const geo = getShipGeometry(chassis);
+  const geo = getShipGeometry(role);
   mesh.geometry = geo;
 
   // Fit ship into view

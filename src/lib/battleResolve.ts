@@ -199,6 +199,17 @@ export const VICTORY_KIND_LABELS: Record<VictoryKind, string> = {
   epochal: "Epochal Victory",
 };
 
+/** Dropdown order: table results, then special chronicle tiers. */
+export const VICTORY_KIND_OPTIONS: readonly VictoryKind[] = [
+  "decisive",
+  "major",
+  "minor",
+  "pyrrhic",
+  "draw",
+  "heroic",
+  "epochal",
+];
+
 export function formatBattleDate(d = new Date()): string {
   return d.toISOString().slice(0, 10);
 }

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Fleet, ShipChassis } from "../../types/campaign";
+import type { Fleet, ShipRole } from "../../types/campaign";
 import { shipCount } from "../../lib/fleets";
+import { fleetPower } from "../../lib/fleetPower";
 import {
   CHASSIS_VISUAL_SCALE,
   formationChassisList,
@@ -52,8 +53,8 @@ function formationOffset(
   };
 }
 
-function shipPx(chassis: ShipChassis): number {
-  return Math.round(SHIP_BASE * (CHASSIS_VISUAL_SCALE[chassis] ?? 1));
+function shipPx(role: ShipRole): number {
+  return Math.round(SHIP_BASE * (CHASSIS_VISUAL_SCALE[role] ?? 1));
 }
 
 function moveDurationMs(fromX: number, fromY: number, toX: number, toY: number) {
@@ -77,6 +78,7 @@ export function FleetMarker({
   onSelect,
 }: FleetMarkerProps) {
   const n = shipCount(fleet);
+  const power = fleetPower(fleet);
   const showLabel = selected;
   const isShip = appearance === "ship";
 
@@ -195,8 +197,8 @@ export function FleetMarker({
           e.stopPropagation();
           onSelect();
         }}
-        title={`${fleet.name} · ${n} ships`}
-        aria-label={`${fleet.name}, ${n} ships`}
+        title={`${fleet.name} · ${power} FP · ${n} ships`}
+        aria-label={`${fleet.name}, ${power} fleet power, ${n} ships`}
       >
         {isShip ? (
           <>
@@ -223,18 +225,6 @@ export function FleetMarker({
                 );
               })}
             </span>
-            {n > MAX_FORMATION && (
-              <span
-                className="absolute -top-1 -right-1 min-w-[14px] h-[12px] px-0.5 rounded-sm flex items-center justify-center text-[7px] font-bold leading-none z-10"
-                style={{
-                  background: "rgba(6,12,20,0.85)",
-                  color: "#e8f0f8",
-                  border: `1px solid ${color}`,
-                }}
-              >
-                +{n - MAX_FORMATION}
-              </span>
-            )}
             {symbolUrl ? (
               <span
                 className="absolute -bottom-1 -left-1 w-[16px] h-[16px] rounded-sm flex items-center justify-center z-10 overflow-hidden"
@@ -273,7 +263,7 @@ export function FleetMarker({
                     : undefined,
               }}
             >
-              {n}
+              {power}
             </span>
           </>
         ) : (
@@ -298,33 +288,31 @@ export function FleetMarker({
                 className="absolute inset-[3px] flex items-center justify-center overflow-hidden"
                 style={{ transform: "rotate(-45deg)" }}
               >
-                {symbolUrl ? (
-                  <img
-                    src={symbolUrl}
-                    alt=""
-                    draggable={false}
-                    className="w-[18px] h-[18px] object-contain"
-                  />
-                ) : (
-                  <span
-                    className="text-[10px] font-bold leading-none"
-                    style={{ color: "#0a1018" }}
-                  >
-                    {n}
-                  </span>
-                )}
+                <span
+                  className="font-bold leading-none"
+                  style={{
+                    color: "#0a1018",
+                    fontSize: power >= 1000 ? "8px" : "10px",
+                  }}
+                >
+                  {power}
+                </span>
               </span>
             </span>
             {symbolUrl && (
               <span
-                className="absolute -bottom-1 -right-1 min-w-[12px] h-[12px] px-0.5 rounded-sm flex items-center justify-center text-[7px] font-bold leading-none z-10"
+                className="absolute -bottom-1 -right-1 w-[14px] h-[14px] rounded-sm flex items-center justify-center z-10 overflow-hidden"
                 style={{
                   background: "rgba(6,12,20,0.9)",
-                  color: "#e8f0f8",
                   border: `1px solid ${color}`,
                 }}
               >
-                {n}
+                <img
+                  src={symbolUrl}
+                  alt=""
+                  draggable={false}
+                  className="w-[10px] h-[10px] object-contain"
+                />
               </span>
             )}
           </>

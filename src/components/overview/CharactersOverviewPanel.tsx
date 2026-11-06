@@ -3,6 +3,7 @@ import { useCampaignStore } from "../../store/useCampaignStore";
 import type {
   Campaign,
   CampaignCharacter,
+  CharacterFeat,
   CharacterStatus,
   Faction,
 } from "../../types/campaign";
@@ -15,6 +16,7 @@ import {
   resolvePlacementDraft,
 } from "../../lib/characterLocation";
 import { locationLabel } from "../../lib/fleets";
+import { AutoGrowTextarea } from "../AutoGrowTextarea";
 
 const STATUS_STYLE: Record<
   CharacterStatus,
@@ -46,6 +48,12 @@ const STATUS_STYLE: Record<
 type StatusFilter = "all" | CharacterStatus;
 type SortMode = "name_asc" | "name_desc" | "faction_asc";
 
+type DraftFeat = {
+  id: string;
+  title: string;
+  detail: string;
+};
+
 type Draft = {
   name: string;
   nickname: string;
@@ -61,6 +69,7 @@ type Draft = {
   locationNote: string;
   /** Description and background lore. */
   background: string;
+  feats: DraftFeat[];
 };
 
 const emptyDraft = (): Draft => ({
@@ -76,7 +85,27 @@ const emptyDraft = (): Draft => ({
   armyId: "",
   locationNote: "",
   background: "",
+  feats: [],
 });
+
+function draftFeatsFromCharacter(feats: CharacterFeat[] | undefined): DraftFeat[] {
+  return (feats ?? []).map((f) => ({
+    id: f.id,
+    title: f.title,
+    detail: f.detail ?? "",
+  }));
+}
+
+function featsFromDraft(feats: DraftFeat[]): CharacterFeat[] | undefined {
+  const cleaned = feats
+    .map((f) => ({
+      id: f.id,
+      title: f.title.trim(),
+      detail: f.detail.trim() || undefined,
+    }))
+    .filter((f) => f.title.length > 0);
+  return cleaned.length > 0 ? cleaned : undefined;
+}
 
 function draftFromCharacter(
   campaign: Campaign,
@@ -100,6 +129,7 @@ function draftFromCharacter(
     ...place,
     locationNote: note,
     background: c.background ?? c.notes ?? "",
+    feats: draftFeatsFromCharacter(c.feats),
   };
 }
 
@@ -227,6 +257,24 @@ function CharacterCard({
           <p className="mt-2 text-[11px] text-fog/85 leading-snug line-clamp-3 whitespace-pre-wrap">
             {(character.background ?? character.notes)!.trim()}
           </p>
+        ) : null}
+        {(character.feats?.length ?? 0) > 0 ? (
+          <ul className="mt-2 space-y-1">
+            {character.feats!.slice(0, 3).map((feat) => (
+              <li
+                key={feat.id}
+                className="text-[10px] text-brass/90 truncate"
+                title={feat.detail?.trim() || feat.title}
+              >
+                ✦ {feat.title.trim() || "Untitled feat"}
+              </li>
+            ))}
+            {character.feats!.length > 3 ? (
+              <li className="text-[10px] text-muted">
+                +{character.feats!.length - 3} more
+              </li>
+            ) : null}
+          </ul>
         ) : null}
       </button>
     </article>
@@ -634,13 +682,92 @@ function CharacterForm({
 
       <label className="block text-[10px] uppercase tracking-wider text-muted">
         Description &amp; background
-        <textarea
-          className="hud-input mt-1 w-full min-h-[7rem] resize-y"
+        <AutoGrowTextarea
+          className="hud-input mt-1 w-full min-h-[7rem]"
           value={draft.background}
-          placeholder="Appearance, history, deeds, and other lore…"
+          placeholder="Appearance, history, and other lore…"
           onChange={(e) => onChange({ background: e.target.value })}
         />
       </label>
+
+      <section className="space-y-2 border-t border-panel-border/70 pt-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h5 className="font-display text-[11px] text-brass uppercase tracking-[0.14em]">
+            Feats
+          </h5>
+          <button
+            type="button"
+            className="hud-btn text-xs"
+            onClick={() =>
+              onChange({
+                feats: [
+                  ...draft.feats,
+                  { id: crypto.randomUUID(), title: "", detail: "" },
+                ],
+              })
+            }
+          >
+            + Add feat
+          </button>
+        </div>
+        <p className="text-[11px] text-muted">
+          Named deeds and achievements for this character&apos;s sheet.
+        </p>
+        {draft.feats.length === 0 ? (
+          <p className="text-[11px] text-muted/80">No feats recorded yet.</p>
+        ) : (
+          <ul className="space-y-3">
+            {draft.feats.map((feat, index) => (
+              <li
+                key={feat.id}
+                className="rounded border border-panel-border/70 bg-panel/30 p-3 space-y-2"
+              >
+                <div className="flex items-start gap-2">
+                  <label className="block min-w-0 flex-1 text-[10px] uppercase tracking-wider text-muted">
+                    Feat
+                    <input
+                      className="hud-input mt-1 w-full"
+                      value={feat.title}
+                      placeholder="e.g. Held the Cadia Gate"
+                      onChange={(e) => {
+                        const feats = draft.feats.map((f, i) =>
+                          i === index ? { ...f, title: e.target.value } : f,
+                        );
+                        onChange({ feats });
+                      }}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="mt-5 shrink-0 text-[10px] uppercase tracking-wider text-crimson/80 hover:text-crimson"
+                    onClick={() =>
+                      onChange({
+                        feats: draft.feats.filter((_, i) => i !== index),
+                      })
+                    }
+                  >
+                    Remove
+                  </button>
+                </div>
+                <label className="block text-[10px] uppercase tracking-wider text-muted">
+                  Detail (optional)
+                  <textarea
+                    className="hud-input mt-1 w-full min-h-[3.5rem] resize-y text-sm"
+                    value={feat.detail}
+                    placeholder="When, where, and how…"
+                    onChange={(e) => {
+                      const feats = draft.feats.map((f, i) =>
+                        i === index ? { ...f, detail: e.target.value } : f,
+                      );
+                      onChange({ feats });
+                    }}
+                  />
+                </label>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       <div className="flex flex-wrap gap-2 pt-1">
         <button type="button" className="hud-btn" onClick={onSave}>
@@ -671,6 +798,7 @@ function payloadFromDraft(campaign: Campaign, draft: Draft) {
     placement,
     location,
     background: draft.background.trim() || undefined,
+    feats: featsFromDraft(draft.feats),
     notes: undefined,
   };
 }
@@ -716,6 +844,7 @@ export function CharactersOverviewPanel() {
         c.affiliation ?? "",
         c.background ?? "",
         c.notes ?? "",
+        ...(c.feats ?? []).flatMap((f) => [f.title, f.detail ?? ""]),
         loc,
         c.location,
         faction,

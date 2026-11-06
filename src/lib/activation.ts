@@ -5,6 +5,7 @@ import {
   MAX_DISTRICT_CITY_RANGE,
 } from "./settlements";
 import {
+  buildSupplyAdjacency,
   collectSupplyNetworks,
   collectSupplyStations,
   tilesAreHexAdjacent,
@@ -210,43 +211,12 @@ export function canPlaceUnderhiveAtTile(
 }
 
 /**
- * Build supply adjacency using all stations/networks (existence),
+ * Supply adjacency using all stations/networks (existence),
  * so city AP-sharing topology does not depend on activation.
+ * Opposing-faction stations/networks block trains (same rules as logistics).
  */
 function buildRawSupplyAdj(planet: Planet): Map<string, Set<string>> {
-  const stations = collectSupplyStations(planet);
-  const networks = collectSupplyNetworks(planet);
-  const adj = new Map<string, Set<string>>();
-  const touch = (a: string, b: string) => {
-    if (!adj.has(a)) adj.set(a, new Set());
-    if (!adj.has(b)) adj.set(b, new Set());
-    adj.get(a)!.add(b);
-    adj.get(b)!.add(a);
-  };
-  const within = (a: number, b: number) => {
-    if (a === b) return false;
-    return dist(a, b) <= 3; // SUPPLY_LINK_RANGE
-  };
-  for (let i = 0; i < stations.length; i++) {
-    for (let j = i + 1; j < stations.length; j++) {
-      const a = stations[i]!;
-      const b = stations[j]!;
-      if (within(a.tileIndex, b.tileIndex)) touch(`s:${a.id}`, `s:${b.id}`);
-    }
-  }
-  for (const s of stations) {
-    for (const n of networks) {
-      if (within(s.tileIndex, n.tileIndex)) touch(`s:${s.id}`, `n:${n.id}`);
-    }
-  }
-  for (let i = 0; i < networks.length; i++) {
-    for (let j = i + 1; j < networks.length; j++) {
-      const a = networks[i]!;
-      const b = networks[j]!;
-      if (within(a.tileIndex, b.tileIndex)) touch(`n:${a.id}`, `n:${b.id}`);
-    }
-  }
-  return adj;
+  return buildSupplyAdjacency(planet);
 }
 
 function bfsKeys(adj: Map<string, Set<string>>, start: string): Set<string> {

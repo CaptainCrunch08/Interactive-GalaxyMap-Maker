@@ -1,24 +1,36 @@
-import type { Fleet, ShipChassis } from "../types/campaign";
-import { SHIP_CHASSIS_LABELS } from "../types/campaign";
+import type { Fleet, ShipRole } from "../types/campaign";
+import { SHIP_ROLE_LABELS, SHIP_ROLE_ORDER } from "../types/campaign";
 import {
   chassisSummary,
+  fleetSystemId,
   locationLabel,
-  shipCount,
+  shipsSortedByRole,
 } from "../lib/fleets";
 import {
-  canDeployFromTransport,
   canLoadTransportCargo,
   canUnloadTransportCargo,
-  DETACHMENT_BP_COST,
   fleetCargoBp,
   fleetCargoCapacity,
   shipCargoBp,
   TRANSPORT_BP_CAPACITY,
 } from "../lib/buildingPoints";
-import { playMoveBlockReason } from "../lib/play";
+import {
+  fleetPower,
+  fleetPowerCap,
+  hasFlagship,
+  isStandaloneEscortFleet,
+  isStandaloneTransportFleet,
+  shipRole,
+} from "../lib/fleetPower";
+import {
+  fleetMovementRemaining,
+  FLEET_MOVE_POINTS,
+  playMoveBlockReason,
+} from "../lib/play";
+import { fleetsShareOrbit } from "../lib/fleets";
 import { factionSymbolIds } from "../lib/factionSymbols";
 import { charactersOnFleet } from "../lib/characterLocation";
-import { keysSortedByLabel, sortedByName } from "../lib/sortOptions";
+import { sortedByName } from "../lib/sortOptions";
 import { factionsSortedByName, getFactionById } from "../lib/territory";
 import { normalizeCampaignPlay } from "../types/campaign";
 import { useCampaignStore } from "../store/useCampaignStore";
@@ -60,7 +72,16 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
   const travelThroughWarpGate = useCampaignStore((s) => s.travelThroughWarpGate);
   const loadTransportCargo = useCampaignStore((s) => s.loadTransportCargo);
   const unloadTransportCargo = useCampaignStore((s) => s.unloadTransportCargo);
-  const deployFromTransport = useCampaignStore((s) => s.deployFromTransport);
+  const transferFleetPower = useCampaignStore((s) => s.transferFleetPower);
+  const embarkArmyOnEscort = useCampaignStore((s) => s.embarkArmyOnEscort);
+  const disembarkArmyFromEscort = useCampaignStore(
+    (s) => s.disembarkArmyFromEscort,
+  );
+  const seizeTransportFleet = useCampaignStore((s) => s.seizeTransportFleet);
+  const destroyEscortFleet = useCampaignStore((s) => s.destroyEscortFleet);
+  const openSpaceBattleResolve = useCampaignStore(
+    (s) => s.openSpaceBattleResolve,
+  );
   const enterSystem = useCampaignStore((s) => s.enterSystem);
   const goBack = useCampaignStore((s) => s.goBack);
   const toggleInspector = useCampaignStore((s) => s.toggleInspector);
@@ -74,6 +95,7 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
     "fleet",
   );
   const play = normalizeCampaignPlay(campaign.play);
+  const mpLeft = fleetMovementRemaining(play, fleet.id);
   const fleetLocation = fleet.location;
   const orbitPlanet =
     fleetLocation.kind === "orbit"
@@ -81,6 +103,8 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
       : undefined;
   const cargo = fleetCargoBp(fleet);
   const cargoCap = fleetCargoCapacity(fleet);
+  const power = fleetPower(fleet);
+  const powerCap = fleetPowerCap(fleet);
   const loadCheck =
     orbitPlanet && play.active
       ? canLoadTransportCargo(campaign, fleet, orbitPlanet)
@@ -89,10 +113,18 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
     orbitPlanet && play.active
       ? canUnloadTransportCargo(campaign, fleet, orbitPlanet)
       : null;
-  const deployCheck =
-    orbitPlanet && play.active
-      ? canDeployFromTransport(campaign, fleet, orbitPlanet)
-      : null;
+  const sameSystemFriends = (campaign.fleets ?? []).filter(
+    (f) =>
+      f.id !== fleet.id &&
+      f.factionId === fleet.factionId &&
+      fleetSystemId(f) === fleetSystemId(fleet),
+  );
+  const opposingSameOrbit = (campaign.fleets ?? []).filter(
+    (f) =>
+      f.id !== fleet.id &&
+      f.factionId !== fleet.factionId &&
+      fleetsShareOrbit(f, fleet),
+  );
 
   return (
     <>
@@ -125,7 +157,7 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
           {fleet.name}
         </p>
         <p className="text-[10px] text-muted">
-          {locationLabel(campaign, fleet.location)} · {shipCount(fleet)} ships
+          {locationLabel(campaign, fleet.location)} · {power}/{powerCap} FP
         </p>
         {(() => {
           const aboard = charactersOnFleet(campaign.characters, fleet.id);
@@ -231,6 +263,19 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
           <p className="text-[10px] text-muted mb-2">
             {chassisSummary(fleet) || "No ships"}
           </p>
+          <p className="text-xs text-star mb-2">
+            Fleet power{" "}
+            <span className="text-cyan font-medium">
+              {power}/{powerCap}
+            </span>
+            {hasFlagship(fleet) ? " · Flagship" : ""}
+            {play.active ? (
+              <span className="text-muted">
+                {" "}
+                · {mpLeft}/{FLEET_MOVE_POINTS} MP
+              </span>
+            ) : null}
+          </p>
           <button
             type="button"
             className={`hud-btn w-full ${moving ? "hud-btn-active" : ""}`}
@@ -287,16 +332,16 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
                 style={{ fontSize: "0.7rem", width: "auto" }}
                 value=""
                 onChange={(e) => {
-                  const chassis = e.target.value as ShipChassis;
-                  if (!chassis) return;
-                  addShip(fleet.id, chassis);
+                  const role = e.target.value as ShipRole;
+                  if (!role) return;
+                  addShip(fleet.id, role);
                   e.target.value = "";
                 }}
               >
-                <option value="">+ Add chassis…</option>
-                {keysSortedByLabel(SHIP_CHASSIS_LABELS).map((c) => (
+                <option value="">+ Add ship…</option>
+                {SHIP_ROLE_ORDER.map((c) => (
                   <option key={c} value={c}>
-                    {SHIP_CHASSIS_LABELS[c]}
+                    {SHIP_ROLE_LABELS[c]}
                   </option>
                 ))}
               </select>
@@ -311,56 +356,167 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
             <p className="text-xs text-muted">No ships in this fleet.</p>
           ) : (
             <ul className="space-y-2">
-              {fleet.ships.map((ship) => (
-                <li
-                  key={ship.id}
-                  className="rounded border border-panel-border/80 p-2 space-y-1.5"
-                >
-                  <div className="flex items-center gap-2">
-                    <input
-                      className={inputClass + " flex-1"}
-                      style={{ fontSize: "0.75rem" }}
-                      value={ship.name}
+              {shipsSortedByRole(fleet.ships).map((ship) => {
+                const role = shipRole(ship);
+                const surfaceArmies =
+                  orbitPlanet?.armies?.filter(
+                    (a) => a.factionId === fleet.factionId,
+                  ) ?? [];
+                return (
+                  <li
+                    key={ship.id}
+                    className="rounded border border-panel-border/80 p-2 space-y-1.5"
+                  >
+                    <div className="flex items-center gap-2">
+                      <input
+                        className={inputClass + " flex-1"}
+                        style={{ fontSize: "0.75rem" }}
+                        value={ship.name}
+                        onChange={(e) =>
+                          updateShip(fleet.id, ship.id, {
+                            name: e.target.value,
+                          })
+                        }
+                      />
+                      <button
+                        type="button"
+                        className="text-xs text-crimson shrink-0"
+                        onClick={() => deleteShip(fleet.id, ship.id)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <select
+                      className={inputClass}
+                      style={{ fontSize: "0.7rem" }}
+                      value={role}
                       onChange={(e) =>
                         updateShip(fleet.id, ship.id, {
-                          name: e.target.value,
+                          role: e.target.value as ShipRole,
                         })
                       }
-                    />
-                    <button
-                      type="button"
-                      className="text-xs text-crimson shrink-0"
-                      onClick={() => deleteShip(fleet.id, ship.id)}
                     >
-                      ×
-                    </button>
-                  </div>
-                  <select
-                    className={inputClass}
-                    style={{ fontSize: "0.7rem" }}
-                    value={ship.chassis}
-                    onChange={(e) =>
-                      updateShip(fleet.id, ship.id, {
-                        chassis: e.target.value as ShipChassis,
-                      })
-                    }
-                  >
-                    {keysSortedByLabel(SHIP_CHASSIS_LABELS).map((c) => (
-                      <option key={c} value={c}>
-                        {SHIP_CHASSIS_LABELS[c]}
-                      </option>
-                    ))}
-                  </select>
-                  {ship.chassis === "transport" && (
-                    <p className="text-[10px] text-muted">
-                      Hold {shipCargoBp(ship)}/{TRANSPORT_BP_CAPACITY} BP
-                    </p>
-                  )}
-                </li>
-              ))}
+                      {SHIP_ROLE_ORDER.map((c) => (
+                        <option key={c} value={c}>
+                          {SHIP_ROLE_LABELS[c]}
+                        </option>
+                      ))}
+                    </select>
+                    {role === "transport" && (
+                      <p className="text-[10px] text-muted">
+                        Hold {shipCargoBp(ship)}/{TRANSPORT_BP_CAPACITY} BP
+                      </p>
+                    )}
+                    {role === "escort" && (
+                      <div className="space-y-1">
+                        {(ship.embarkedArmies ?? []).map((a) => (
+                          <button
+                            key={a.id}
+                            type="button"
+                            className="hud-btn w-full text-[10px]"
+                            onClick={() =>
+                              disembarkArmyFromEscort(fleet.id, ship.id, a.id)
+                            }
+                          >
+                            Disembark {a.name}
+                          </button>
+                        ))}
+                        {(ship.embarkedArmies?.length ?? 0) === 0 &&
+                          surfaceArmies.length > 0 && (
+                            <select
+                              className={inputClass}
+                              style={{ fontSize: "0.7rem" }}
+                              value=""
+                              onChange={(e) => {
+                                const armyId = e.target.value;
+                                if (!armyId) return;
+                                embarkArmyOnEscort(fleet.id, ship.id, armyId);
+                                e.target.value = "";
+                              }}
+                            >
+                              <option value="">Embark detachment…</option>
+                              {surfaceArmies.map((a) => (
+                                <option key={a.id} value={a.id}>
+                                  {a.name}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </section>
+
+        {sameSystemFriends.length > 0 && (
+          <section className="space-y-2">
+            <h3 className="text-xs uppercase text-muted tracking-wide">
+              Transfer
+            </h3>
+            <p className="text-[10px] text-muted leading-snug">
+              Move 100 FP (one fleet detachment) to another friendly fleet in
+              this system.
+            </p>
+            <select
+              className={inputClass}
+              value=""
+              onChange={(e) => {
+                const toId = e.target.value;
+                if (!toId) return;
+                transferFleetPower(fleet.id, toId);
+                e.target.value = "";
+              }}
+            >
+              <option value="">Transfer 100 FP to…</option>
+              {sameSystemFriends.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name} ({fleetPower(f)}/{fleetPowerCap(f)})
+                </option>
+              ))}
+            </select>
+          </section>
+        )}
+
+        {opposingSameOrbit.length > 0 && (
+          <section className="space-y-2">
+            <h3 className="text-xs uppercase text-muted tracking-wide">
+              Engagements
+            </h3>
+            {opposingSameOrbit.map((enemy) => (
+              <div key={enemy.id} className="space-y-1">
+                <p className="text-[11px] text-star truncate">{enemy.name}</p>
+                <button
+                  type="button"
+                  className="hud-btn w-full text-[11px]"
+                  onClick={() => openSpaceBattleResolve(fleet.id, enemy.id)}
+                >
+                  Resolve space battle
+                </button>
+                {isStandaloneTransportFleet(enemy) && (
+                  <button
+                    type="button"
+                    className="hud-btn w-full text-[11px]"
+                    onClick={() => seizeTransportFleet(fleet.id, enemy.id)}
+                  >
+                    Seize transport (1 MP)
+                  </button>
+                )}
+                {isStandaloneEscortFleet(enemy) && (
+                  <button
+                    type="button"
+                    className="hud-btn w-full text-[11px]"
+                    onClick={() => destroyEscortFleet(fleet.id, enemy.id)}
+                  >
+                    Destroy escort (1 MP)
+                  </button>
+                )}
+              </div>
+            ))}
+          </section>
+        )}
 
         {cargoCap > 0 && (
           <section className="space-y-2">
@@ -372,9 +528,8 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
               <span className="text-muted"> / {cargoCap} BP in holds</span>
             </p>
             <p className="text-[10px] text-muted leading-snug">
-              Shuttle BP between owned worlds: load from producers, unload onto
-              worlds with your cities (for ships/detachments), or spend cargo to
-              deploy ({DETACHMENT_BP_COST} BP) without a War Camp.
+              Load or unload BP while in orbit (1 MP each in Play). Escorts
+              embark or disembark detachments while in orbit.
             </p>
             {play.active && orbitPlanet ? (
               <div className="flex flex-col gap-1.5">
@@ -412,29 +567,11 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
                     {unloadCheck.message}
                   </p>
                 )}
-                <button
-                  type="button"
-                  className="hud-btn w-full"
-                  disabled={!deployCheck?.ok}
-                  title={
-                    deployCheck && !deployCheck.ok
-                      ? deployCheck.message
-                      : undefined
-                  }
-                  onClick={() => deployFromTransport(fleet.id)}
-                >
-                  Deploy detachment ({DETACHMENT_BP_COST} cargo BP)
-                </button>
-                {!deployCheck?.ok && deployCheck && (
-                  <p className="text-[10px] text-brass leading-snug">
-                    {deployCheck.message}
-                  </p>
-                )}
               </div>
             ) : cargoCap > 0 ? (
               <p className="text-[10px] text-brass leading-snug">
                 {play.active
-                  ? "Move into orbit to load, unload, or deploy cargo BP"
+                  ? "Move into orbit to load or unload cargo BP"
                   : "Start Play to move BP with transport holds"}
               </p>
             ) : null}
@@ -543,7 +680,7 @@ export function FleetListSection({
                   <FactionSwatch color={fac?.color} />
                   <span className="truncate flex-1">{fleet.name}</span>
                   <span className="text-[10px] text-muted shrink-0">
-                    {shipCount(fleet)}
+                    {fleetPower(fleet)} FP
                   </span>
                 </button>
                 <p className="text-[10px] text-muted pl-6 truncate">

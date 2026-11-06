@@ -103,6 +103,15 @@ export type CharacterPlacement =
   | { kind: "fleet"; fleetId: string }
   | { kind: "army"; planetId: string; armyId: string };
 
+/** Notable deed / achievement on a character sheet. */
+export interface CharacterFeat {
+  id: string;
+  /** Short name (e.g. "Held the Gate"). */
+  title: string;
+  /** Optional detail — when, where, how. */
+  detail?: string;
+}
+
 /**
  * Named character tracked in Galactic Overview → Characters.
  */
@@ -127,6 +136,8 @@ export interface CampaignCharacter {
   location: string;
   /** Description and background lore for the character sheet. */
   background?: string;
+  /** Named feats / deeds recorded on the sheet. */
+  feats?: CharacterFeat[];
   /** @deprecated Prefer `background`. Kept for older saves. */
   notes?: string;
 }
@@ -241,6 +252,11 @@ export interface CampaignBattleLogEntry extends BattleEntry {
   theater: BattleTheater;
   planetId?: string;
   systemId?: string;
+  /**
+   * Optional chronicle title (e.g. "Fall of Cadia").
+   * When set, shown as the primary label; location sits beneath.
+   */
+  name?: string;
   /** Human-readable place (planet · system, or system for space). */
   locationLabel: string;
   attackerFleetId?: string;
@@ -259,26 +275,31 @@ export const BATTLE_THEATER_LABELS: Record<BattleTheater, string> = {
   space: "Space",
 };
 
-/** Imperial Navy–style ship hull class. */
-export type ShipChassis =
-  | "escort"
-  | "transport"
-  | "light_cruiser"
-  | "cruiser"
-  | "battlecruiser"
-  | "grand_cruiser"
-  | "battleship";
+/**
+ * Ship role in the fleet-power model.
+ * Combat: flagship (200 FP) / line (100 FP). Utility: escort / transport (0 FP).
+ * Legacy chassis ids are migrated on load.
+ */
+export type ShipRole = "flagship" | "line" | "escort" | "transport";
+
+/** @deprecated Use ShipRole — kept as an alias for older imports. */
+export type ShipChassis = ShipRole;
 
 export interface Ship {
   id: string;
   name: string;
-  chassis: ShipChassis;
+  /** Combat or utility role (legacy saves may still use `chassis`). */
+  role: ShipRole;
   notes: string;
   /**
    * Building points stored in the hold (transports only).
-   * Capped at TRANSPORT_BP_CAPACITY; ignored for other chassis.
+   * Capped at TRANSPORT_BP_CAPACITY; ignored for other roles.
    */
   cargoBp?: number;
+  /** Detachments embarked on this escort (max one by default). */
+  embarkedArmyIds?: string[];
+  /** Full army records while embarked (removed from planet surface). */
+  embarkedArmies?: Army[];
 }
 
 /** At the system star, or parked in a planet's orbit. */
@@ -489,8 +510,18 @@ export interface CampaignPlay {
   /** Faction ids in turn order. */
   turnOrder: string[];
   activeFactionId: string | null;
-  /** Fleets that already moved this turn. */
-  movedFleetIds: string[];
+  /**
+   * Move points each fleet has already spent this turn
+   * (cap = FLEET_MOVE_POINTS).
+   */
+  fleetMovementUsed?: Record<string, number>;
+  /** Fleets that already fought a space battle this turn. */
+  fleetBattledIds?: string[];
+  /**
+   * @deprecated Migrated into fleetMovementUsed (full spend).
+   * Kept optional for older saves.
+   */
+  movedFleetIds?: string[];
   /**
    * Armies that have spent any movement or fought this turn
    * (cannot join battles as supports).
@@ -709,25 +740,25 @@ export const STRUCTURE_KIND_ORDER: StructureKind[] = [
   "trench_line",
 ];
 
-export const SHIP_CHASSIS_LABELS: Record<ShipChassis, string> = {
-  escort: "Escorts",
-  transport: "Transports",
-  light_cruiser: "Light Cruisers",
-  cruiser: "Cruisers",
-  battlecruiser: "Battlecruisers",
-  grand_cruiser: "Grand Cruisers",
-  battleship: "Battleships",
+export const SHIP_ROLE_LABELS: Record<ShipRole, string> = {
+  flagship: "Flagship",
+  line: "Fleet Detachment",
+  escort: "Escort",
+  transport: "Transport",
 };
 
-export const SHIP_CHASSIS_ORDER: ShipChassis[] = [
+/** @deprecated Use SHIP_ROLE_LABELS. */
+export const SHIP_CHASSIS_LABELS = SHIP_ROLE_LABELS;
+
+export const SHIP_ROLE_ORDER: ShipRole[] = [
+  "flagship",
+  "line",
   "escort",
   "transport",
-  "light_cruiser",
-  "cruiser",
-  "battlecruiser",
-  "grand_cruiser",
-  "battleship",
 ];
+
+/** @deprecated Use SHIP_ROLE_ORDER. */
+export const SHIP_CHASSIS_ORDER = SHIP_ROLE_ORDER;
 
 export const GALAXY_SIZE = 16000;
 export const GALAXY_WIDTH = GALAXY_SIZE;
@@ -766,7 +797,8 @@ export function inactivePlayState(): CampaignPlay {
     round: 1,
     turnOrder: [],
     activeFactionId: null,
-    movedFleetIds: [],
+    fleetMovementUsed: {},
+    fleetBattledIds: [],
     movedArmyIds: [],
     armyMovementUsed: {},
     armyCampEnteredRound: {},
@@ -797,6 +829,22 @@ export function normalizeCampaignPlay(
       }
     }
   }
+  const fleetMovementUsed: Record<string, number> = {};
+  if (play.fleetMovementUsed && typeof play.fleetMovementUsed === "object") {
+    for (const [id, n] of Object.entries(play.fleetMovementUsed)) {
+      if (typeof n === "number" && Number.isFinite(n) && n > 0) {
+        fleetMovementUsed[id] = Math.max(0, Math.floor(n));
+      }
+    }
+  }
+  // Legacy binary "already moved" → full spend for that fleet.
+  if (Array.isArray(play.movedFleetIds)) {
+    for (const id of play.movedFleetIds) {
+      if (typeof id === "string" && id && fleetMovementUsed[id] == null) {
+        fleetMovementUsed[id] = 3;
+      }
+    }
+  }
   return {
     active: Boolean(play.active),
     round:
@@ -808,8 +856,9 @@ export function normalizeCampaignPlay(
       : [],
     activeFactionId:
       typeof play.activeFactionId === "string" ? play.activeFactionId : null,
-    movedFleetIds: Array.isArray(play.movedFleetIds)
-      ? play.movedFleetIds.filter((id): id is string => typeof id === "string")
+    fleetMovementUsed,
+    fleetBattledIds: Array.isArray(play.fleetBattledIds)
+      ? play.fleetBattledIds.filter((id): id is string => typeof id === "string")
       : [],
     movedArmyIds: Array.isArray(play.movedArmyIds)
       ? play.movedArmyIds.filter((id): id is string => typeof id === "string")

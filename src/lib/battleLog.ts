@@ -68,6 +68,7 @@ export function ensureCampaignBattleLog(
           theater: prior.theater ?? "planetary",
           planetId: prior.planetId ?? planet.id,
           systemId: prior.systemId ?? planet.systemId,
+          name: prior.name,
           locationLabel:
             prior.locationLabel?.trim() ||
             (systemName

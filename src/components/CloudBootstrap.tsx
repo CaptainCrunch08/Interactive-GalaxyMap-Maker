@@ -60,17 +60,25 @@ export function CloudBootstrap({ children }: { children: ReactNode }) {
         if (cancelled) return;
 
         setPhase({ kind: "loading", message: "Loading cloud maps…" });
-        const { empty } = await hydrateMapsFromCloud();
-        if (cancelled) return;
-
-        if (empty && hasPersistedLocalMaps()) {
-          setPhase({ kind: "migrate", email: me.email });
-          return;
-        }
-
-        if (empty) {
-          await uploadLocalMapsToCloud();
+        try {
+          const { empty } = await hydrateMapsFromCloud();
           if (cancelled) return;
+
+          if (empty && hasPersistedLocalMaps()) {
+            setPhase({ kind: "migrate", email: me.email });
+            return;
+          }
+
+          if (empty) {
+            await uploadLocalMapsToCloud();
+            if (cancelled) return;
+          }
+        } catch (syncErr) {
+          // Auth failures still block; map-store outages fall back to local saves.
+          if (syncErr instanceof CloudApiError && syncErr.status === 401) {
+            throw syncErr;
+          }
+          console.warn("[cloud] continuing with local maps", syncErr);
         }
 
         setPhase({ kind: "ready", email: me.email });

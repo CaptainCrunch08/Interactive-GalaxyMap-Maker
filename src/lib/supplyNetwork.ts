@@ -1,7 +1,7 @@
 import type { City, District, Planet, PlanetStructure } from "../types/campaign";
 import {
   buildHexSphere,
-  hexTileDistance,
+  hexTileDistanceAvoiding,
 } from "./hexSphere";
 import { SETTLEMENT_HEX_FREQUENCY } from "./settlements";
 
@@ -24,6 +24,11 @@ export type SupplyStationRef = {
 export type SupplyNetworkRef = {
   id: string;
   name: string;
+  tileIndex: number;
+  controllingFactionId?: string;
+};
+
+type SupplyNodeRef = {
   tileIndex: number;
   controllingFactionId?: string;
 };
@@ -88,13 +93,64 @@ function supplySphere() {
   return (cachedSphere ??= buildHexSphere(SETTLEMENT_HEX_FREQUENCY));
 }
 
-function withinSupplyRange(a: number, b: number): boolean {
-  if (a === b) return false;
-  return hexTileDistance(supplySphere(), a, b) <= SUPPLY_LINK_RANGE;
+/** Two owned nodes of different factions never share a supply train. */
+export function supplyOwnersCompatible(
+  a?: string,
+  b?: string,
+): boolean {
+  return !a || !b || a === b;
+}
+
+/**
+ * Hexes whose supply station/network is owned by a faction other than
+ * `factionId` — trains for that faction cannot transit those tiles.
+ */
+export function opposingSupplyBlockTiles(
+  nodes: readonly SupplyNodeRef[],
+  factionId: string | undefined,
+): Set<number> {
+  const blocked = new Set<number>();
+  if (!factionId) return blocked;
+  for (const node of nodes) {
+    const owner = node.controllingFactionId;
+    if (owner && owner !== factionId) blocked.add(node.tileIndex);
+  }
+  return blocked;
+}
+
+function allSupplyNodes(planet: SupplyPlanet): SupplyNodeRef[] {
+  return [...collectSupplyStations(planet), ...collectSupplyNetworks(planet)];
+}
+
+/**
+ * True when a clear hex path of length ≤ SUPPLY_LINK_RANGE exists and the
+ * endpoints are not opposing factions. Opposing stations/networks block transit.
+ */
+export function canSupplyLink(
+  planet: SupplyPlanet,
+  a: SupplyNodeRef,
+  b: SupplyNodeRef,
+  allNodes?: readonly SupplyNodeRef[],
+): boolean {
+  if (a.tileIndex === b.tileIndex) return false;
+  if (!supplyOwnersCompatible(a.controllingFactionId, b.controllingFactionId)) {
+    return false;
+  }
+  const faction = a.controllingFactionId ?? b.controllingFactionId;
+  const nodes = allNodes ?? allSupplyNodes(planet);
+  const blocked = opposingSupplyBlockTiles(nodes, faction);
+  const dist = hexTileDistanceAvoiding(
+    supplySphere(),
+    a.tileIndex,
+    b.tileIndex,
+    blocked,
+    SUPPLY_LINK_RANGE,
+  );
+  return dist <= SUPPLY_LINK_RANGE;
 }
 
 /** Build full adjacency: station↔station, station↔network, network↔network. */
-function buildSupplyAdjacency(
+export function buildSupplyAdjacency(
   planet: SupplyPlanet,
   opts?: { onlyActivatedStationIds?: ReadonlySet<string> },
 ): Map<string, Set<string>> {
@@ -105,6 +161,7 @@ function buildSupplyAdjacency(
     );
   }
   const networks = collectSupplyNetworks(planet);
+  const allNodes: SupplyNodeRef[] = [...stations, ...networks];
   const adj = new Map<string, Set<string>>();
   const touch = (a: string, b: string) => {
     if (!adj.has(a)) adj.set(a, new Set());
@@ -117,7 +174,7 @@ function buildSupplyAdjacency(
     for (let j = i + 1; j < stations.length; j++) {
       const a = stations[i]!;
       const b = stations[j]!;
-      if (withinSupplyRange(a.tileIndex, b.tileIndex)) {
+      if (canSupplyLink(planet, a, b, allNodes)) {
         touch(`s:${a.id}`, `s:${b.id}`);
       }
     }
@@ -125,7 +182,7 @@ function buildSupplyAdjacency(
 
   for (const station of stations) {
     for (const network of networks) {
-      if (withinSupplyRange(station.tileIndex, network.tileIndex)) {
+      if (canSupplyLink(planet, station, network, allNodes)) {
         touch(`s:${station.id}`, `n:${network.id}`);
       }
     }
@@ -135,7 +192,7 @@ function buildSupplyAdjacency(
     for (let j = i + 1; j < networks.length; j++) {
       const a = networks[i]!;
       const b = networks[j]!;
-      if (withinSupplyRange(a.tileIndex, b.tileIndex)) {
+      if (canSupplyLink(planet, a, b, allNodes)) {
         touch(`n:${a.id}`, `n:${b.id}`);
       }
     }
@@ -165,8 +222,9 @@ export function stationsLinkedToNetwork(
 ): SupplyStationRef[] {
   const network = collectSupplyNetworks(planet).find((n) => n.id === networkId);
   if (!network) return [];
+  const allNodes = allSupplyNodes(planet);
   return collectSupplyStations(planet).filter((s) =>
-    withinSupplyRange(s.tileIndex, network.tileIndex),
+    canSupplyLink(planet, s, network, allNodes),
   );
 }
 
@@ -178,10 +236,11 @@ export function networksLinkedToNetwork(
   const networks = collectSupplyNetworks(planet);
   const self = networks.find((n) => n.id === networkId);
   if (!self) return [];
+  const allNodes = allSupplyNodes(planet);
   return networks.filter(
     (n) =>
       n.id !== networkId &&
-      withinSupplyRange(self.tileIndex, n.tileIndex),
+      canSupplyLink(planet, self, n, allNodes),
   );
 }
 
@@ -192,8 +251,9 @@ export function networksLinkedToStation(
 ): SupplyNetworkRef[] {
   const station = collectSupplyStations(planet).find((s) => s.id === stationId);
   if (!station) return [];
+  const allNodes = allSupplyNodes(planet);
   return collectSupplyNetworks(planet).filter((n) =>
-    withinSupplyRange(station.tileIndex, n.tileIndex),
+    canSupplyLink(planet, station, n, allNodes),
   );
 }
 
@@ -205,10 +265,11 @@ export function stationsLinkedToStation(
   const stations = collectSupplyStations(planet);
   const self = stations.find((s) => s.id === stationId);
   if (!self) return [];
+  const allNodes = allSupplyNodes(planet);
   return stations.filter(
     (s) =>
       s.id !== stationId &&
-      withinSupplyRange(self.tileIndex, s.tileIndex),
+      canSupplyLink(planet, self, s, allNodes),
   );
 }
 
@@ -313,13 +374,14 @@ export function tilesShareSupplyComponent(
 export function supplyLinkSegments(planet: SupplyPlanet): SupplyLinkSegment[] {
   const stations = collectSupplyStations(planet);
   const networks = collectSupplyNetworks(planet);
+  const allNodes: SupplyNodeRef[] = [...stations, ...networks];
   const out: SupplyLinkSegment[] = [];
 
   for (let i = 0; i < stations.length; i++) {
     for (let j = i + 1; j < stations.length; j++) {
       const a = stations[i]!;
       const b = stations[j]!;
-      if (withinSupplyRange(a.tileIndex, b.tileIndex)) {
+      if (canSupplyLink(planet, a, b, allNodes)) {
         out.push({ kind: "station_station", from: a, to: b });
       }
     }
@@ -327,7 +389,7 @@ export function supplyLinkSegments(planet: SupplyPlanet): SupplyLinkSegment[] {
 
   for (const station of stations) {
     for (const network of networks) {
-      if (withinSupplyRange(station.tileIndex, network.tileIndex)) {
+      if (canSupplyLink(planet, station, network, allNodes)) {
         out.push({ kind: "station_network", from: station, to: network });
       }
     }
@@ -337,7 +399,7 @@ export function supplyLinkSegments(planet: SupplyPlanet): SupplyLinkSegment[] {
     for (let j = i + 1; j < networks.length; j++) {
       const a = networks[i]!;
       const b = networks[j]!;
-      if (withinSupplyRange(a.tileIndex, b.tileIndex)) {
+      if (canSupplyLink(planet, a, b, allNodes)) {
         out.push({ kind: "network_network", from: a, to: b });
       }
     }

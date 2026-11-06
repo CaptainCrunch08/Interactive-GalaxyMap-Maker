@@ -3,18 +3,60 @@ import { useCampaignStore } from "../../store/useCampaignStore";
 import {
   BATTLE_THEATER_LABELS,
   type BattleTheater,
+  type Campaign,
   type CampaignBattleLogEntry,
+  type VictoryKind,
 } from "../../types/campaign";
 import {
   isImportantBattle,
   VICTORY_KIND_LABELS,
+  VICTORY_KIND_OPTIONS,
 } from "../../lib/battleResolve";
 import {
   compareBattleLogNewestFirst,
   ensureCampaignBattleLog,
 } from "../../lib/battleLog";
-import { getFactionById } from "../../lib/territory";
+import { sortedByName } from "../../lib/sortOptions";
+import { factionsSortedByName, getFactionById } from "../../lib/territory";
+import { useDebouncedDraft } from "../../lib/useDebouncedDraft";
 import { AutoGrowTextarea } from "../AutoGrowTextarea";
+
+type BattleEditDraft = {
+  name: string;
+  date: string;
+  planetId: string;
+  systemId: string;
+  locationLabel: string;
+  outcome: string;
+  summary: string;
+  victoryKind: VictoryKind | "";
+  attackerFactionId: string;
+  defenderFactionId: string;
+  victorFactionId: string;
+};
+
+function battleDraftFromEntry(entry: CampaignBattleLogEntry): BattleEditDraft {
+  return {
+    name: entry.name ?? "",
+    date: entry.date ?? "",
+    planetId: entry.planetId ?? "",
+    systemId: entry.systemId ?? "",
+    locationLabel: entry.locationLabel ?? "",
+    outcome: entry.outcome ?? "",
+    summary: entry.summary ?? "",
+    victoryKind: entry.victoryKind ?? "",
+    attackerFactionId: entry.attackerFactionId ?? "",
+    defenderFactionId: entry.defenderFactionId ?? "",
+    victorFactionId: entry.victorFactionId ?? "",
+  };
+}
+
+/** Primary label: custom name, else location. */
+function battleTitle(entry: Pick<CampaignBattleLogEntry, "name" | "locationLabel">): string {
+  const named = entry.name?.trim();
+  if (named) return named;
+  return entry.locationLabel?.trim() || "Untitled battle";
+}
 
 type BattleListFilter = "important" | "all" | BattleTheater;
 
@@ -34,9 +76,61 @@ function factionColor(
   return getFactionById(campaign, id)?.color ?? "#6a8296";
 }
 
+function formatOutcomeLine(
+  campaign: { factions: { id: string; name: string; color: string }[] },
+  args: {
+    victoryKind: VictoryKind | "";
+    victorFactionId: string;
+    attackerVp?: number;
+    defenderVp?: number;
+  },
+): string {
+  const { victoryKind, victorFactionId, attackerVp, defenderVp } = args;
+  if (!victoryKind) return "";
+  const hasVp = attackerVp != null && defenderVp != null;
+  if (victoryKind === "draw") {
+    return hasVp
+      ? `Draw — ${attackerVp}–${defenderVp} VP. Forces withdraw bloodied.`
+      : "Draw — Forces withdraw bloodied.";
+  }
+  const victorLabel = factionName(campaign, victorFactionId);
+  if (hasVp) {
+    return `${VICTORY_KIND_LABELS[victoryKind]} for ${victorLabel} (${Math.max(attackerVp!, defenderVp!)}–${Math.min(attackerVp!, defenderVp!)} VP).`;
+  }
+  return `${VICTORY_KIND_LABELS[victoryKind]} for ${victorLabel}.`;
+}
+
+function locationLabelForPlanet(
+  campaign: Pick<Campaign, "planets" | "systems">,
+  planetId: string,
+): { planetId: string; systemId: string; locationLabel: string } | null {
+  const planet = campaign.planets.find((p) => p.id === planetId);
+  if (!planet) return null;
+  const systemName = campaign.systems.find((s) => s.id === planet.systemId)?.name;
+  return {
+    planetId: planet.id,
+    systemId: planet.systemId,
+    locationLabel: systemName ? `${planet.name} · ${systemName}` : planet.name,
+  };
+}
+
+function locationLabelForSystem(
+  campaign: Pick<Campaign, "systems">,
+  systemId: string,
+): { planetId: string; systemId: string; locationLabel: string } | null {
+  const system = campaign.systems.find((s) => s.id === systemId);
+  if (!system) return null;
+  return {
+    planetId: "",
+    systemId: system.id,
+    locationLabel: system.name,
+  };
+}
+
 function matchesQuery(entry: CampaignBattleLogEntry, q: string): boolean {
   if (!q) return true;
   const hay = [
+    entry.name ?? "",
     entry.date,
     entry.summary,
     entry.outcome,
@@ -71,6 +165,366 @@ function CrossedSwords({ color }: { color: string }) {
         />
       </svg>
     </span>
+  );
+}
+
+function BattleDetailEditor({
+  entry,
+  campaign,
+  onDelete,
+  onCommit,
+}: {
+  entry: CampaignBattleLogEntry;
+  campaign: Campaign;
+  onDelete: () => void;
+  onCommit: (patch: Partial<CampaignBattleLogEntry>) => void;
+}) {
+  const factions = useMemo(
+    () => factionsSortedByName(campaign.factions),
+    [campaign.factions],
+  );
+  const planets = useMemo(() => {
+    const systemsById = new Map(campaign.systems.map((s) => [s.id, s] as const));
+    return sortedByName(campaign.planets).map((p) => ({
+      id: p.id,
+      label: systemsById.get(p.systemId)?.name
+        ? `${p.name} · ${systemsById.get(p.systemId)!.name}`
+        : p.name,
+    }));
+  }, [campaign.planets, campaign.systems]);
+  const systems = useMemo(
+    () => sortedByName(campaign.systems),
+    [campaign.systems],
+  );
+
+  const { draft, patchDraft, flush, onBlurFlush } = useDebouncedDraft(
+    entry.id,
+    battleDraftFromEntry(entry),
+    (next) => {
+      onCommit({
+        name: next.name.trim() || undefined,
+        date: next.date,
+        planetId: next.planetId || undefined,
+        systemId: next.systemId || undefined,
+        locationLabel:
+          next.locationLabel.trim() ||
+          (entry.theater === "space" ? "Deep void" : "Unknown world"),
+        outcome: next.outcome,
+        summary: next.summary,
+        victoryKind: next.victoryKind || undefined,
+        attackerFactionId: next.attackerFactionId || undefined,
+        defenderFactionId: next.defenderFactionId || undefined,
+        victorFactionId:
+          next.victoryKind === "draw"
+            ? null
+            : next.victorFactionId || null,
+      });
+    },
+  );
+
+  const applySelect = (partial: Partial<BattleEditDraft>) => {
+    patchDraft(partial);
+    // Selects should persist immediately (patchDraft only schedules).
+    queueMicrotask(() => flush());
+  };
+
+  const setVictoryKind = (kind: VictoryKind | "") => {
+    const victorFactionId =
+      kind === "draw"
+        ? ""
+        : draft.victorFactionId ||
+          draft.attackerFactionId ||
+          draft.defenderFactionId ||
+          "";
+    const outcome = formatOutcomeLine(campaign, {
+      victoryKind: kind,
+      victorFactionId,
+      attackerVp: entry.attackerVp,
+      defenderVp: entry.defenderVp,
+    });
+    applySelect({
+      victoryKind: kind,
+      victorFactionId,
+      ...(outcome ? { outcome } : {}),
+    });
+  };
+
+  const setVictor = (victorFactionId: string) => {
+    const outcome = formatOutcomeLine(campaign, {
+      victoryKind: draft.victoryKind,
+      victorFactionId,
+      attackerVp: entry.attackerVp,
+      defenderVp: entry.defenderVp,
+    });
+    applySelect({
+      victorFactionId,
+      ...(outcome ? { outcome } : {}),
+    });
+  };
+
+  const setAttacker = (attackerFactionId: string) => {
+    const victorFactionId =
+      draft.victoryKind === "draw"
+        ? ""
+        : draft.victorFactionId === draft.attackerFactionId
+          ? attackerFactionId
+          : draft.victorFactionId;
+    const outcome = formatOutcomeLine(campaign, {
+      victoryKind: draft.victoryKind,
+      victorFactionId,
+      attackerVp: entry.attackerVp,
+      defenderVp: entry.defenderVp,
+    });
+    applySelect({
+      attackerFactionId,
+      victorFactionId,
+      ...(outcome ? { outcome } : {}),
+    });
+  };
+
+  const setDefender = (defenderFactionId: string) => {
+    const victorFactionId =
+      draft.victoryKind === "draw"
+        ? ""
+        : draft.victorFactionId === draft.defenderFactionId
+          ? defenderFactionId
+          : draft.victorFactionId;
+    const outcome = formatOutcomeLine(campaign, {
+      victoryKind: draft.victoryKind,
+      victorFactionId,
+      attackerVp: entry.attackerVp,
+      defenderVp: entry.defenderVp,
+    });
+    applySelect({
+      defenderFactionId,
+      victorFactionId,
+      ...(outcome ? { outcome } : {}),
+    });
+  };
+
+  const setLocationPlanet = (planetId: string) => {
+    if (!planetId) {
+      applySelect({
+        planetId: "",
+        systemId: "",
+        locationLabel: "Unknown world",
+      });
+      return;
+    }
+    const loc = locationLabelForPlanet(campaign, planetId);
+    if (!loc) return;
+    applySelect(loc);
+  };
+
+  const setLocationSystem = (systemId: string) => {
+    if (!systemId) {
+      applySelect({
+        planetId: "",
+        systemId: "",
+        locationLabel: "Deep void",
+      });
+      return;
+    }
+    const loc = locationLabelForSystem(campaign, systemId);
+    if (!loc) return;
+    applySelect(loc);
+  };
+
+  const title = battleTitle({
+    name: draft.name,
+    locationLabel: draft.locationLabel || entry.locationLabel,
+  });
+  const locationLine =
+    draft.locationLabel.trim() || entry.locationLabel.trim() || "";
+
+  return (
+    <div className="max-w-2xl space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-[10px] uppercase tracking-[0.16em] text-brass">
+            {BATTLE_THEATER_LABELS[entry.theater]} battle
+          </p>
+          <h4 className="font-display text-xl text-star mt-1">{title}</h4>
+          {draft.name.trim() && locationLine ? (
+            <p className="text-[11px] text-muted mt-0.5">{locationLine}</p>
+          ) : null}
+        </div>
+        <button type="button" className="text-xs text-crimson" onClick={onDelete}>
+          Delete entry
+        </button>
+      </div>
+
+      <label className="block text-[10px] uppercase tracking-wider text-muted">
+        Name
+        <input
+          className="hud-input mt-1 w-full text-sm"
+          value={draft.name}
+          placeholder="e.g. Fall of Cadia"
+          onChange={(e) => patchDraft({ name: e.target.value })}
+          onBlur={onBlurFlush}
+        />
+      </label>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label className="block text-[10px] uppercase tracking-wider text-muted">
+          Date
+          <input
+            className="hud-input mt-1 w-full text-sm"
+            value={draft.date}
+            placeholder="e.g. 999.M41"
+            onChange={(e) => patchDraft({ date: e.target.value })}
+            onBlur={onBlurFlush}
+          />
+        </label>
+        {entry.theater === "planetary" ? (
+          <label className="block text-[10px] uppercase tracking-wider text-muted">
+            Location
+            <select
+              className="hud-input mt-1 w-full text-sm"
+              value={draft.planetId}
+              onChange={(e) => setLocationPlanet(e.target.value)}
+            >
+              <option value="">— Unknown world —</option>
+              {planets.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <label className="block text-[10px] uppercase tracking-wider text-muted">
+            Location
+            <select
+              className="hud-input mt-1 w-full text-sm"
+              value={draft.systemId}
+              onChange={(e) => setLocationSystem(e.target.value)}
+            >
+              <option value="">— Deep void —</option>
+              {systems.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
+
+      <div className="rounded border border-panel-border/80 p-3 space-y-3">
+        <p className="text-[10px] uppercase tracking-wider text-muted">Result</p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="block text-[10px] uppercase tracking-wider text-muted">
+            Victory / result
+            <select
+              className="hud-input mt-1 w-full text-sm"
+              value={draft.victoryKind}
+              onChange={(e) =>
+                setVictoryKind(e.target.value as VictoryKind | "")
+              }
+            >
+              <option value="">— Unset —</option>
+              {VICTORY_KIND_OPTIONS.map((kind) => (
+                <option key={kind} value={kind}>
+                  {VICTORY_KIND_LABELS[kind]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-[10px] uppercase tracking-wider text-muted">
+            Victor
+            <select
+              className="hud-input mt-1 w-full text-sm"
+              value={draft.victoryKind === "draw" ? "" : draft.victorFactionId}
+              disabled={draft.victoryKind === "draw" || !draft.victoryKind}
+              onChange={(e) => setVictor(e.target.value)}
+            >
+              <option value="">
+                {draft.victoryKind === "draw" ? "— Draw —" : "— Unset —"}
+              </option>
+              {factions.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-[10px] uppercase tracking-wider text-muted">
+            Attacker
+            <select
+              className="hud-input mt-1 w-full text-sm"
+              value={draft.attackerFactionId}
+              onChange={(e) => setAttacker(e.target.value)}
+            >
+              <option value="">— Unset —</option>
+              {factions.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-[10px] uppercase tracking-wider text-muted">
+            Defender
+            <select
+              className="hud-input mt-1 w-full text-sm"
+              value={draft.defenderFactionId}
+              onChange={(e) => setDefender(e.target.value)}
+            >
+              <option value="">— Unset —</option>
+              {factions.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        {entry.attackerVp != null && entry.defenderVp != null && (
+          <p className="text-[11px] text-muted">
+            Table score {entry.attackerVp}–{entry.defenderVp} VP
+            {entry.attackerCasualties != null || entry.defenderCasualties != null
+              ? ` · KIA ${(entry.attackerCasualties ?? 0) + (entry.defenderCasualties ?? 0)}`
+              : ""}
+          </p>
+        )}
+        {(entry.killedCharacterIds?.length ?? 0) > 0 && (
+          <p className="text-[11px] text-crimson leading-snug">
+            Fallen:{" "}
+            {entry.killedCharacterIds!
+              .map(
+                (id) =>
+                  (campaign.characters ?? []).find((c) => c.id === id)?.name ??
+                  "Unknown",
+              )
+              .join(", ")}
+          </p>
+        )}
+        <label className="block text-[10px] uppercase tracking-wider text-muted">
+          Outcome (edit)
+          <input
+            className="hud-input mt-1 w-full text-sm"
+            value={draft.outcome}
+            placeholder="Who won, and how?"
+            onChange={(e) => patchDraft({ outcome: e.target.value })}
+            onBlur={onBlurFlush}
+          />
+        </label>
+      </div>
+
+      <label className="block text-[10px] uppercase tracking-wider text-muted">
+        Battle summary
+        <AutoGrowTextarea
+          className="hud-input mt-1 w-full text-sm min-h-[7rem]"
+          value={draft.summary}
+          placeholder="Write what happened — commanders, turning points, aftermath…"
+          onChange={(e) => patchDraft({ summary: e.target.value })}
+          onBlur={onBlurFlush}
+        />
+      </label>
+    </div>
   );
 }
 
@@ -208,8 +662,13 @@ export function BattlesOverviewPanel() {
                           </span>
                         </div>
                         <p className="text-sm text-star truncate mt-0.5">
-                          {entry.locationLabel || "Unknown location"}
+                          {battleTitle(entry)}
                         </p>
+                        {entry.name?.trim() && entry.locationLabel?.trim() ? (
+                          <p className="text-[11px] text-muted truncate mt-0.5">
+                            {entry.locationLabel.trim()}
+                          </p>
+                        ) : null}
                         <p className="text-[11px] text-muted truncate mt-0.5">
                           {entry.outcome || "Outcome not recorded"}
                         </p>
@@ -240,122 +699,16 @@ export function BattlesOverviewPanel() {
               Select a battle to review results and write a summary.
             </p>
           ) : (
-            <div className="max-w-2xl space-y-4">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <p className="text-[10px] uppercase tracking-[0.16em] text-brass">
-                    {BATTLE_THEATER_LABELS[selected.theater]} battle
-                  </p>
-                  <h4 className="font-display text-xl text-star mt-1">
-                    {selected.locationLabel || "Unknown location"}
-                  </h4>
-                </div>
-                <button
-                  type="button"
-                  className="text-xs text-crimson"
-                  onClick={() => {
-                    deleteBattleLogEntry(selected.id);
-                    setSelectedId(null);
-                  }}
-                >
-                  Delete entry
-                </button>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <label className="block text-[10px] uppercase tracking-wider text-muted">
-                  Date
-                  <input
-                    className="hud-input mt-1 w-full text-sm"
-                    value={selected.date}
-                    placeholder="e.g. 999.M41"
-                    onChange={(e) =>
-                      updateBattleLogEntry(selected.id, {
-                        date: e.target.value,
-                      })
-                    }
-                  />
-                </label>
-                <label className="block text-[10px] uppercase tracking-wider text-muted">
-                  Location
-                  <input
-                    className="hud-input mt-1 w-full text-sm"
-                    value={selected.locationLabel}
-                    onChange={(e) =>
-                      updateBattleLogEntry(selected.id, {
-                        locationLabel: e.target.value,
-                      })
-                    }
-                  />
-                </label>
-              </div>
-
-              <div className="rounded border border-panel-border/80 p-3 space-y-2">
-                <p className="text-[10px] uppercase tracking-wider text-muted">
-                  Result
-                </p>
-                {selected.victoryKind && (
-                  <p className="text-sm text-brass">
-                    {VICTORY_KIND_LABELS[selected.victoryKind]}
-                    {selected.attackerVp != null &&
-                    selected.defenderVp != null
-                      ? ` · ${selected.attackerVp}–${selected.defenderVp} VP`
-                      : ""}
-                  </p>
-                )}
-                <p className="text-sm text-star leading-snug">
-                  {selected.outcome || "No outcome recorded."}
-                </p>
-                <p className="text-[11px] text-muted">
-                  {factionName(campaign, selected.attackerFactionId)}
-                  {" vs "}
-                  {factionName(campaign, selected.defenderFactionId)}
-                  {selected.attackerCasualties != null ||
-                  selected.defenderCasualties != null
-                    ? ` · KIA ${(selected.attackerCasualties ?? 0) + (selected.defenderCasualties ?? 0)}`
-                    : ""}
-                </p>
-                {(selected.killedCharacterIds?.length ?? 0) > 0 && (
-                  <p className="text-[11px] text-crimson leading-snug">
-                    Fallen:{" "}
-                    {selected.killedCharacterIds!
-                      .map(
-                        (id) =>
-                          (campaign.characters ?? []).find((c) => c.id === id)
-                            ?.name ?? "Unknown",
-                      )
-                      .join(", ")}
-                  </p>
-                )}
-                <label className="block text-[10px] uppercase tracking-wider text-muted pt-1">
-                  Outcome (edit)
-                  <input
-                    className="hud-input mt-1 w-full text-sm"
-                    value={selected.outcome}
-                    placeholder="Who won, and how?"
-                    onChange={(e) =>
-                      updateBattleLogEntry(selected.id, {
-                        outcome: e.target.value,
-                      })
-                    }
-                  />
-                </label>
-              </div>
-
-              <label className="block text-[10px] uppercase tracking-wider text-muted">
-                Battle summary
-                <AutoGrowTextarea
-                  className="hud-input mt-1 w-full text-sm min-h-[7rem]"
-                  value={selected.summary}
-                  placeholder="Write what happened — commanders, turning points, aftermath…"
-                  onChange={(e) =>
-                    updateBattleLogEntry(selected.id, {
-                      summary: e.target.value,
-                    })
-                  }
-                />
-              </label>
-            </div>
+            <BattleDetailEditor
+              key={selected.id}
+              entry={selected}
+              campaign={campaign}
+              onDelete={() => {
+                deleteBattleLogEntry(selected.id);
+                setSelectedId(null);
+              }}
+              onCommit={(patch) => updateBattleLogEntry(selected.id, patch)}
+            />
           )}
         </div>
       </div>

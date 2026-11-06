@@ -6,9 +6,9 @@ import type {
   Planet,
   PlanetStructure,
   Ship,
-  ShipChassis,
+  ShipRole,
 } from "../types/campaign";
-import { normalizeCampaignPlay, SHIP_CHASSIS_ORDER } from "../types/campaign";
+import { normalizeCampaignPlay, SHIP_ROLE_ORDER } from "../types/campaign";
 import { buildHexSphere } from "./hexSphere";
 import {
   normalizeTerrainKind,
@@ -21,7 +21,7 @@ import {
   settlementTileSet,
   tilesAroundCity,
 } from "./settlements";
-import { CHASSIS_RANK } from "./shipMeshes";
+import { canAddShipRole, shipRole } from "./fleetPower";
 import { normalizeShipCargo, TRANSPORT_BP_CAPACITY } from "./fleets";
 import {
   tilesAreHexAdjacent,
@@ -89,25 +89,27 @@ export function demolishBpCost(
 /** Re-export transport hold capacity. */
 export { TRANSPORT_BP_CAPACITY };
 
-/** Baseline: escort costs 50 BP; other hulls scale by chassis rank. */
-export const ESCORT_BP_COST = 50;
+/** Utility hull BP cost (0 fleet power). */
+export const UTILITY_SHIP_BP_COST = 500;
+/** Line fleet detachment: 1000 BP → 100 FP. */
+export const LINE_SHIP_BP_COST = 1000;
+/** Flagship: 2000 BP → 200 FP. */
+export const FLAGSHIP_BP_COST = 2000;
 
-function shipBpFromRank(chassis: ShipChassis): number {
-  const baseRank = CHASSIS_RANK.escort;
-  const rank = CHASSIS_RANK[chassis] ?? baseRank;
-  return Math.max(
-    ESCORT_BP_COST,
-    Math.round((ESCORT_BP_COST * rank) / baseRank),
-  );
+export const SHIP_BP_COST: Record<ShipRole, number> = {
+  flagship: FLAGSHIP_BP_COST,
+  line: LINE_SHIP_BP_COST,
+  escort: UTILITY_SHIP_BP_COST,
+  transport: UTILITY_SHIP_BP_COST,
+};
+
+export function shipBpCost(role: ShipRole): number {
+  return SHIP_BP_COST[role] ?? UTILITY_SHIP_BP_COST;
 }
 
-export const SHIP_BP_COST: Record<ShipChassis, number> = Object.fromEntries(
-  SHIP_CHASSIS_ORDER.map((c) => [c, shipBpFromRank(c)]),
-) as Record<ShipChassis, number>;
-
-export function shipBpCost(chassis: ShipChassis): number {
-  return SHIP_BP_COST[chassis] ?? ESCORT_BP_COST;
-}
+/** @deprecated */
+export const ESCORT_BP_COST = UTILITY_SHIP_BP_COST;
+export const SHIP_CHASSIS_ORDER_BP = SHIP_ROLE_ORDER;
 
 export function districtOwnedBy(district: District, factionId: string): boolean {
   return district.controllingFactionId === factionId;
@@ -799,17 +801,42 @@ export function canRecruitShip(
   campaign: Campaign,
   planet: Planet,
   factionId: string,
-  chassis: ShipChassis,
+  role: ShipRole,
+  destinationFleetId?: string | "new",
 ): { ok: true } | { ok: false; reason: RecruitBlockReason; message: string } {
   const site = canUseSpacePort(campaign, planet, factionId);
   if (!site.ok) return site;
-  const cost = shipBpCost(chassis);
+  const cost = shipBpCost(role);
   if (getBuildingPoints(planet, factionId) < cost) {
     return {
       ok: false,
       reason: "insufficient_bp",
       message: `Need ${cost} BP (have ${getBuildingPoints(planet, factionId)})`,
     };
+  }
+  if (destinationFleetId && destinationFleetId !== "new") {
+    const fleet = (campaign.fleets ?? []).find((f) => f.id === destinationFleetId);
+    if (!fleet || fleet.factionId !== factionId) {
+      return {
+        ok: false,
+        reason: "no_site",
+        message: "Target fleet not found",
+      };
+    }
+    if (
+      fleet.location.kind !== "orbit" ||
+      fleet.location.planetId !== planet.id
+    ) {
+      return {
+        ok: false,
+        reason: "no_site",
+        message: "Target fleet must orbit this Space Port world",
+      };
+    }
+    const fit = canAddShipRole(fleet, role);
+    if (!fit.ok) {
+      return { ok: false, reason: "no_site", message: fit.reason };
+    }
   }
   return { ok: true };
 }
@@ -820,7 +847,7 @@ export function canRecruitFleet(
   planet: Planet,
   factionId: string,
 ): { ok: true } | { ok: false; reason: RecruitBlockReason; message: string } {
-  return canRecruitShip(campaign, planet, factionId, "escort");
+  return canRecruitShip(campaign, planet, factionId, "line", "new");
 }
 
 export function spendBuildingPoints(
@@ -856,13 +883,13 @@ export function creditBuildingPoints(
 }
 
 export function shipCargoBp(ship: Ship): number {
-  if (ship.chassis !== "transport") return 0;
+  if (shipRole(ship) !== "transport") return 0;
   const n = ship.cargoBp;
   return typeof n === "number" && n > 0 ? Math.floor(n) : 0;
 }
 
 export function shipCargoCapacity(ship: Ship): number {
-  return ship.chassis === "transport" ? TRANSPORT_BP_CAPACITY : 0;
+  return shipRole(ship) === "transport" ? TRANSPORT_BP_CAPACITY : 0;
 }
 
 export function fleetCargoBp(fleet: Fleet): number {
@@ -912,7 +939,7 @@ export function addFleetCargo(
   for (let i = 0; i < ships.length; i++) {
     if (left <= 0) break;
     const ship = ships[i]!;
-    if (ship.chassis !== "transport") continue;
+    if (shipRole(ship) !== "transport") continue;
     const have = shipCargoBp(ship);
     const room = TRANSPORT_BP_CAPACITY - have;
     if (room <= 0) continue;

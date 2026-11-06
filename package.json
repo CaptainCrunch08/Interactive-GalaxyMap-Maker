@@ -5,11 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/ensure-dev.mjs",
-    "pages:dev": "npm run build && wrangler pages dev dist --port 8788 --ip 127.0.0.1 --show-interactive-dev-session false -c wrangler.pages.toml",
+    "pages:dev": "npm run build && wrangler pages dev dist --port 8788 --ip 127.0.0.1 --show-interactive-dev-session false --d1=DB --r2=MAPS",
     "pages:deploy": "npm run build && wrangler pages deploy dist -c wrangler.pages.toml",
     "workers:deploy": "npm run build && wrangler deploy",
-    "db:migrate:local": "wrangler d1 migrations apply galaxy-map-saves --local",
-    "db:migrate:remote": "wrangler d1 migrations apply galaxy-map-saves --remote",
+    "db:migrate:local": "wrangler d1 migrations apply galaxy-map-saves --local -c wrangler.pages.toml && node scripts/apply-local-d1.mjs",
+    "db:migrate:remote": "wrangler d1 migrations apply galaxy-map-saves --remote -c wrangler.pages.toml",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview"

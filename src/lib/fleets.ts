@@ -3,30 +3,28 @@ import type {
   Fleet,
   FleetLocation,
   Ship,
-  ShipChassis,
+  ShipRole,
   StarSystem,
 } from "../types/campaign";
-import { SHIP_CHASSIS_LABELS } from "../types/campaign";
+import { SHIP_ROLE_LABELS, SHIP_ROLE_ORDER } from "../types/campaign";
 import { buildHyperlanes, getCampaignHyperlanes } from "./hyperlanes";
+import {
+  normalizeShipRole,
+  shipRole,
+  shipsSortedByRole,
+} from "./fleetPower";
 
-const VALID_CHASSIS = new Set<string>(Object.keys(SHIP_CHASSIS_LABELS));
+export { shipsSortedByRole, roleSortIndex } from "./fleetPower";
 
 /** Max BP a single transport hull can carry in its hold. */
 export const TRANSPORT_BP_CAPACITY = 1000;
 
-/** Map legacy hull ids onto the current chassis set. */
-export function normalizeShipChassis(chassis: string): ShipChassis {
-  const legacy: Record<string, ShipChassis> = {
-    corvette: "escort",
-    destroyer: "light_cruiser",
-    titan: "battlecruiser",
-    colossus: "grand_cruiser",
-    science: "escort",
-    construction: "transport",
-  };
-  if (legacy[chassis]) return legacy[chassis]!;
-  if (VALID_CHASSIS.has(chassis)) return chassis as ShipChassis;
-  return "escort";
+/** Max detachments embarked on one escort. */
+export const ESCORT_ARMY_CAPACITY = 1;
+
+/** Map legacy hull ids onto the current role set. */
+export function normalizeShipChassis(chassis: string): ShipRole {
+  return normalizeShipRole(chassis);
 }
 
 export function fleetSystemId(fleet: Fleet): string {
@@ -73,41 +71,102 @@ export function shipCount(fleet: Fleet): number {
 }
 
 export function chassisSummary(fleet: Fleet): string {
-  const counts = new Map<ShipChassis, number>();
+  const counts = new Map<ShipRole, number>();
   for (const ship of fleet.ships) {
-    counts.set(ship.chassis, (counts.get(ship.chassis) ?? 0) + 1);
+    const role = shipRole(ship);
+    counts.set(role, (counts.get(role) ?? 0) + 1);
   }
-  return [...counts.entries()]
-    .map(([c, n]) => `${n}× ${SHIP_CHASSIS_LABELS[c]}`)
+  return SHIP_ROLE_ORDER.filter((role) => (counts.get(role) ?? 0) > 0)
+    .map((role) => `${counts.get(role)}× ${SHIP_ROLE_LABELS[role]}`)
     .join(", ");
 }
 
-export function defaultShipName(chassis: ShipChassis, index: number): string {
-  return `${SHIP_CHASSIS_LABELS[chassis]} ${index}`;
+export function defaultShipName(role: ShipRole, index: number): string {
+  return `${SHIP_ROLE_LABELS[role]} ${index}`;
 }
 
-export function createShip(chassis: ShipChassis, index: number): Ship {
+export function createShip(role: ShipRole, index: number): Ship {
   return {
     id: crypto.randomUUID(),
-    name: defaultShipName(chassis, index),
-    chassis,
+    name: defaultShipName(role, index),
+    role,
     notes: "",
-    ...(chassis === "transport" ? { cargoBp: 0 } : {}),
+    ...(role === "transport" ? { cargoBp: 0 } : {}),
+    ...(role === "escort" ? { embarkedArmyIds: [] } : {}),
   };
 }
 
-/** Clamp / strip cargo when chassis changes. */
+/** Normalize a raw ship from saves (chassis → role, cargo, embark). */
+export function normalizeShip(raw: Ship | Record<string, unknown>): Ship {
+  const r = raw as Ship & { chassis?: string };
+  const role = normalizeShipRole(
+    typeof r.role === "string"
+      ? r.role
+      : typeof r.chassis === "string"
+        ? r.chassis
+        : "line",
+  );
+  const base: Ship = {
+    id: typeof r.id === "string" ? r.id : crypto.randomUUID(),
+    name: typeof r.name === "string" && r.name.trim() ? r.name : defaultShipName(role, 1),
+    role,
+    notes: typeof r.notes === "string" ? r.notes : "",
+  };
+  const withEmbark =
+    role === "escort"
+      ? {
+          ...base,
+          embarkedArmyIds: Array.isArray(r.embarkedArmyIds)
+            ? r.embarkedArmyIds.filter(
+                (id): id is string => typeof id === "string",
+              )
+            : [],
+          embarkedArmies: Array.isArray(r.embarkedArmies)
+            ? (r.embarkedArmies as Ship["embarkedArmies"])
+            : [],
+        }
+      : base;
+  return normalizeShipCargo(withEmbark);
+}
+
+/** Clamp / strip cargo when role changes. */
 export function normalizeShipCargo(ship: Ship): Ship {
-  if (ship.chassis !== "transport") {
-    if (ship.cargoBp == null) return ship;
-    const { cargoBp: _drop, ...rest } = ship;
-    return rest;
+  const role = shipRole(ship);
+  let next: Ship = { ...ship, role };
+  if (role !== "transport") {
+    if (next.cargoBp != null) {
+      const { cargoBp: _drop, ...rest } = next;
+      next = rest;
+    }
+  } else {
+    const n =
+      typeof next.cargoBp === "number" && Number.isFinite(next.cargoBp)
+        ? Math.max(0, Math.min(TRANSPORT_BP_CAPACITY, Math.floor(next.cargoBp)))
+        : 0;
+    next = { ...next, cargoBp: n };
   }
-  const n =
-    typeof ship.cargoBp === "number" && Number.isFinite(ship.cargoBp)
-      ? Math.max(0, Math.min(TRANSPORT_BP_CAPACITY, Math.floor(ship.cargoBp)))
-      : 0;
-  return { ...ship, cargoBp: n };
+  if (role !== "escort") {
+    if (next.embarkedArmyIds != null) {
+      const { embarkedArmyIds: _e, ...rest } = next;
+      next = rest;
+    }
+  } else {
+    const ids = Array.isArray(next.embarkedArmyIds)
+      ? next.embarkedArmyIds.filter((id): id is string => typeof id === "string")
+      : [];
+    next = {
+      ...next,
+      embarkedArmyIds: ids.slice(0, ESCORT_ARMY_CAPACITY),
+    };
+  }
+  return next;
+}
+
+export function normalizeFleetShips(fleet: Fleet): Fleet {
+  return {
+    ...fleet,
+    ships: shipsSortedByRole(fleet.ships.map((s) => normalizeShip(s))),
+  };
 }
 
 /** Adjacent system ids via hyperlanes. */
@@ -179,4 +238,14 @@ export function locationLabel(
   if (location.kind === "system") return `${systemName} (star)`;
   const planet = campaign.planets.find((p) => p.id === location.planetId);
   return `${planet?.name ?? "Orbit"} · ${systemName}`;
+}
+
+/** Same body: both at star, or both in the same planet orbit. */
+export function fleetsShareOrbit(a: Fleet, b: Fleet): boolean {
+  if (a.location.systemId !== b.location.systemId) return false;
+  if (a.location.kind === "system" && b.location.kind === "system") return true;
+  if (a.location.kind === "orbit" && b.location.kind === "orbit") {
+    return a.location.planetId === b.location.planetId;
+  }
+  return false;
 }

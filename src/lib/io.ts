@@ -8,7 +8,7 @@ import { resolvePlanetVisualModelId } from "./planetModels";
 import { enforceUniqueSymbolOwnership } from "./factionSymbols";
 import { armyStrength, pruneDestroyedArmies } from "./battleResolve";
 import { ensureCampaignBattleLog } from "./battleLog";
-import { normalizeShipCargo, normalizeShipChassis } from "./fleets";
+import { normalizeShip } from "./fleets";
 import { normalizeStructureKind } from "./structureMeshes";
 import { normalizeTerrainKind } from "./planetTerrain";
 import { reportPersistSize, utf8ByteLength } from "./perfDebug";
@@ -235,34 +235,45 @@ const famousBattleSiteSchema = z.object({
   victorLabel: z.string(),
 });
 
-const shipChassisSchema = z.preprocess((v) => {
+const shipRoleSchema = z.preprocess((v) => {
   if (typeof v !== "string") return v;
   const legacy: Record<string, string> = {
     corvette: "escort",
-    destroyer: "light_cruiser",
-    titan: "battlecruiser",
-    colossus: "grand_cruiser",
+    destroyer: "line",
+    light_cruiser: "line",
+    cruiser: "line",
+    battlecruiser: "line",
+    grand_cruiser: "line",
+    battleship: "flagship",
+    titan: "flagship",
+    colossus: "flagship",
     science: "escort",
     construction: "transport",
   };
   return legacy[v] ?? v;
-}, z.enum([
-  "escort",
-  "transport",
-  "light_cruiser",
-  "cruiser",
-  "battlecruiser",
-  "grand_cruiser",
-  "battleship",
-]));
+}, z.enum(["flagship", "line", "escort", "transport"]));
 
-const shipSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  chassis: shipChassisSchema,
-  notes: z.string().default(""),
-  cargoBp: z.number().nonnegative().optional(),
-});
+const shipSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    role: shipRoleSchema.optional(),
+    /** Legacy field — migrated to `role`. */
+    chassis: shipRoleSchema.optional(),
+    notes: z.string().default(""),
+    cargoBp: z.number().nonnegative().optional(),
+    embarkedArmyIds: z.array(z.string()).optional(),
+    embarkedArmies: z.array(armySchema).optional(),
+  })
+  .transform((s) => ({
+    id: s.id,
+    name: s.name,
+    role: s.role ?? s.chassis ?? ("line" as const),
+    notes: s.notes,
+    cargoBp: s.cargoBp,
+    embarkedArmyIds: s.embarkedArmyIds,
+    embarkedArmies: s.embarkedArmies,
+  }));
 
 const fleetLocationSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -386,7 +397,10 @@ const campaignPlaySchema = z.object({
   round: z.number().int().positive().default(1),
   turnOrder: z.array(z.string()).default([]),
   activeFactionId: z.string().nullable().default(null),
-  movedFleetIds: z.array(z.string()).default([]),
+  fleetMovementUsed: z.record(z.string(), z.number()).optional().default({}),
+  fleetBattledIds: z.array(z.string()).optional().default([]),
+  /** Legacy — migrated into fleetMovementUsed. */
+  movedFleetIds: z.array(z.string()).optional().default([]),
   movedArmyIds: z.array(z.string()).default([]),
   armyMovementUsed: z.record(z.string(), z.number()).optional().default({}),
   armyCampEnteredRound: z
@@ -431,12 +445,7 @@ export function parseCampaignJson(json: string): Campaign {
     symbols: campaign.symbols ?? [],
     fleets: (campaign.fleets ?? []).map((f) => ({
       ...f,
-      ships: (f.ships ?? []).map((s) =>
-        normalizeShipCargo({
-          ...s,
-          chassis: normalizeShipChassis(s.chassis),
-        }),
-      ),
+      ships: (f.ships ?? []).map((s) => normalizeShip(s)),
     })),
     characters: campaign.characters ?? [],
     hyperlanes: campaign.hyperlanes,

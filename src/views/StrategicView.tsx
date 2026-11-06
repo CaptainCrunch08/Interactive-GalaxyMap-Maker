@@ -48,6 +48,7 @@ export function StrategicView() {
   const selectedStructureId = useCampaignStore((s) => s.selectedStructureId);
   const selectedArmyId = useCampaignStore((s) => s.selectedArmyId);
   const placingArmyId = useCampaignStore((s) => s.placingArmyId);
+  const orbitLandingArmyId = useCampaignStore((s) => s.orbitLandingArmyId);
   const terrainPaintFactionId = useCampaignStore(
     (s) => s.terrainPaintFactionId,
   );
@@ -61,6 +62,7 @@ export function StrategicView() {
   const selectStructure = useCampaignStore((s) => s.selectStructure);
   const selectArmy = useCampaignStore((s) => s.selectArmy);
   const moveArmy = useCampaignStore((s) => s.moveArmy);
+  const landArmyAtAim = useCampaignStore((s) => s.landArmyAtAim);
   const openBattleResolve = useCampaignStore((s) => s.openBattleResolve);
   const setPlacingArmy = useCampaignStore((s) => s.setPlacingArmy);
   const setTileClaims = useCampaignStore((s) => s.setTileClaims);
@@ -295,6 +297,9 @@ export function StrategicView() {
       "Click a free crater or iron-rich hex to build an ore mine (+5 BP when linked to a manufactorum)";
   else if (playBuildMode?.kind === "demolish")
     hint = "Click an owned district/structure to demolish it for half its build cost";
+  else if (placingArmyId && orbitLandingArmyId === placingArmyId)
+    hint =
+      "Click a controlled Space Port to land exactly, or any hex to scatter within 4";
   else if (placingArmyId) hint = "Click a hex to place the army";
   else if (engageArmyId) {
     hint =
@@ -410,6 +415,10 @@ export function StrategicView() {
           onSelectFamousBattle={(siteId) => setSelectedFamousBattleId(siteId)}
           onPlaceArmy={(dir) => {
             if (!placingArmyId) return;
+            if (orbitLandingArmyId === placingArmyId) {
+              landArmyAtAim(planet.id, placingArmyId, dir);
+              return;
+            }
             moveArmy(planet.id, placingArmyId, dir);
             setPlacingArmy(null);
           }}

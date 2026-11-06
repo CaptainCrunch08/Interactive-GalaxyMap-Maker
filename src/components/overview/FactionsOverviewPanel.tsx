@@ -6,7 +6,26 @@ import {
   type PowerAxisId,
 } from "../../lib/strategicOverview";
 import { factionSymbolIds } from "../../lib/factionSymbols";
+import { useDebouncedDraft } from "../../lib/useDebouncedDraft";
 import type { Campaign, Faction } from "../../types/campaign";
+
+type FactionLoreDraft = {
+  epithet: string;
+  leader: string;
+  origin: string;
+  purpose: string;
+  standing: string;
+};
+
+function loreDraftFromFaction(faction: Faction): FactionLoreDraft {
+  return {
+    epithet: faction.epithet ?? "",
+    leader: faction.leader ?? "",
+    origin: faction.origin ?? "",
+    purpose: faction.purpose ?? "",
+    standing: faction.standing ?? "",
+  };
+}
 
 const METRIC_AXES: { id: PowerAxisId; label: string }[] = [
   { id: "military", label: "Military" },
@@ -209,12 +228,31 @@ function FactionDossier({
   const enterPlanet = useCampaignStore((s) => s.enterPlanet);
   const closeGalaxyOverview = useCampaignStore((s) => s.closeGalaxyOverview);
 
-  const patch = (fields: Partial<Faction>) => updateFaction(faction.id, fields);
+  const { draft, patchDraft, flush, onBlurFlush } = useDebouncedDraft(
+    faction.id,
+    loreDraftFromFaction(faction),
+    (next) => {
+      updateFaction(faction.id, {
+        epithet: next.epithet.trim() || undefined,
+        leader: next.leader.trim() || undefined,
+        origin: next.origin.trim() || undefined,
+        purpose: next.purpose.trim() || undefined,
+        standing: next.standing.trim() || undefined,
+      });
+    },
+  );
 
   return (
     <div className="flex-1 overflow-y-auto p-5 md:p-7 space-y-6">
       <div className="flex items-center gap-3">
-        <button type="button" className="hud-btn shrink-0" onClick={onBack}>
+        <button
+          type="button"
+          className="hud-btn shrink-0"
+          onClick={() => {
+            flush();
+            onBack();
+          }}
+        >
           ← Back
         </button>
         <p className="text-[11px] font-display uppercase tracking-[0.2em] text-muted truncate">
@@ -249,11 +287,10 @@ function FactionDossier({
               <input
                 type="text"
                 className="hud-input mt-1 w-full"
-                value={faction.epithet ?? ""}
+                value={draft.epithet}
                 placeholder="Short tagline…"
-                onChange={(e) =>
-                  patch({ epithet: e.target.value || undefined })
-                }
+                onChange={(e) => patchDraft({ epithet: e.target.value })}
+                onBlur={onBlurFlush}
               />
             </label>
             <label className="block">
@@ -263,11 +300,10 @@ function FactionDossier({
               <input
                 type="text"
                 className="hud-input mt-1 w-full"
-                value={faction.leader ?? ""}
+                value={draft.leader}
                 placeholder="Named commander or sovereign…"
-                onChange={(e) =>
-                  patch({ leader: e.target.value || undefined })
-                }
+                onChange={(e) => patchDraft({ leader: e.target.value })}
+                onBlur={onBlurFlush}
               />
             </label>
           </div>
@@ -288,6 +324,7 @@ function FactionDossier({
                   type="button"
                   className="hud-panel w-full text-left px-4 py-3 border border-panel-border bg-panel/30 hover:bg-panel/50 transition-colors"
                   onClick={() => {
+                    flush();
                     closeGalaxyOverview();
                     enterPlanet(hw.planetId);
                   }}
@@ -315,9 +352,10 @@ function FactionDossier({
           </span>
           <textarea
             className="hud-input mt-1 w-full min-h-[7rem] resize-y"
-            value={faction.origin ?? ""}
+            value={draft.origin}
             placeholder="Where this faction came from…"
-            onChange={(e) => patch({ origin: e.target.value || undefined })}
+            onChange={(e) => patchDraft({ origin: e.target.value })}
+            onBlur={onBlurFlush}
           />
         </label>
         <label className="block">
@@ -326,9 +364,10 @@ function FactionDossier({
           </span>
           <textarea
             className="hud-input mt-1 w-full min-h-[7rem] resize-y"
-            value={faction.purpose ?? ""}
+            value={draft.purpose}
             placeholder="What drives them now…"
-            onChange={(e) => patch({ purpose: e.target.value || undefined })}
+            onChange={(e) => patchDraft({ purpose: e.target.value })}
+            onBlur={onBlurFlush}
           />
         </label>
         <label className="block">
@@ -337,11 +376,10 @@ function FactionDossier({
           </span>
           <textarea
             className="hud-input mt-1 w-full min-h-[10rem] resize-y"
-            value={faction.standing ?? ""}
+            value={draft.standing}
             placeholder="Where they stand now — wars, crises, victories…"
-            onChange={(e) =>
-              patch({ standing: e.target.value || undefined })
-            }
+            onChange={(e) => patchDraft({ standing: e.target.value })}
+            onBlur={onBlurFlush}
           />
         </label>
       </section>
@@ -349,28 +387,47 @@ function FactionDossier({
   );
 }
 
-export function FactionsOverviewPanel() {
+function FactionDossierHost({
+  factionId,
+  onBack,
+}: {
+  factionId: string;
+  onBack: () => void;
+}) {
+  const faction = useCampaignStore((s) =>
+    s.campaign.factions.find((f) => f.id === factionId),
+  );
+  const campaign = useCampaignStore((s) => s.campaign);
+
+  useEffect(() => {
+    if (!faction) onBack();
+  }, [faction, onBack]);
+
+  if (!faction) return null;
+
+  return (
+    <FactionDossier
+      faction={faction}
+      symbolUrl={primarySymbolUrl(campaign, faction.id)}
+      homeworlds={homeworldsForFaction(campaign, faction.id)}
+      onBack={onBack}
+    />
+  );
+}
+
+function FactionsList({
+  onOpen,
+}: {
+  onOpen: (factionId: string) => void;
+}) {
   const campaign = useCampaignStore((s) => s.campaign);
   const [query, setQuery] = useState("");
-  const [selectedFactionId, setSelectedFactionId] = useState<string | null>(
-    null,
-  );
 
   const overview = useMemo(
     () => computeStrategicOverview(campaign),
     [campaign],
   );
   const q = query.trim().toLowerCase();
-
-  const selectedFaction = selectedFactionId
-    ? campaign.factions.find((f) => f.id === selectedFactionId)
-    : undefined;
-
-  useEffect(() => {
-    if (selectedFactionId && !selectedFaction) {
-      setSelectedFactionId(null);
-    }
-  }, [selectedFactionId, selectedFaction]);
 
   const rows = useMemo(() => {
     return overview.factions
@@ -383,17 +440,6 @@ export function FactionsOverviewPanel() {
       })
       .filter((x) => matchesQuery(x.row.name, x.leader, x.epithet, q));
   }, [overview.factions, campaign, q]);
-
-  if (selectedFaction) {
-    return (
-      <FactionDossier
-        faction={selectedFaction}
-        symbolUrl={primarySymbolUrl(campaign, selectedFaction.id)}
-        homeworlds={homeworldsForFaction(campaign, selectedFaction.id)}
-        onBack={() => setSelectedFactionId(null)}
-      />
-    );
-  }
 
   return (
     <div className="flex-1 overflow-y-auto p-5 md:p-7 space-y-6">
@@ -442,11 +488,28 @@ export function FactionsOverviewPanel() {
               leader={leader}
               epithet={epithet}
               symbolUrl={symbolUrl}
-              onOpen={() => setSelectedFactionId(row.factionId)}
+              onOpen={() => onOpen(row.factionId)}
             />
           ))}
         </div>
       )}
     </div>
   );
+}
+
+export function FactionsOverviewPanel() {
+  const [selectedFactionId, setSelectedFactionId] = useState<string | null>(
+    null,
+  );
+
+  if (selectedFactionId) {
+    return (
+      <FactionDossierHost
+        factionId={selectedFactionId}
+        onBack={() => setSelectedFactionId(null)}
+      />
+    );
+  }
+
+  return <FactionsList onOpen={setSelectedFactionId} />;
 }

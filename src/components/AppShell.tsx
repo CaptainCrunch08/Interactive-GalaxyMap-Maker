@@ -1,4 +1,6 @@
 import { BattleResolveModal } from "./BattleResolveModal";
+import { SpaceBattleResolveModal } from "./SpaceBattleResolveModal";
+import { EscortCrashNotices } from "./EscortCrashNotices";
 import { Breadcrumbs } from "./Breadcrumbs";
 import { EditGalaxyOverlay } from "./editGalaxy/EditGalaxyOverlay";
 import { GalacticOverviewOverlay } from "./overview/GalacticOverviewOverlay";
@@ -21,10 +23,14 @@ export function AppShell() {
   const sideMenuOpen = useCampaignStore((s) => s.sideMenuOpen);
   const inspectorOpen = useCampaignStore((s) => s.inspectorOpen);
   const toggleInspector = useCampaignStore((s) => s.toggleInspector);
+  const galaxyOverviewOpen = useCampaignStore((s) => s.galaxyOverviewOpen);
+  const galaxyEditorOpen = useCampaignStore((s) => s.galaxyEditorOpen);
   const playActive = useCampaignStore(
     (s) => Boolean(s.campaign.play?.active),
   );
   const playMoveHint = useCampaignStore((s) => s.playMoveHint);
+  // Full-screen overlays: unmount the map so typing/edits don't re-render WebGL/SVG.
+  const pauseMapView = galaxyOverviewOpen || galaxyEditorOpen;
 
   return (
     <div
@@ -36,6 +42,8 @@ export function AppShell() {
       <EditGalaxyOverlay />
       <GalacticOverviewOverlay />
       <BattleResolveModal />
+      <SpaceBattleResolveModal />
+      <EscortCrashNotices />
       <header className="shrink-0 hud-topbar flex items-center gap-3 px-3 py-2.5">
         <button
           type="button"
@@ -90,28 +98,30 @@ export function AppShell() {
 
       <div className="flex-1 flex min-h-0">
         <main className="flex-1 min-w-0 relative">
-          <ViewErrorBoundary
-            key={viewLevel}
-            label={
-              viewLevel === "galaxy"
-                ? "Galaxy map"
-                : viewLevel === "system"
-                  ? "System map"
-                  : viewLevel === "planet"
-                    ? "Planet view"
-                    : viewLevel === "strategic"
-                      ? "Strategic map"
-                      : viewLevel === "timeline"
-                        ? "Timeline"
-                        : "View"
-            }
-          >
-            {viewLevel === "galaxy" && <GalaxyView />}
-            {viewLevel === "timeline" && <TimelineView />}
-            {viewLevel === "system" && <SystemView />}
-            {viewLevel === "planet" && <PlanetView />}
-            {viewLevel === "strategic" && <StrategicView />}
-          </ViewErrorBoundary>
+          {!pauseMapView && (
+            <ViewErrorBoundary
+              key={viewLevel}
+              label={
+                viewLevel === "galaxy"
+                  ? "Galaxy map"
+                  : viewLevel === "system"
+                    ? "System map"
+                    : viewLevel === "planet"
+                      ? "Planet view"
+                      : viewLevel === "strategic"
+                        ? "Strategic map"
+                        : viewLevel === "timeline"
+                          ? "Timeline"
+                          : "View"
+              }
+            >
+              {viewLevel === "galaxy" && <GalaxyView />}
+              {viewLevel === "timeline" && <TimelineView />}
+              {viewLevel === "system" && <SystemView />}
+              {viewLevel === "planet" && <PlanetView />}
+              {viewLevel === "strategic" && <StrategicView />}
+            </ViewErrorBoundary>
+          )}
         </main>
         {inspectorOpen && <InspectorPanel />}
       </div>

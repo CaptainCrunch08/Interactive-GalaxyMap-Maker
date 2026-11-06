@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AutoGrowTextarea } from "./AutoGrowTextarea";
 import {
   PLANET_CLASSIFICATION_LABELS,
@@ -38,7 +38,6 @@ import {
   canRecruitDetachment,
   canRecruitShip,
   canUseSpacePort,
-  canDeployFromTransport,
   canLoadTransportCargo,
   canUnloadTransportCargo,
   DETACHMENT_BP_COST,
@@ -93,8 +92,11 @@ import { charactersOnArmy } from "../lib/characterLocation";
 import { factionSymbolIds } from "../lib/factionSymbols";
 import {
   normalizeCampaignPlay,
-  SHIP_CHASSIS_LABELS,
+  SHIP_ROLE_LABELS,
+  SHIP_ROLE_ORDER,
 } from "../types/campaign";
+import type { ShipRole } from "../types/campaign";
+import { fleetPower, fleetPowerCap } from "../lib/fleetPower";
 import { TERRAIN_PAINT_ERASE } from "./strategic/HexPlanet";
 import { FleetInspector, FleetListSection } from "./FleetInspector";
 import { formatTime, parseTimeInput } from "../views/TimelineView";
@@ -108,6 +110,86 @@ function FactionSwatch({ color }: { color?: string }) {
       style={{ background: color ?? "#6a8296" }}
       aria-hidden
     />
+  );
+}
+
+type PlanetInspectorSection =
+  | "settlements"
+  | "structures"
+  | "territory"
+  | "armies";
+
+/** Collapsed-by-default planet inspector block; header toggles body. */
+function PlanetDisclosure({
+  id,
+  title,
+  open,
+  onToggle,
+  count,
+  headerRight,
+  belowHeader,
+  children,
+}: {
+  id: string;
+  title: string;
+  open: boolean;
+  onToggle: () => void;
+  count?: number;
+  headerRight?: ReactNode;
+  /** Always visible under the title row (e.g. Deploy). */
+  belowHeader?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section className="rounded border border-panel-border/70 overflow-hidden">
+      <div className="bg-void/30">
+        <div className="flex items-center gap-2 px-2 py-1.5">
+          <button
+            type="button"
+            id={`${id}-trigger`}
+            className="flex-1 min-w-0 flex items-center gap-2 bg-transparent border-0 p-0 text-left cursor-pointer"
+            aria-expanded={open}
+            aria-controls={`${id}-panel`}
+            onClick={onToggle}
+          >
+            <span
+              className="text-muted text-[10px] shrink-0 transition-transform"
+              style={{ transform: open ? "rotate(90deg)" : "rotate(0deg)" }}
+              aria-hidden
+            >
+              ▸
+            </span>
+            <h3 className="text-xs uppercase text-muted tracking-wide truncate">
+              {title}
+            </h3>
+            {count != null && (
+              <span className="text-[10px] text-brass shrink-0">{count}</span>
+            )}
+          </button>
+          {headerRight ? (
+            <div
+              className="flex items-center gap-2 shrink-0"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {headerRight}
+            </div>
+          ) : null}
+        </div>
+        {belowHeader ? (
+          <div
+            className="px-2 pb-1.5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {belowHeader}
+          </div>
+        ) : null}
+      </div>
+      {open ? (
+        <div id={`${id}-panel`} className="px-2 pb-3 pt-2 space-y-2">
+          {children}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -151,8 +233,19 @@ export function InspectorPanel() {
   const recruitShip = useCampaignStore((s) => s.recruitShip);
   const loadTransportCargo = useCampaignStore((s) => s.loadTransportCargo);
   const unloadTransportCargo = useCampaignStore((s) => s.unloadTransportCargo);
-  const deployFromTransport = useCampaignStore((s) => s.deployFromTransport);
   const playBuildMode = useCampaignStore((s) => s.playBuildMode);
+  const [shipDest, setShipDest] = useState<"new" | string>("new");
+  const [planetOpen, setPlanetOpen] = useState<
+    Record<PlanetInspectorSection, boolean>
+  >({
+    settlements: false,
+    structures: false,
+    territory: false,
+    armies: false,
+  });
+  const togglePlanetSection = (key: PlanetInspectorSection) => {
+    setPlanetOpen((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
   const setPlayBuildMode = useCampaignStore((s) => s.setPlayBuildMode);
   const updateArmy = useCampaignStore((s) => s.updateArmy);
   const deleteArmy = useCampaignStore((s) => s.deleteArmy);
@@ -233,28 +326,45 @@ export function InspectorPanel() {
 
   useEffect(() => {
     if (!showPlanetDetails) return;
-    const targetId = selectedArmyId
-      ? `army-${selectedArmyId}`
-      : selectedStructureId
-        ? `structure-${selectedStructureId}`
-        : selectedDistrictId
-          ? `district-${selectedDistrictId}`
-          : selectedCityId
-            ? `city-${selectedCityId}`
-            : null;
+    let section: PlanetInspectorSection | null = null;
+    let targetId: string | null = null;
+    if (selectedArmyId) {
+      section = "armies";
+      targetId = `army-${selectedArmyId}`;
+    } else if (selectedStructureId) {
+      section = "structures";
+      targetId = `structure-${selectedStructureId}`;
+    } else if (selectedDistrictId || selectedCityId) {
+      section = "settlements";
+      targetId = selectedDistrictId
+        ? `district-${selectedDistrictId}`
+        : `city-${selectedCityId}`;
+    } else if (terrainPaintFactionId != null) {
+      section = "territory";
+    }
+    if (section) {
+      setPlanetOpen((prev) =>
+        prev[section!] ? prev : { ...prev, [section!]: true },
+      );
+    }
     if (!targetId) return;
     const root = planetScrollRef.current;
-    const el = root?.querySelector(`#${CSS.escape(targetId)}`);
-    el?.scrollIntoView({
-      behavior: "smooth",
-      block: selectedArmyId ? "center" : "nearest",
-    });
+    // Wait for disclosure body to mount after open state commits.
+    const timer = window.setTimeout(() => {
+      const el = root?.querySelector(`#${CSS.escape(targetId!)}`);
+      el?.scrollIntoView({
+        behavior: "smooth",
+        block: selectedArmyId ? "center" : "nearest",
+      });
+    }, 40);
+    return () => window.clearTimeout(timer);
   }, [
     showPlanetDetails,
     selectedArmyId,
     selectedCityId,
     selectedDistrictId,
     selectedStructureId,
+    terrainPaintFactionId,
   ]);
 
   const handleImport = async (file: File) => {
@@ -804,12 +914,27 @@ export function InspectorPanel() {
             {planet.type !== "asteroid_belt" &&
               supportsStrategicSurface(planet) && (
             <>
-            <section>
-              <div className="flex items-center justify-between gap-2 mb-2">
-                <h3 className="text-xs uppercase text-muted tracking-wide">
-                  Cities, districts & structures
-                </h3>
-                <div className="flex items-center gap-2 shrink-0">
+            {(() => {
+              const cities = planet.cities ?? [];
+              const independentDistricts = planet.independentDistricts ?? [];
+              const structures = planet.structures ?? [];
+              const counts = countDistrictsByFaction(
+                cities,
+                independentDistricts,
+              );
+              const activation = computeActivation(planet);
+              const settlementCount =
+                cities.length + independentDistricts.length;
+              return (
+                <>
+            <PlanetDisclosure
+              id="planet-settlements"
+              title="Cities & districts"
+              open={planetOpen.settlements}
+              onToggle={() => togglePlanetSection("settlements")}
+              count={settlementCount}
+              headerRight={
+                <>
                   <button
                     type="button"
                     className="text-[10px] text-brass"
@@ -836,37 +961,21 @@ export function InspectorPanel() {
                   >
                     Regenerate
                   </button>
-                </div>
-              </div>
-              <p className="text-[10px] text-muted mb-2 leading-snug">
-                Cities and districts sit on hexes; world-type structures
-                (mines, docks, forts, …) occupy their own tiles. Empire color
-                outlines owned hexes.
+                </>
+              }
+            >
+              <p className="text-[10px] text-muted leading-snug">
+                Cities and districts sit on hexes. Empire color outlines owned
+                hexes.
               </p>
-              {(() => {
-                const cities = planet.cities ?? [];
-                const independentDistricts = planet.independentDistricts ?? [];
-                const structures = planet.structures ?? [];
-                if (
-                  cities.length === 0 &&
-                  structures.length === 0 &&
-                  independentDistricts.length === 0
-                ) {
-                  return (
-                    <p className="text-xs text-muted">
-                      No settlements yet. Open strategic view or regenerate.
-                    </p>
-                  );
-                }
-                const counts = countDistrictsByFaction(
-                  cities,
-                  independentDistricts,
-                );
-                const activation = computeActivation(planet);
-                return (
-                  <>
+              {settlementCount === 0 ? (
+                <p className="text-xs text-muted">
+                  No settlements yet. Open strategic view or regenerate.
+                </p>
+              ) : (
+                <>
                     {activation.warnings.length > 0 && (
-                      <div className="mb-3 rounded border border-brass/40 bg-brass/5 px-2 py-1.5 space-y-0.5">
+                      <div className="mb-1 rounded border border-brass/40 bg-brass/5 px-2 py-1.5 space-y-0.5">
                         <p className="text-[10px] uppercase tracking-wider text-brass">
                           Activation warnings
                         </p>
@@ -885,7 +994,7 @@ export function InspectorPanel() {
                         )}
                       </div>
                     )}
-                    <div className="flex flex-wrap gap-2 mb-3">
+                    <div className="flex flex-wrap gap-2">
                       {[...counts.entries()].map(([fid, n]) => {
                         const fac =
                           fid === "__none__"
@@ -1187,11 +1296,24 @@ export function InspectorPanel() {
                         </ul>
                       </div>
                     )}
-                    {structures.length > 0 && (
-                      <div className="mt-4">
-                        <h4 className="text-[10px] uppercase tracking-wide text-muted mb-2">
-                          Structures
-                        </h4>
+                </>
+              )}
+            </PlanetDisclosure>
+
+            <PlanetDisclosure
+              id="planet-structures"
+              title="Structures"
+              open={planetOpen.structures}
+              onToggle={() => togglePlanetSection("structures")}
+              count={structures.length}
+            >
+              <p className="text-[10px] text-muted leading-snug">
+                World-type structures (mines, docks, forts, …) occupy their own
+                tiles.
+              </p>
+              {structures.length === 0 ? (
+                <p className="text-xs text-muted">No structures on this world.</p>
+              ) : (
                         <ul className="space-y-2">
                           {structures.map((st) => {
                             const fac = getFactionById(
@@ -1299,18 +1421,19 @@ export function InspectorPanel() {
                             );
                           })}
                         </ul>
-                      </div>
-                    )}
-                  </>
-                );
-              })()}
-            </section>
+              )}
+            </PlanetDisclosure>
+                </>
+              );
+            })()}
 
-            <section>
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="text-xs uppercase text-muted tracking-wide">
-                  Open territory
-                </h3>
+            <PlanetDisclosure
+              id="planet-territory"
+              title="Open territory"
+              open={planetOpen.territory}
+              onToggle={() => togglePlanetSection("territory")}
+              count={Object.keys(planet.tileClaims ?? {}).length || undefined}
+              headerRight={
                 <button
                   type="button"
                   className="text-[10px] text-brass"
@@ -1323,13 +1446,14 @@ export function InspectorPanel() {
                 >
                   Clear open
                 </button>
-              </div>
-              <p className="text-[10px] text-muted mb-2 leading-snug">
+              }
+            >
+              <p className="text-[10px] text-muted leading-snug">
                 Paint hexes with an empire color. Empty hexes become open
                 territory; cities, districts, and structures take that owner.
                 Use Erase to clear.
               </p>
-              <div className="flex flex-wrap gap-1.5 mb-2">
+              <div className="flex flex-wrap gap-1.5">
                 <button
                   type="button"
                   className={`hud-btn text-[10px] ${
@@ -1372,7 +1496,7 @@ export function InspectorPanel() {
                 </p>
               )}
               {Object.keys(planet.tileClaims ?? {}).length > 0 && (
-                <p className="text-[10px] text-muted mt-1">
+                <p className="text-[10px] text-muted">
                   {Object.keys(planet.tileClaims ?? {}).length} open hex
                   {Object.keys(planet.tileClaims ?? {}).length === 1
                     ? ""
@@ -1380,7 +1504,7 @@ export function InspectorPanel() {
                   claimed
                 </p>
               )}
-            </section>
+            </PlanetDisclosure>
 
             {(() => {
               const play = normalizeCampaignPlay(campaign.play);
@@ -1537,11 +1661,6 @@ export function InspectorPanel() {
                               f,
                               planet,
                             );
-                            const deployCheck = canDeployFromTransport(
-                              campaign,
-                              f,
-                              planet,
-                            );
                             return (
                               <div
                                 key={f.id}
@@ -1585,22 +1704,6 @@ export function InspectorPanel() {
                                     }}
                                   >
                                     Unload BP
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="hud-btn"
-                                    disabled={!deployCheck.ok}
-                                    title={
-                                      deployCheck.ok
-                                        ? undefined
-                                        : deployCheck.message
-                                    }
-                                    onClick={() => {
-                                      selectFleet(f.id);
-                                      deployFromTransport(f.id);
-                                    }}
-                                  >
-                                    Deploy ({DETACHMENT_BP_COST})
                                   </button>
                                 </div>
                               </div>
@@ -1865,34 +1968,65 @@ export function InspectorPanel() {
                         {portCheck.message}
                       </p>
                     ) : (
-                      <div className="flex flex-wrap gap-1 max-h-36 overflow-y-auto">
-                        {keysSortedByLabel(SHIP_CHASSIS_LABELS).map((chassis) => {
-                          const shipCheck = canRecruitShip(
-                            campaign,
-                            planet,
-                            factionId,
-                            chassis,
-                          );
-                          const cost = shipBpCost(chassis);
-                          return (
-                            <button
-                              key={chassis}
-                              type="button"
-                              className="hud-btn"
-                              disabled={!shipCheck.ok}
-                              title={
-                                shipCheck.ok
-                                  ? `${SHIP_CHASSIS_LABELS[chassis]} · ${cost} BP`
-                                  : shipCheck.message
-                              }
-                              onClick={() =>
-                                recruitShip(planet.id, chassis)
-                              }
-                            >
-                              {SHIP_CHASSIS_LABELS[chassis]} ({cost})
-                            </button>
-                          );
-                        })}
+                      <div className="space-y-2">
+                        <label className="block text-[10px] text-muted">
+                          Destination fleet
+                          <select
+                            className="hud-input mt-1 w-full text-xs"
+                            value={shipDest}
+                            onChange={(e) =>
+                              setShipDest(
+                                e.target.value === "new"
+                                  ? "new"
+                                  : e.target.value,
+                              )
+                            }
+                          >
+                            <option value="new">New fleet in orbit</option>
+                            {fleetsInOrbit(
+                              campaign.fleets ?? [],
+                              planet.systemId,
+                              planet.id,
+                            )
+                              .filter((f) => f.factionId === factionId)
+                              .map((f) => (
+                                <option key={f.id} value={f.id}>
+                                  {f.name} ({fleetPower(f)}/
+                                  {fleetPowerCap(f)} FP)
+                                </option>
+                              ))}
+                          </select>
+                        </label>
+                        <div className="flex flex-wrap gap-1 max-h-36 overflow-y-auto">
+                          {SHIP_ROLE_ORDER.map((role) => {
+                            const shipCheck = canRecruitShip(
+                              campaign,
+                              planet,
+                              factionId,
+                              role as ShipRole,
+                              shipDest,
+                            );
+                            const cost = shipBpCost(role as ShipRole);
+                            return (
+                              <button
+                                key={role}
+                                type="button"
+                                className="hud-btn"
+                                disabled={!shipCheck.ok}
+                                title={
+                                  shipCheck.ok
+                                    ? `${SHIP_ROLE_LABELS[role as ShipRole]} · ${cost} BP`
+                                    : shipCheck.message
+                                }
+                                onClick={() =>
+                                  recruitShip(planet.id, role as ShipRole, shipDest)
+                                }
+                              >
+                                {SHIP_ROLE_LABELS[role as ShipRole]} ({cost})
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1900,16 +2034,18 @@ export function InspectorPanel() {
               );
             })()}
 
-            <section>
-              <div className="flex items-center justify-between mb-2">
-                <h3 className="text-xs uppercase text-muted tracking-wide">
-                  Armies
-                </h3>
-                {campaign.factions.length > 0 &&
-                  !normalizeCampaignPlay(campaign.play).active && (
+            <PlanetDisclosure
+              id="planet-armies"
+              title="Armies"
+              open={planetOpen.armies}
+              onToggle={() => togglePlanetSection("armies")}
+              count={(planet.armies ?? []).length}
+              belowHeader={
+                campaign.factions.length > 0 &&
+                !normalizeCampaignPlay(campaign.play).active ? (
                   <select
-                    className={inputClass}
-                    style={{ fontSize: "0.7rem", width: "auto" }}
+                    className={inputClass + " w-full"}
+                    style={{ fontSize: "0.7rem" }}
                     value=""
                     onChange={(e) => {
                       const fid = e.target.value;
@@ -1925,8 +2061,9 @@ export function InspectorPanel() {
                       </option>
                     ))}
                   </select>
-                )}
-              </div>
+                ) : null
+              }
+            >
               {(planet.armies ?? []).length === 0 ? (
                 <p className="text-xs text-muted">
                   {normalizeCampaignPlay(campaign.play).active
@@ -2192,7 +2329,7 @@ export function InspectorPanel() {
                   })}
                 </ul>
               )}
-            </section>
+            </PlanetDisclosure>
             </>
             )}
 
