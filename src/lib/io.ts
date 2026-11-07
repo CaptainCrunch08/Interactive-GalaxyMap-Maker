@@ -12,6 +12,7 @@ import { normalizeShip } from "./fleets";
 import { normalizeStructureKind } from "./structureMeshes";
 import { normalizeTerrainKind } from "./planetTerrain";
 import { reportPersistSize, utf8ByteLength } from "./perfDebug";
+import { sanitizePlayFederationTurn } from "./play";
 
 const factionSchema = z.object({
   id: z.string(),
@@ -208,6 +209,15 @@ const battleEntrySchema = z.object({
     ])
     .optional(),
   victorFactionId: z.string().nullable().optional(),
+  favorite: z.boolean().optional(),
+  characterOutcomes: z
+    .array(
+      z.object({
+        characterId: z.string(),
+        fate: z.enum(["survived", "deceased", "lost"]),
+      }),
+    )
+    .optional(),
   killedCharacterIds: z.array(z.string()).optional(),
 });
 
@@ -215,6 +225,8 @@ const campaignBattleLogEntrySchema = battleEntrySchema.extend({
   theater: z.enum(["planetary", "space"]).default("planetary"),
   planetId: z.string().optional(),
   systemId: z.string().optional(),
+  /** Chronicle title (e.g. "Fall of Cadia") — must persist through save/load. */
+  name: z.string().optional(),
   locationLabel: z.string().default(""),
   attackerFleetId: z.string().optional(),
   defenderFleetId: z.string().optional(),
@@ -466,7 +478,12 @@ export function parseCampaignJson(json: string): Campaign {
     },
     battleLog: ensureCampaignBattleLog(campaign),
     mapSize: campaign.mapSize,
-    play: normalizeCampaignPlay(campaign.play),
+    play: (() => {
+      const play = normalizeCampaignPlay(campaign.play);
+      if (!play.active) return play;
+      // Federation members never hold a turn seat — collapse to banner heads.
+      return sanitizePlayFederationTurn({ ...campaign, play });
+    })(),
     systems: campaign.systems.map((s) => {
       const hasGate = campaign.planets.some(
         (p) => p.systemId === s.id && p.type === "warp_gate",

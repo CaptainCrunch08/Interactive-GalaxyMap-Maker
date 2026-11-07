@@ -15,8 +15,12 @@ import { charactersOnArmies } from "../lib/characterLocation";
 import { buildHexSphere } from "../lib/hexSphere";
 import { SETTLEMENT_HEX_FREQUENCY } from "../lib/settlements";
 import { getFactionById } from "../lib/territory";
-import { normalizeCampaignPlay } from "../types/campaign";
-import type { Army, CampaignCharacter } from "../types/campaign";
+import {
+  normalizeCampaignPlay,
+  type BattleCharacterFate,
+  type Army,
+  type CampaignCharacter,
+} from "../types/campaign";
 
 function numOrEmpty(v: string): number {
   if (v.trim() === "") return 0;
@@ -27,6 +31,12 @@ function numOrEmpty(v: string): number {
 function toggleId(ids: string[], id: string): string[] {
   return ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
 }
+
+const FATE_OPTIONS: { value: BattleCharacterFate; label: string }[] = [
+  { value: "survived", label: "Survived" },
+  { value: "deceased", label: "Died" },
+  { value: "lost", label: "Lost" },
+];
 
 function SupportPicker({
   label,
@@ -80,18 +90,18 @@ function SupportPicker({
   );
 }
 
-function CharacterKillPicker({
+function CharacterFateList({
   label,
   accent,
   characters,
-  selectedIds,
-  onToggle,
+  fates,
+  onSetFate,
 }: {
   label: string;
   accent: string;
   characters: CampaignCharacter[];
-  selectedIds: string[];
-  onToggle: (id: string) => void;
+  fates: Record<string, BattleCharacterFate>;
+  onSetFate: (id: string, fate: BattleCharacterFate) => void;
 }) {
   if (characters.length === 0) {
     return (
@@ -102,49 +112,49 @@ function CharacterKillPicker({
   }
   return (
     <div
-      className="rounded border px-3 py-2 space-y-1.5"
+      className="rounded border px-3 py-2 space-y-2"
       style={{ borderColor: `${accent}55` }}
     >
       <p className="font-display uppercase tracking-wider text-[10px] text-muted">
         {label}
       </p>
-      <p className="text-[10px] text-muted leading-snug">
-        Check characters killed in this battle (primary + supporting
-        detachments).
-      </p>
-      <ul className="space-y-1">
+      <ul className="space-y-2">
         {characters.map((c) => {
-          const checked = selectedIds.includes(c.id);
           const alreadyDead = c.status === "deceased";
+          const fate = alreadyDead
+            ? "deceased"
+            : (fates[c.id] ?? "survived");
           return (
-            <li key={c.id}>
-              <label
-                className={`flex items-center gap-2 text-xs ${
-                  alreadyDead
-                    ? "opacity-50 cursor-not-allowed"
-                    : "cursor-pointer"
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={checked || alreadyDead}
-                  disabled={alreadyDead}
-                  onChange={() => {
-                    if (!alreadyDead) onToggle(c.id);
-                  }}
-                />
-                <span className="truncate flex-1 text-star">
-                  {c.name}
-                  {c.title.trim() ? (
-                    <span className="text-muted"> · {c.title.trim()}</span>
-                  ) : null}
-                </span>
-                {alreadyDead ? (
-                  <span className="text-[10px] shrink-0" style={{ color: "#e85a4f" }}>
-                    Deceased
-                  </span>
+            <li key={c.id} className="space-y-1">
+              <p className="text-xs text-star truncate">
+                {c.name}
+                {c.title.trim() ? (
+                  <span className="text-muted"> · {c.title.trim()}</span>
                 ) : null}
-              </label>
+              </p>
+              {alreadyDead ? (
+                <p className="text-[10px]" style={{ color: "#e85a4f" }}>
+                  Already deceased
+                </p>
+              ) : (
+                <div className="flex flex-wrap gap-1">
+                  {FATE_OPTIONS.map((opt) => {
+                    const active = fate === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        className={`hud-btn text-[10px] px-2 py-0.5 ${
+                          active ? "hud-btn-active" : ""
+                        }`}
+                        onClick={() => onSetFate(c.id, opt.value)}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </li>
           );
         })}
@@ -167,7 +177,10 @@ export function BattleResolveModal() {
   const [defenderLost, setDefenderLost] = useState("0");
   const [attackerSupportIds, setAttackerSupportIds] = useState<string[]>([]);
   const [defenderSupportIds, setDefenderSupportIds] = useState<string[]>([]);
-  const [killedCharacterIds, setKilledCharacterIds] = useState<string[]>([]);
+  const [characterFates, setCharacterFates] = useState<
+    Record<string, BattleCharacterFate>
+  >({});
+  const [favorite, setFavorite] = useState(false);
 
   const pendingKey = pending
     ? `${pending.planetId}:${pending.attackerArmyId}:${pending.defenderArmyId}`
@@ -183,7 +196,8 @@ export function BattleResolveModal() {
     setDefenderLost("0");
     setAttackerSupportIds([]);
     setDefenderSupportIds([]);
-    setKilledCharacterIds([]);
+    setCharacterFates({});
+    setFavorite(false);
   }, [pendingKey]);
 
   const context = useMemo(() => {
@@ -242,12 +256,13 @@ export function BattleResolveModal() {
     campaign.characters,
     context.planet.id,
     [context.attacker.id, ...selectedAtkSupports.map((a) => a.id)],
-  );
+  ).filter((c) => c.status !== "deceased");
   const defenderCharacters = charactersOnArmies(
     campaign.characters,
     context.planet.id,
     [context.defender.id, ...selectedDefSupports.map((a) => a.id)],
-  );
+  ).filter((c) => c.status !== "deceased");
+  const presentCharacters = [...attackerCharacters, ...defenderCharacters];
 
   const atkCombined = combinedForceStrengthWithFortifications(
     context.planet,
@@ -310,7 +325,18 @@ export function BattleResolveModal() {
   const nextAtk = nextForce(context.attacker, selectedAtkSupports, aLost);
   const nextDef = nextForce(context.defender, selectedDefSupports, dLost);
 
+  const setFate = (id: string, fate: BattleCharacterFate) => {
+    setCharacterFates((prev) => ({ ...prev, [id]: fate }));
+  };
+
   const submit = () => {
+    const characterOutcomes = presentCharacters.map((c) => ({
+      characterId: c.id,
+      fate: characterFates[c.id] ?? ("survived" as const),
+    }));
+    const killedCharacterIds = characterOutcomes
+      .filter((o) => o.fate === "deceased")
+      .map((o) => o.characterId);
     resolveBattle({
       attackerVp: aVp,
       defenderVp: dVp,
@@ -321,6 +347,8 @@ export function BattleResolveModal() {
       attackerSupportArmyIds: attackerSupportIds,
       defenderSupportArmyIds: defenderSupportIds,
       killedCharacterIds,
+      characterOutcomes,
+      favorite,
     });
   };
 
@@ -331,7 +359,7 @@ export function BattleResolveModal() {
       aria-modal="true"
       aria-labelledby="battle-resolve-title"
     >
-      <div className="hud-panel w-full max-w-xl max-h-[min(92vh,900px)] overflow-y-auto border border-brass/50 p-5 space-y-4 shadow-xl">
+      <div className="hud-panel w-full max-w-3xl max-h-[min(92vh,900px)] overflow-y-auto border border-brass/50 p-5 space-y-4 shadow-xl">
         <div>
           <h2
             id="battle-resolve-title"
@@ -419,27 +447,6 @@ export function BattleResolveModal() {
           />
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <CharacterKillPicker
-            label="Attacker characters killed"
-            accent={context.attackerFaction?.color ?? "#c9a227"}
-            characters={attackerCharacters}
-            selectedIds={killedCharacterIds}
-            onToggle={(id) =>
-              setKilledCharacterIds((ids) => toggleId(ids, id))
-            }
-          />
-          <CharacterKillPicker
-            label="Defender characters killed"
-            accent={context.defenderFaction?.color ?? "#c9a227"}
-            characters={defenderCharacters}
-            selectedIds={killedCharacterIds}
-            onToggle={(id) =>
-              setKilledCharacterIds((ids) => toggleId(ids, id))
-            }
-          />
-        </div>
-
         <div className="grid grid-cols-2 gap-3">
           <label className="block text-[10px] uppercase tracking-wider text-muted">
             Attacker VP
@@ -497,64 +504,105 @@ export function BattleResolveModal() {
           </label>
         </div>
 
-        <div className="rounded border border-panel-border/80 bg-void/40 px-3 py-2 text-xs space-y-1">
-          <p>
-            Result:{" "}
-            <span className="text-brass">
-              {VICTORY_KIND_LABELS[previewKind]}
-            </span>
-            {previewKind !== "draw" ? (
-              <>
-                {" "}
-                — <span className="text-star">{previewVictor}</span>
-              </>
-            ) : null}
-            {(previewKind === "heroic" || previewKind === "epochal") && (
-              <span className="text-muted">
-                {" "}
-                · Crossed swords will mark this site
-              </span>
-            )}
-          </p>
-          <p className="text-muted">
-            After battle — Attacker force:{" "}
-            {nextAtk
-              .map(
-                (r) =>
-                  `${r.name} ${Math.max(0, r.next)}%${
-                    r.next <= 0 ? " (destroyed)" : ""
-                  }`,
-              )
-              .join("; ")}
-          </p>
-          <p className="text-muted">
-            After battle — Defender force:{" "}
-            {nextDef
-              .map(
-                (r) =>
-                  `${r.name} ${Math.max(0, r.next)}%${
-                    r.next <= 0 ? " (destroyed)" : ""
-                  }`,
-              )
-              .join("; ")}
-          </p>
-        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(14rem,17rem)] gap-3 items-start">
+          <div className="space-y-3">
+            <div className="rounded border border-panel-border/80 bg-void/40 px-3 py-2 text-xs space-y-1">
+              <p>
+                Result:{" "}
+                <span className="text-brass">
+                  {VICTORY_KIND_LABELS[previewKind]}
+                </span>
+                {previewKind !== "draw" ? (
+                  <>
+                    {" "}
+                    — <span className="text-star">{previewVictor}</span>
+                  </>
+                ) : null}
+                {(previewKind === "heroic" || previewKind === "epochal") && (
+                  <span className="text-muted">
+                    {" "}
+                    · Crossed swords will mark this site
+                  </span>
+                )}
+              </p>
+              <p className="text-muted">
+                After battle — Attacker force:{" "}
+                {nextAtk
+                  .map(
+                    (r) =>
+                      `${r.name} ${Math.max(0, r.next)}%${
+                        r.next <= 0 ? " (destroyed)" : ""
+                      }`,
+                  )
+                  .join("; ")}
+              </p>
+              <p className="text-muted">
+                After battle — Defender force:{" "}
+                {nextDef
+                  .map(
+                    (r) =>
+                      `${r.name} ${Math.max(0, r.next)}%${
+                        r.next <= 0 ? " (destroyed)" : ""
+                      }`,
+                  )
+                  .join("; ")}
+              </p>
+            </div>
 
-        <div className="flex flex-wrap gap-2 justify-end pt-1">
-          <button
-            type="button"
-            className="hud-btn"
-            onClick={() => closeBattleResolve()}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="hud-btn hud-btn-active"
-            onClick={submit}
-          >
-            Record Battle
-          </button>
+            <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={favorite}
+                onChange={(e) => setFavorite(e.target.checked)}
+              />
+              <span className="text-star">Favorite — mark as Important</span>
+            </label>
+
+            <div className="flex flex-wrap gap-2 justify-end pt-1">
+              <button
+                type="button"
+                className="hud-btn"
+                onClick={() => closeBattleResolve()}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="hud-btn hud-btn-active"
+                onClick={submit}
+              >
+                Record Battle
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <p className="font-display uppercase tracking-wider text-[10px] text-muted">
+              Named characters
+            </p>
+            {presentCharacters.length === 0 ? (
+              <div className="rounded border border-panel-border/60 px-3 py-2 text-[10px] text-muted">
+                No named characters on participating detachments.
+              </div>
+            ) : (
+              <>
+                <CharacterFateList
+                  label="Attacker"
+                  accent={context.attackerFaction?.color ?? "#c9a227"}
+                  characters={attackerCharacters}
+                  fates={characterFates}
+                  onSetFate={setFate}
+                />
+                <CharacterFateList
+                  label="Defender"
+                  accent={context.defenderFaction?.color ?? "#c9a227"}
+                  characters={defenderCharacters}
+                  fates={characterFates}
+                  onSetFate={setFate}
+                />
+              </>
+            )}
+          </div>
         </div>
       </div>
     </div>

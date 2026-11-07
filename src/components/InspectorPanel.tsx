@@ -24,6 +24,7 @@ import {
   planetOwnershipLabel,
   systemOwnerSelectValue,
 } from "../lib/territory";
+import { federationMemberIds } from "../lib/federation";
 import { countDistrictsByFaction } from "../lib/settlements";
 import {
   BASTION_BP_COST,
@@ -51,7 +52,7 @@ import {
   ORE_MINE_BP_BONUS,
   ORE_MINE_BP_COST,
   OUTPOST_BP_COST,
-  ownedCities,
+  ownedCitiesForController,
   shipBpCost,
   fleetCargoBp,
   fleetCargoCapacity,
@@ -1512,8 +1513,18 @@ export function InspectorPanel() {
               const play = normalizeCampaignPlay(campaign.play);
               if (!play.active || !play.activeFactionId || !planet) return null;
               const factionId = play.activeFactionId;
-              const bp = getBuildingPoints(planet, factionId);
-              const income = incomeForFaction(planet, factionId);
+              const memberIds = federationMemberIds(
+                campaign.factions,
+                factionId,
+              );
+              const bp = memberIds.reduce(
+                (sum, id) => sum + getBuildingPoints(planet, id),
+                0,
+              );
+              const income = memberIds.reduce(
+                (sum, id) => sum + incomeForFaction(planet, id),
+                0,
+              );
               const incomeParts = manufactorumIncomeBreakdown(
                 planet,
                 factionId,
@@ -1524,7 +1535,11 @@ export function InspectorPanel() {
                 factionId,
               );
               const portCheck = canUseSpacePort(campaign, planet, factionId);
-              const citiesOwned = ownedCities(planet, factionId);
+              const citiesOwned = ownedCitiesForController(
+                campaign,
+                planet,
+                factionId,
+              );
               const buildCityId =
                 (playBuildMode?.kind === "manufactorum" ||
                   playBuildMode?.kind === "bastion" ||
@@ -1595,7 +1610,9 @@ export function InspectorPanel() {
                     <FactionSwatch color={fac?.color} />
                     <span>
                       <span className="text-cyan font-medium">{bp} BP</span>
-                      {" on this world"}
+                      {memberIds.length > 1
+                        ? " federation total on this world"
+                        : " on this world"}
                       {income > 0 ? (
                         <span className="text-muted">
                           {" "}
@@ -1642,7 +1659,7 @@ export function InspectorPanel() {
                         campaign.fleets ?? [],
                         planet.systemId,
                         planet.id,
-                      ).filter((f) => f.factionId === factionId);
+                      ).filter((f) => memberIds.includes(f.factionId));
                       const withCargo = orbitFleets.filter(
                         (f) => fleetCargoCapacity(f) > 0,
                       );
@@ -1990,7 +2007,7 @@ export function InspectorPanel() {
                               planet.systemId,
                               planet.id,
                             )
-                              .filter((f) => f.factionId === factionId)
+                              .filter((f) => memberIds.includes(f.factionId))
                               .map((f) => (
                                 <option key={f.id} value={f.id}>
                                   {f.name} ({fleetPower(f)}/
@@ -2392,7 +2409,7 @@ export function InspectorPanel() {
                         <input
                           className={inputClass + " flex-1"}
                           style={{ fontSize: "0.75rem" }}
-                          placeholder="Date (e.g. 999.M41)"
+                          placeholder="Date (e.g. 05.07.026.M41)"
                           value={battle.date}
                           onChange={(e) =>
                             updateBattle(planet.id, battle.id, {

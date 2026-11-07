@@ -78,6 +78,41 @@ export function childFactions(
   return factions.filter((f) => f.parentFactionId === parentId);
 }
 
+/** Every faction under the same banner as `factionId` (including the root). */
+export function federationMemberIds(
+  factions: Faction[],
+  factionId: string | undefined | null,
+): string[] {
+  const banner = bannerFactionId(factions, factionId);
+  if (!banner) return [];
+  return factions
+    .filter((f) => bannerFactionId(factions, f.id) === banner)
+    .map((f) => f.id);
+}
+
+/**
+ * Play turn order: only federation heads (roots). Subfactions ids collapse to their
+ * banner; duplicates are dropped.
+ */
+export function federationTurnOrder(
+  factions: Faction[],
+  preferredOrder?: string[],
+): string[] {
+  const roots = rootFactions(factions);
+  const rootIds = new Set(roots.map((f) => f.id));
+  if (preferredOrder && preferredOrder.length > 0) {
+    const out: string[] = [];
+    for (const raw of preferredOrder) {
+      const banner = bannerFactionId(factions, raw) ?? raw;
+      if (!rootIds.has(banner)) continue;
+      if (out.includes(banner)) continue;
+      out.push(banner);
+    }
+    if (out.length > 0) return out;
+  }
+  return roots.map((f) => f.id);
+}
+
 /**
  * Valid parent candidates for `factionId`: other roots or any faction that
  * is not this one or a descendant (no cycles). Prefer attaching to roots.

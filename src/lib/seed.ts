@@ -180,7 +180,7 @@ export function createDemoCampaign(): Campaign {
           battles: [
             {
               id: crypto.randomUUID(),
-              date: "999.M41",
+              date: "05.07.026.M41",
               summary: "Black Crusade assault on the gate fortifications.",
               outcome: "Pyrrhic Imperial victory",
             },

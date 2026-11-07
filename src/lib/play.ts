@@ -3,6 +3,36 @@ import {
   inactivePlayState,
   normalizeCampaignPlay,
 } from "../types/campaign";
+import {
+  areFederated,
+  federationMemberIds,
+  federationTurnOrder,
+} from "./federation";
+
+/**
+ * True when the active Play faction may command / spend for `unitFactionId`
+ * (same faction or federation head controlling a member).
+ */
+export function activePlayerControlsFaction(
+  campaign: Campaign,
+  unitFactionId: string | undefined | null,
+): boolean {
+  const play = normalizeCampaignPlay(campaign.play);
+  if (!play.active) return true;
+  if (!play.activeFactionId || !unitFactionId) return false;
+  return areFederated(
+    campaign.factions,
+    play.activeFactionId,
+    unitFactionId,
+  );
+}
+
+/** Faction ids the active player may move / spend for this turn. */
+export function playControlledFactionIds(campaign: Campaign): string[] {
+  const play = normalizeCampaignPlay(campaign.play);
+  if (!play.active || !play.activeFactionId) return [];
+  return federationMemberIds(campaign.factions, play.activeFactionId);
+}
 
 export type PlayUnitKind = "fleet" | "army";
 
@@ -107,8 +137,8 @@ export function playMoveBlockReason(
 ): string | null {
   const play = normalizeCampaignPlay(campaign.play);
   if (!play.active) return null;
-  if (!play.activeFactionId || play.activeFactionId !== unitFactionId) {
-    return "Only the active faction can move units";
+  if (!activePlayerControlsFaction(campaign, unitFactionId)) {
+    return "Only the active federation can move these units";
   }
   if (kind === "fleet") {
     const need = opts?.mpCost ?? 1;
@@ -152,3 +182,29 @@ export function turnLabel(
 ): string {
   return `R${round} · ${factionName}`;
 }
+
+/** Sanitize saved turn order / active id to federation heads only. */
+export function sanitizePlayFederationTurn(
+  campaign: Campaign,
+): CampaignPlay {
+  const play = normalizeCampaignPlay(campaign.play);
+  const turnOrder = federationTurnOrder(campaign.factions, play.turnOrder);
+  let activeFactionId = play.activeFactionId;
+  if (activeFactionId) {
+    const banner =
+      federationTurnOrder(campaign.factions, [activeFactionId])[0] ?? null;
+    activeFactionId = banner;
+    if (activeFactionId && !turnOrder.includes(activeFactionId)) {
+      activeFactionId = turnOrder[0] ?? null;
+    }
+  } else if (play.active && turnOrder.length > 0) {
+    activeFactionId = turnOrder[0]!;
+  }
+  return {
+    ...play,
+    turnOrder,
+    activeFactionId,
+  };
+}
+
+export { federationTurnOrder };

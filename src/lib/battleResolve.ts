@@ -33,6 +33,10 @@ export type BattleResolveInput = {
   defenderSupportArmyIds?: string[];
   /** Characters on either side (incl. supports) marked killed in this battle. */
   killedCharacterIds?: string[];
+  /** Full fate list for present characters (survived / deceased / lost). */
+  characterOutcomes?: { characterId: string; fate: "survived" | "deceased" | "lost" }[];
+  /** Star this fight as Important in the chronicle. */
+  favorite?: boolean;
 };
 
 export type BattleResolvePending = {
@@ -210,8 +214,15 @@ export const VICTORY_KIND_OPTIONS: readonly VictoryKind[] = [
   "epochal",
 ];
 
+/**
+ * Imperial campaign date: day.month.year.M41 (e.g. 05.07.026.M41).
+ * Year is three digits (Gregorian year mod 1000). Local calendar components.
+ */
 export function formatBattleDate(d = new Date()): string {
-  return d.toISOString().slice(0, 10);
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yyy = String(d.getFullYear() % 1000).padStart(3, "0");
+  return `${dd}.${mm}.${yyy}.M41`;
 }
 
 export function buildBattleRecord(args: {
@@ -240,6 +251,8 @@ export function buildBattleRecord(args: {
   victoryKind: VictoryKind;
   victorFactionId: string | null;
   killedCharacterIds?: string[];
+  characterOutcomes?: { characterId: string; fate: "survived" | "deceased" | "lost" }[];
+  favorite?: boolean;
 }): BattleEntry {
   const {
     victoryKind,
@@ -301,6 +314,11 @@ export function buildBattleRecord(args: {
       args.killedCharacterIds && args.killedCharacterIds.length > 0
         ? [...args.killedCharacterIds]
         : undefined,
+    characterOutcomes:
+      args.characterOutcomes && args.characterOutcomes.length > 0
+        ? args.characterOutcomes.map((o) => ({ ...o }))
+        : undefined,
+    favorite: args.favorite ? true : undefined,
   };
 }
 
@@ -312,15 +330,21 @@ export function isSpecialVictoryKind(
 }
 
 /**
- * Important chronicle battles: special victory types, or any fight where a
- * named character died.
+ * Important chronicle battles: favorited, special victory types, or any fight
+ * where a named character died or was lost.
  */
 export function isImportantBattle(entry: {
   victoryKind?: VictoryKind;
   killedCharacterIds?: string[];
+  characterOutcomes?: { fate: string }[];
+  favorite?: boolean;
 }): boolean {
+  if (entry.favorite) return true;
   if (isSpecialVictoryKind(entry.victoryKind)) return true;
-  return (entry.killedCharacterIds?.length ?? 0) > 0;
+  if ((entry.killedCharacterIds?.length ?? 0) > 0) return true;
+  return (entry.characterOutcomes ?? []).some(
+    (o) => o.fate === "deceased" || o.fate === "lost",
+  );
 }
 
 /** Sum recorded battle casualties for Galactic Overview KIA. */

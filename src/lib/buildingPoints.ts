@@ -35,6 +35,8 @@ import {
   UNDERHIVE_BP_COST,
 } from "./activation";
 import { armyTileIndex } from "./armyActions";
+import { activePlayerControlsFaction } from "./play";
+import { federationMemberIds } from "./federation";
 
 export { DOMED_HABITAT_BP_COST, SPIRE_BP_COST, UNDERHIVE_BP_COST };
 
@@ -232,6 +234,21 @@ export type RecruitBlockReason =
   | "no_site"
   | "insufficient_bp";
 
+/** Cities owned by any member of the active federation (Play). */
+export function ownedCitiesForController(
+  campaign: Campaign,
+  planet: Planet,
+  controllerFactionId: string,
+): City[] {
+  const members = new Set(
+    federationMemberIds(campaign.factions, controllerFactionId),
+  );
+  return (planet.cities ?? []).filter(
+    (c) =>
+      c.controllingFactionId != null && members.has(c.controllingFactionId),
+  );
+}
+
 export function ownedCities(planet: Planet, factionId: string): City[] {
   return (planet.cities ?? []).filter(
     (c) => c.controllingFactionId === factionId,
@@ -281,11 +298,11 @@ export function canBuildOutpost(
   if (!play.active) {
     return { ok: false, reason: "not_play", message: "Start Play to build" };
   }
-  if (play.activeFactionId !== factionId) {
+  if (!activePlayerControlsFaction(campaign, factionId)) {
     return {
       ok: false,
       reason: "wrong_faction",
-      message: "Only the active faction can build",
+      message: "Only the active federation can build",
     };
   }
   if (getBuildingPoints(planet, factionId) < OUTPOST_BP_COST) {
@@ -384,14 +401,14 @@ function canBuildCityAdjacentDistrict(
   if (!play.active) {
     return { ok: false, reason: "not_play", message: "Start Play to build" };
   }
-  if (play.activeFactionId !== factionId) {
+  if (!activePlayerControlsFaction(campaign, factionId)) {
     return {
       ok: false,
       reason: "wrong_faction",
-      message: "Only the active faction can build",
+      message: "Only the active federation can build",
     };
   }
-  const cities = ownedCities(planet, factionId);
+  const cities = ownedCitiesForController(campaign, planet, factionId);
   if (cities.length === 0) {
     return {
       ok: false,
@@ -407,11 +424,12 @@ function canBuildCityAdjacentDistrict(
       message: `Select an owned city for the ${label}`,
     };
   }
-  if (getBuildingPoints(planet, factionId) < cost) {
+  const payerId = city.controllingFactionId ?? factionId;
+  if (getBuildingPoints(planet, payerId) < cost) {
     return {
       ok: false,
       reason: "insufficient_bp",
-      message: `Need ${cost} BP (have ${getBuildingPoints(planet, factionId)})`,
+      message: `Need ${cost} BP (have ${getBuildingPoints(planet, payerId)})`,
     };
   }
   const occupied = settlementTileSet(
@@ -472,18 +490,11 @@ export function canBuildTrenchLine(
   if (!play.active) {
     return { ok: false, reason: "not_play", message: "Start Play to dig" };
   }
-  if (play.activeFactionId !== factionId) {
+  if (!activePlayerControlsFaction(campaign, factionId)) {
     return {
       ok: false,
       reason: "wrong_faction",
-      message: "Only the active faction can dig trenches",
-    };
-  }
-  if (getBuildingPoints(planet, factionId) < TRENCH_LINE_BP_COST) {
-    return {
-      ok: false,
-      reason: "insufficient_bp",
-      message: `Need ${TRENCH_LINE_BP_COST} BP (have ${getBuildingPoints(planet, factionId)})`,
+      message: "Only the active federation can dig trenches",
     };
   }
   if (!armyId) {
@@ -494,11 +505,18 @@ export function canBuildTrenchLine(
     };
   }
   const army = (planet.armies ?? []).find((a) => a.id === armyId);
-  if (!army || army.factionId !== factionId) {
+  if (!army || !activePlayerControlsFaction(campaign, army.factionId)) {
     return {
       ok: false,
       reason: "no_site",
       message: "Select one of your detachments on this world",
+    };
+  }
+  if (getBuildingPoints(planet, army.factionId) < TRENCH_LINE_BP_COST) {
+    return {
+      ok: false,
+      reason: "insufficient_bp",
+      message: `Need ${TRENCH_LINE_BP_COST} BP (have ${getBuildingPoints(planet, army.factionId)})`,
     };
   }
   const tileIndex = armyTileIndex(planet, army);
@@ -555,11 +573,11 @@ export function canBuildOreMine(
   if (!play.active) {
     return { ok: false, reason: "not_play", message: "Start Play to build" };
   }
-  if (play.activeFactionId !== factionId) {
+  if (!activePlayerControlsFaction(campaign, factionId)) {
     return {
       ok: false,
       reason: "wrong_faction",
-      message: "Only the active faction can build",
+      message: "Only the active federation can build",
     };
   }
   if (getBuildingPoints(planet, factionId) < ORE_MINE_BP_COST) {
@@ -649,14 +667,23 @@ export function canDemolishAtTile(
   if (!play.active) {
     return { ok: false, reason: "not_play", message: "Start Play to demolish" };
   }
-  if (play.activeFactionId !== factionId) {
+  if (!activePlayerControlsFaction(campaign, factionId)) {
     return {
       ok: false,
       reason: "wrong_faction",
-      message: "Only the active faction can demolish",
+      message: "Only the active federation can demolish",
     };
   }
-  const target = demolishTargetAtTile(planet, factionId, tileIndex);
+  let target: DemolishTarget | null = null;
+  let payerId = factionId;
+  for (const id of federationMemberIds(campaign.factions, factionId)) {
+    const hit = demolishTargetAtTile(planet, id, tileIndex);
+    if (hit) {
+      target = hit;
+      payerId = id;
+      break;
+    }
+  }
   if (!target) {
     return {
       ok: false,
@@ -664,11 +691,11 @@ export function canDemolishAtTile(
       message: "No owned demolishable feature on that hex",
     };
   }
-  if (getBuildingPoints(planet, factionId) < target.cost) {
+  if (getBuildingPoints(planet, payerId) < target.cost) {
     return {
       ok: false,
       reason: "insufficient_bp",
-      message: `Need ${target.cost} BP to demolish (have ${getBuildingPoints(planet, factionId)})`,
+      message: `Need ${target.cost} BP to demolish (have ${getBuildingPoints(planet, payerId)})`,
     };
   }
   return { ok: true, target };
@@ -682,7 +709,7 @@ export function canRenameControlled(
   const play = normalizeCampaignPlay(campaign.play);
   if (!play.active) return true; // edit / setup
   if (!controllingFactionId) return false;
-  return play.activeFactionId === controllingFactionId;
+  return activePlayerControlsFaction(campaign, controllingFactionId);
 }
 
 export function ownedCamps(
@@ -693,6 +720,28 @@ export function ownedCamps(
   return activatedDistrictsOfKind(planet, "camp", factionId, snap).map(
     (x) => ({ cityId: x.cityId, district: x.district }),
   );
+}
+
+/** War camps owned by any federation member under the controller. */
+export function ownedCampsForController(
+  campaign: Campaign,
+  planet: Planet,
+  controllerFactionId: string,
+): { cityId: string | null; district: District; ownerFactionId: string }[] {
+  const out: {
+    cityId: string | null;
+    district: District;
+    ownerFactionId: string;
+  }[] = [];
+  for (const id of federationMemberIds(
+    campaign.factions,
+    controllerFactionId,
+  )) {
+    for (const camp of ownedCamps(planet, id)) {
+      out.push({ ...camp, ownerFactionId: id });
+    }
+  }
+  return out;
 }
 
 export function ownedSpacePorts(
@@ -716,6 +765,34 @@ export function factionHasSpacePort(
   );
 }
 
+export function federationHasSpacePort(
+  campaign: Campaign,
+  planet: Planet,
+  controllerFactionId: string,
+): boolean {
+  return federationMemberIds(campaign.factions, controllerFactionId).some(
+    (id) => factionHasSpacePort(planet, id),
+  );
+}
+
+/** First federation member that can pay `cost` BP on this world, else null. */
+export function federationPayerWithBp(
+  campaign: Campaign,
+  planet: Planet,
+  controllerFactionId: string,
+  cost: number,
+  require?: (memberId: string) => boolean,
+): string | null {
+  for (const id of federationMemberIds(
+    campaign.factions,
+    controllerFactionId,
+  )) {
+    if (require && !require(id)) continue;
+    if (getBuildingPoints(planet, id) >= cost) return id;
+  }
+  return null;
+}
+
 export function applyTurnIncome(
   campaign: Campaign,
   factionId: string,
@@ -737,37 +814,67 @@ export function applyTurnIncome(
   };
 }
 
+/**
+ * Federation head's turn: every member under the banner collects income into
+ * their own planet BP banks.
+ */
+export function applyFederationTurnIncome(
+  campaign: Campaign,
+  controllerFactionId: string,
+): Campaign {
+  let next = campaign;
+  for (const id of federationMemberIds(
+    campaign.factions,
+    controllerFactionId,
+  )) {
+    next = applyTurnIncome(next, id);
+  }
+  return next;
+}
+
 export function canRecruitDetachment(
   campaign: Campaign,
   planet: Planet,
   factionId: string,
-): { ok: true } | { ok: false; reason: RecruitBlockReason; message: string } {
+): { ok: true; ownerFactionId: string } | { ok: false; reason: RecruitBlockReason; message: string } {
   const play = normalizeCampaignPlay(campaign.play);
   if (!play.active) {
     return { ok: false, reason: "not_play", message: "Start Play to recruit" };
   }
-  if (play.activeFactionId !== factionId) {
+  if (!activePlayerControlsFaction(campaign, factionId)) {
     return {
       ok: false,
       reason: "wrong_faction",
-      message: "Only the active faction can recruit",
+      message: "Only the active federation can recruit",
     };
   }
-  if (ownedCamps(planet, factionId).length === 0) {
+  const camps = ownedCampsForController(campaign, planet, factionId);
+  if (camps.length === 0) {
     return {
       ok: false,
       reason: "no_site",
       message: "Need an owned War Camp on this planet",
     };
   }
-  if (getBuildingPoints(planet, factionId) < DETACHMENT_BP_COST) {
+  const payer = federationPayerWithBp(
+    campaign,
+    planet,
+    factionId,
+    DETACHMENT_BP_COST,
+    (id) => camps.some((c) => c.ownerFactionId === id),
+  );
+  if (!payer) {
+    const best = Math.max(
+      0,
+      ...camps.map((c) => getBuildingPoints(planet, c.ownerFactionId)),
+    );
     return {
       ok: false,
       reason: "insufficient_bp",
-      message: `Need ${DETACHMENT_BP_COST} BP (have ${getBuildingPoints(planet, factionId)})`,
+      message: `Need ${DETACHMENT_BP_COST} BP (have ${best})`,
     };
   }
-  return { ok: true };
+  return { ok: true, ownerFactionId: payer };
 }
 
 /** Space port present for ship builds (cost checked separately per chassis). */
@@ -780,14 +887,14 @@ export function canUseSpacePort(
   if (!play.active) {
     return { ok: false, reason: "not_play", message: "Start Play to recruit" };
   }
-  if (play.activeFactionId !== factionId) {
+  if (!activePlayerControlsFaction(campaign, factionId)) {
     return {
       ok: false,
       reason: "wrong_faction",
-      message: "Only the active faction can recruit",
+      message: "Only the active federation can recruit",
     };
   }
-  if (!factionHasSpacePort(planet, factionId)) {
+  if (!federationHasSpacePort(campaign, planet, factionId)) {
     return {
       ok: false,
       reason: "no_site",
@@ -803,20 +910,18 @@ export function canRecruitShip(
   factionId: string,
   role: ShipRole,
   destinationFleetId?: string | "new",
-): { ok: true } | { ok: false; reason: RecruitBlockReason; message: string } {
+):
+  | { ok: true; ownerFactionId: string }
+  | { ok: false; reason: RecruitBlockReason; message: string } {
   const site = canUseSpacePort(campaign, planet, factionId);
   if (!site.ok) return site;
   const cost = shipBpCost(role);
-  if (getBuildingPoints(planet, factionId) < cost) {
-    return {
-      ok: false,
-      reason: "insufficient_bp",
-      message: `Need ${cost} BP (have ${getBuildingPoints(planet, factionId)})`,
-    };
-  }
+  const members = new Set(
+    federationMemberIds(campaign.factions, factionId),
+  );
   if (destinationFleetId && destinationFleetId !== "new") {
     const fleet = (campaign.fleets ?? []).find((f) => f.id === destinationFleetId);
-    if (!fleet || fleet.factionId !== factionId) {
+    if (!fleet || !members.has(fleet.factionId)) {
       return {
         ok: false,
         reason: "no_site",
@@ -837,8 +942,34 @@ export function canRecruitShip(
     if (!fit.ok) {
       return { ok: false, reason: "no_site", message: fit.reason };
     }
+    if (getBuildingPoints(planet, fleet.factionId) < cost) {
+      return {
+        ok: false,
+        reason: "insufficient_bp",
+        message: `Need ${cost} BP (have ${getBuildingPoints(planet, fleet.factionId)})`,
+      };
+    }
+    return { ok: true, ownerFactionId: fleet.factionId };
   }
-  return { ok: true };
+  const payer = federationPayerWithBp(
+    campaign,
+    planet,
+    factionId,
+    cost,
+    (id) => factionHasSpacePort(planet, id),
+  );
+  if (!payer) {
+    const best = Math.max(
+      0,
+      ...[...members].map((id) => getBuildingPoints(planet, id)),
+    );
+    return {
+      ok: false,
+      reason: "insufficient_bp",
+      message: `Need ${cost} BP (have ${best})`,
+    };
+  }
+  return { ok: true, ownerFactionId: payer };
 }
 
 /** @deprecated Use canRecruitShip — kept for older call sites. */
@@ -971,11 +1102,11 @@ export function canDeployFromTransport(
   if (!play.active) {
     return { ok: false, reason: "not_play", message: "Start Play to deploy" };
   }
-  if (play.activeFactionId !== fleet.factionId) {
+  if (!activePlayerControlsFaction(campaign, fleet.factionId)) {
     return {
       ok: false,
       reason: "wrong_faction",
-      message: "Only the active faction can deploy from this fleet",
+      message: "Only the active federation can deploy from this fleet",
     };
   }
   if (
@@ -1018,11 +1149,11 @@ export function canLoadTransportCargo(
   if (!play.active) {
     return { ok: false, reason: "not_play", message: "Start Play to load cargo" };
   }
-  if (play.activeFactionId !== fleet.factionId) {
+  if (!activePlayerControlsFaction(campaign, fleet.factionId)) {
     return {
       ok: false,
       reason: "wrong_faction",
-      message: "Only the active faction can load this fleet",
+      message: "Only the active federation can load this fleet",
     };
   }
   if (
@@ -1091,11 +1222,11 @@ export function canUnloadTransportCargo(
       message: "Start Play to unload cargo",
     };
   }
-  if (play.activeFactionId !== fleet.factionId) {
+  if (!activePlayerControlsFaction(campaign, fleet.factionId)) {
     return {
       ok: false,
       reason: "wrong_faction",
-      message: "Only the active faction can unload this fleet",
+      message: "Only the active federation can unload this fleet",
     };
   }
   if (

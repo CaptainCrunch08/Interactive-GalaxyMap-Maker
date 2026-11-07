@@ -631,16 +631,15 @@ function buildSettlementMarkers(
     }
 
     if (selected) {
-      const kindTag = makeDistrictHudSprite(
-        DISTRICT_KIND_LABELS[district.kind],
-        {
-          textColor: "#f2f6fa",
-          bgColor: "rgba(10, 18, 28, 0.92)",
-          borderColor: "#4fd2ff",
-          fontPx: 28,
-          bold: true,
-        },
-      );
+      const label =
+        district.name.trim() || DISTRICT_KIND_LABELS[district.kind];
+      const kindTag = makeDistrictHudSprite(label, {
+        textColor: "#f2f6fa",
+        bgColor: "rgba(10, 18, 28, 0.92)",
+        borderColor: "#4fd2ff",
+        fontPx: 28,
+        bold: true,
+      });
       // Sit above the bang when both are present
       const tagRadius =
         violations.length > 0 ? PLANET_RADIUS * 1.12 : PLANET_RADIUS * 1.09;
@@ -689,6 +688,17 @@ function buildSettlementMarkers(
       ring.lookAt(0, 0, 0);
       ring.userData = { kind: "decor" };
       group.add(ring);
+
+      const cityLabel = city.name.trim() || "City";
+      const nameTag = makeDistrictHudSprite(cityLabel, {
+        textColor: "#f2f6fa",
+        bgColor: "rgba(10, 18, 28, 0.92)",
+        borderColor: "#4fd2ff",
+        fontPx: 28,
+        bold: true,
+      });
+      nameTag.position.copy(placeOnSphere(cityDir, PLANET_RADIUS * 1.095));
+      group.add(nameTag);
 
       // Glow owned territory in the 2-hex footprint — never unowned / rival districts.
       const ownerId = city.controllingFactionId;

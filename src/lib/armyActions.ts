@@ -9,6 +9,7 @@ import { districtOwnedBy } from "./buildingPoints";
 import { isDistrictActivated } from "./activation";
 import { buildHexSphere, nearestTileIndex } from "./hexSphere";
 import {
+  activePlayerControlsFaction,
   armyMovementRemaining,
   withPlay,
 } from "./play";
@@ -195,8 +196,8 @@ export function canMergeArmies(
 
   const play = normalizeCampaignPlay(campaign.play);
   if (play.active) {
-    if (play.activeFactionId !== source.factionId) {
-      return { ok: false, message: "Only the active faction can merge" };
+    if (!activePlayerControlsFaction(campaign, source.factionId)) {
+      return { ok: false, message: "Only the active federation can merge" };
     }
     if (armyMovementRemaining(play, sourceId) < 1) {
       return {

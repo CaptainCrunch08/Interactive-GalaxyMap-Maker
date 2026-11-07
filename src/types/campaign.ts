@@ -222,6 +222,14 @@ export interface FamousBattleSite {
   victorLabel: string;
 }
 
+/** Fate of a named character who fought in a recorded battle. */
+export type BattleCharacterFate = "survived" | "deceased" | "lost";
+
+export interface BattleCharacterOutcome {
+  characterId: string;
+  fate: BattleCharacterFate;
+}
+
 export interface BattleEntry {
   id: string;
   date: string;
@@ -243,6 +251,12 @@ export interface BattleEntry {
   victoryKind?: VictoryKind;
   /** Winning faction id, or null/omit on a draw. */
   victorFactionId?: string | null;
+  /**
+   * Manually starred as chronicle-important (even without Heroic/Epochal).
+   */
+  favorite?: boolean;
+  /** Per-character fates for those present in the fight. */
+  characterOutcomes?: BattleCharacterOutcome[];
   /** Characters killed in this engagement (encyclopedia deceased). */
   killedCharacterIds?: string[];
 }

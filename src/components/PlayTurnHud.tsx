@@ -36,7 +36,7 @@ export function PlayTurnHud() {
           disabled={!hasFactions}
           title={
             hasFactions
-              ? "Start hotseat campaign — only the active faction can move units"
+              ? "Start hotseat campaign — federation heads take turns; they command all member fleets and detachments"
               : "Add factions in Maps → Edit Galaxy first"
           }
           onClick={() => startPlayCampaign()}
@@ -62,7 +62,7 @@ export function PlayTurnHud() {
             type="button"
             className="hud-btn"
             onClick={() => endTurn()}
-            title="End turn and pass to the next faction"
+            title="End turn and pass to the next federation"
           >
             End turn
           </button>

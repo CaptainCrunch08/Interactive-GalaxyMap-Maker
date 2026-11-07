@@ -138,7 +138,7 @@ import {
   playAfterArmyMoved,
 } from "../lib/armyActions";
 import {
-  markCharactersDeceased,
+  applyCharacterBattleFates,
   scrubCharacterPlacements,
 } from "../lib/characterLocation";
 import {
@@ -150,6 +150,7 @@ import {
   commanderLabel,
   battleMonumentDir,
   eligibleSupportArmies,
+  formatBattleDate,
   isArmyDestroyed,
   pruneDestroyedArmies,
   stationArmiesAreAdjacent,
@@ -181,7 +182,7 @@ import {
 import { createDebouncedPersistStorage } from "../lib/debouncedStorage";
 
 import {
-  applyTurnIncome,
+  applyFederationTurnIncome,
   BASTION_BP_COST,
   canBuildBastion,
   canBuildDomedHabitat,
@@ -206,7 +207,7 @@ import {
   MANUFACTORUM_BP_COST,
   ORE_MINE_BP_COST,
   OUTPOST_BP_COST,
-  ownedCamps,
+  ownedCampsForController,
   ownedSpacePorts,
   shipBpCost,
   spendBuildingPoints,
@@ -224,11 +225,14 @@ import {
 } from "../lib/activation";
 import {
   ARMY_MOVE_RANGE,
+  activePlayerControlsFaction,
   armyMovementRemaining,
   armyMovementUsed,
+  federationTurnOrder,
   fleetHasBattled,
   fleetMovementRemaining,
   playMoveBlockReason,
+  sanitizePlayFederationTurn,
   turnLabel,
   withArmyActionsExhausted,
   withFleetBattled,
@@ -286,13 +290,19 @@ function buildPlayCityDistrict(
 ): string | null {
   const state = get();
   const play = normalizeCampaignPlay(state.campaign.play);
-  const factionId = play.activeFactionId;
-  if (!factionId) {
+  const controllerId = play.activeFactionId;
+  if (!controllerId) {
     set({ playMoveHint: "No active faction" });
     return null;
   }
   const planet = state.campaign.planets.find((p) => p.id === args.planetId);
   if (!planet) return null;
+  const cityOwner =
+    (planet.cities ?? []).find((c) => c.id === args.cityId)
+      ?.controllingFactionId ?? controllerId;
+  const factionId = activePlayerControlsFaction(state.campaign, cityOwner)
+    ? cityOwner
+    : controllerId;
   const check = args.canBuild(
     state.campaign,
     planet,
@@ -2544,17 +2554,19 @@ export const useCampaignStore = create<CampaignState>()(
       digTrenchWithArmy: (planetId, armyId) => {
         const state = get();
         const play = normalizeCampaignPlay(state.campaign.play);
-        const factionId = play.activeFactionId;
-        if (!factionId) {
+        const controllerId = play.activeFactionId;
+        if (!controllerId) {
           set({ playMoveHint: "No active faction" });
           return null;
         }
         const planet = state.campaign.planets.find((p) => p.id === planetId);
         if (!planet) return null;
+        const digger = planet.armies?.find((a) => a.id === armyId);
+        const factionId = digger?.factionId ?? controllerId;
         const check = canBuildTrenchLine(
           state.campaign,
           planet,
-          factionId,
+          controllerId,
           armyId,
         );
         if (!check.ok) {
@@ -2732,6 +2744,10 @@ export const useCampaignStore = create<CampaignState>()(
           return false;
         }
         const { target } = check;
+        const payerId =
+          target.kind === "district"
+            ? (target.district.controllingFactionId ?? factionId)
+            : (target.structure.controllingFactionId ?? factionId);
         set((s) => {
           const planets = s.campaign.planets.map((p) => {
             if (p.id !== planetId) return p;
@@ -2762,7 +2778,7 @@ export const useCampaignStore = create<CampaignState>()(
             }
             const spent = spendBuildingPoints(
               { ...p, cities, independentDistricts, structures },
-              factionId,
+              payerId,
               target.cost,
             );
             const tileClaims = scrubTileClaims(
@@ -4287,7 +4303,7 @@ export const useCampaignStore = create<CampaignState>()(
           ...defenderSupportIds,
         ]);
 
-        const eligibleKillIds = new Set(
+        const eligibleCharacterIds = new Set(
           (state.campaign.characters ?? [])
             .filter(
               (c) =>
@@ -4298,9 +4314,27 @@ export const useCampaignStore = create<CampaignState>()(
             )
             .map((c) => c.id),
         );
-        const killedCharacterIds = [
-          ...new Set(input.killedCharacterIds ?? []),
-        ].filter((id) => eligibleKillIds.has(id));
+        const characterOutcomes = (
+          input.characterOutcomes ??
+          (input.killedCharacterIds ?? []).map((characterId) => ({
+            characterId,
+            fate: "deceased" as const,
+          }))
+        )
+          .filter((o) => eligibleCharacterIds.has(o.characterId))
+          .map((o) => ({
+            characterId: o.characterId,
+            fate: o.fate,
+          }));
+        // Ensure every present character has an outcome (default survived).
+        for (const id of eligibleCharacterIds) {
+          if (!characterOutcomes.some((o) => o.characterId === id)) {
+            characterOutcomes.push({ characterId: id, fate: "survived" });
+          }
+        }
+        const killedCharacterIds = characterOutcomes
+          .filter((o) => o.fate === "deceased")
+          .map((o) => o.characterId);
 
         const destroyedNames: string[] = [];
         for (const id of participantIds) {
@@ -4338,6 +4372,8 @@ export const useCampaignStore = create<CampaignState>()(
           victoryKind,
           victorFactionId,
           killedCharacterIds,
+          characterOutcomes,
+          favorite: input.favorite === true,
         });
 
         set((s) => {
@@ -4454,9 +4490,9 @@ export const useCampaignStore = create<CampaignState>()(
           campaign = {
             ...campaign,
             characters: scrubCharacterPlacements(
-              markCharactersDeceased(
+              applyCharacterBattleFates(
                 campaign.characters ?? [],
-                killedCharacterIds,
+                characterOutcomes,
               ),
               campaign,
             ),
@@ -4478,24 +4514,35 @@ export const useCampaignStore = create<CampaignState>()(
             placingArmyId: placingGone ? null : s.placingArmyId,
             orbitLandingArmyId: placingGone ? null : s.orbitLandingArmyId,
             playMoveHint: (() => {
-              const killedNames = killedCharacterIds
-                .map(
-                  (id) =>
-                    (state.campaign.characters ?? []).find((c) => c.id === id)
-                      ?.name,
-                )
-                .filter(Boolean) as string[];
+              const fateNames = (fate: "deceased" | "lost") =>
+                characterOutcomes
+                  .filter((o) => o.fate === fate)
+                  .map(
+                    (o) =>
+                      (state.campaign.characters ?? []).find(
+                        (c) => c.id === o.characterId,
+                      )?.name,
+                  )
+                  .filter(Boolean) as string[];
+              const killedNames = fateNames("deceased");
+              const lostNames = fateNames("lost");
               const base = destroyedNames.length
                 ? `Battle recorded. Destroyed: ${destroyedNames.join(", ")}`
                 : `Battle recorded — ${battle.outcome}`;
-              const withKills =
-                killedNames.length > 0
-                  ? `${base} · Fallen: ${killedNames.join(", ")}`
-                  : base;
-              if (victoryKind === "heroic" || victoryKind === "epochal") {
-                return `${withKills} · Crossed swords mark the site`;
+              let withFates = base;
+              if (killedNames.length > 0) {
+                withFates = `${withFates} · Fallen: ${killedNames.join(", ")}`;
               }
-              return withKills;
+              if (lostNames.length > 0) {
+                withFates = `${withFates} · Lost: ${lostNames.join(", ")}`;
+              }
+              if (input.favorite) {
+                withFates = `${withFates} · Favorited`;
+              }
+              if (victoryKind === "heroic" || victoryKind === "epochal") {
+                return `${withFates} · Crossed swords mark the site`;
+              }
+              return withFates;
             })(),
           };
         });
@@ -4902,8 +4949,13 @@ export const useCampaignStore = create<CampaignState>()(
         const army = planet.armies?.find((a) => a.id === armyId);
         if (!army) return false;
         const play = normalizeCampaignPlay(state.campaign.play);
-        if (play.active && play.activeFactionId !== army.factionId) {
-          set({ playMoveHint: "Only the active faction can seize the crown" });
+        if (
+          play.active &&
+          !activePlayerControlsFaction(state.campaign, army.factionId)
+        ) {
+          set({
+            playMoveHint: "Only the active federation can seize the crown",
+          });
           return false;
         }
         const maze = buildStationMaze(planet.id);
@@ -5901,15 +5953,21 @@ export const useCampaignStore = create<CampaignState>()(
           }
           let planets = s.campaign.planets;
           let systems = s.campaign.systems;
+          let play = s.campaign.play;
           if ("parentFactionId" in nextPatch) {
             planets = planets.map((p) =>
               withLivePlanetOwner(p, factions),
             );
             systems = syncAllSystemOwners(systems, planets, factions);
+            play = sanitizePlayFederationTurn({
+              ...s.campaign,
+              factions,
+              play,
+            });
           }
           return withCampaign(
             s,
-            { ...s.campaign, factions, planets, systems },
+            { ...s.campaign, factions, planets, systems, play },
             { coalesceKey: `faction:${id}` },
           );
         }),
@@ -6033,7 +6091,7 @@ export const useCampaignStore = create<CampaignState>()(
         const battleId = crypto.randomUUID();
         const entry: BattleEntry = {
           id: battleId,
-          date: "",
+          date: formatBattleDate(),
           summary: "",
           outcome: "",
         };
@@ -6163,7 +6221,20 @@ export const useCampaignStore = create<CampaignState>()(
 
       updateBattleLogEntry: (battleId, patch) =>
         set((s) => {
-          const nextLog = patchBattleLog(s.campaign.battleLog, battleId, patch);
+          let nextPatch = { ...patch };
+          if (nextPatch.characterOutcomes) {
+            nextPatch = {
+              ...nextPatch,
+              killedCharacterIds: nextPatch.characterOutcomes
+                .filter((o) => o.fate === "deceased")
+                .map((o) => o.characterId),
+            };
+          }
+          const nextLog = patchBattleLog(
+            s.campaign.battleLog,
+            battleId,
+            nextPatch,
+          );
           const updated = nextLog.find((e) => e.id === battleId);
           if (!updated) return s;
           const nextPlanetId =
@@ -6190,10 +6261,18 @@ export const useCampaignStore = create<CampaignState>()(
             }
             return p;
           });
+          const characters =
+            nextPatch.characterOutcomes != null
+              ? applyCharacterBattleFates(
+                  s.campaign.characters ?? [],
+                  nextPatch.characterOutcomes,
+                )
+              : s.campaign.characters;
           return withCampaign(s, {
             ...s.campaign,
             battleLog: nextLog,
             planets,
+            characters,
           });
         }),
 
@@ -6211,12 +6290,8 @@ export const useCampaignStore = create<CampaignState>()(
 
       startPlayCampaign: (order) => {
         const campaign = get().campaign;
-        const factionIds = new Set(campaign.factions.map((f) => f.id));
-        const turnOrder = (
-          order?.length
-            ? order.filter((id) => factionIds.has(id))
-            : campaign.factions.map((f) => f.id)
-        ).filter((id, i, arr) => arr.indexOf(id) === i);
+        // Only federation heads (roots) get turns — members act on the head's turn.
+        const turnOrder = federationTurnOrder(campaign.factions, order);
         if (turnOrder.length === 0) {
           set({
             playMoveHint:
@@ -6239,7 +6314,10 @@ export const useCampaignStore = create<CampaignState>()(
             armyMovementUsed: {},
             armyCampEnteredRound: {},
           });
-          const withIncome = applyTurnIncome(withPlayState, activeFactionId);
+          const withIncome = applyFederationTurnIncome(
+            withPlayState,
+            activeFactionId,
+          );
           return {
             ...withCampaign(
               s,
@@ -6280,7 +6358,7 @@ export const useCampaignStore = create<CampaignState>()(
 
       endTurn: () => {
         const state = get();
-        const play = normalizeCampaignPlay(state.campaign.play);
+        const play = sanitizePlayFederationTurn(state.campaign);
         if (!play.active || play.turnOrder.length === 0) return;
 
         const currentId = play.activeFactionId;
@@ -6316,7 +6394,7 @@ export const useCampaignStore = create<CampaignState>()(
           const healed = applyWarCampHeals(campaign);
           campaign = healed.campaign;
           if (nextFactionId) {
-            campaign = applyTurnIncome(campaign, nextFactionId);
+            campaign = applyFederationTurnIncome(campaign, nextFactionId);
           }
           const healHint =
             healed.healedIds.length > 0
@@ -6377,19 +6455,28 @@ export const useCampaignStore = create<CampaignState>()(
       recruitDetachment: (planetId) => {
         const state = get();
         const play = normalizeCampaignPlay(state.campaign.play);
-        const factionId = play.activeFactionId;
-        if (!factionId) {
+        const controllerId = play.activeFactionId;
+        if (!controllerId) {
           set({ playMoveHint: "No active faction" });
           return null;
         }
         const planet = state.campaign.planets.find((p) => p.id === planetId);
         if (!planet) return null;
-        const check = canRecruitDetachment(state.campaign, planet, factionId);
+        const check = canRecruitDetachment(
+          state.campaign,
+          planet,
+          controllerId,
+        );
         if (!check.ok) {
           set({ playMoveHint: check.message });
           return null;
         }
-        const camps = ownedCamps(planet, factionId);
+        const factionId = check.ownerFactionId;
+        const camps = ownedCampsForController(
+          state.campaign,
+          planet,
+          controllerId,
+        ).filter((c) => c.ownerFactionId === factionId);
         const camp = camps[0]!;
         const faction = state.campaign.factions.find((f) => f.id === factionId);
         const campCity = camp.cityId
@@ -6446,8 +6533,8 @@ export const useCampaignStore = create<CampaignState>()(
       recruitShip: (planetId, role, destination = "new") => {
         const state = get();
         const play = normalizeCampaignPlay(state.campaign.play);
-        const factionId = play.activeFactionId;
-        if (!factionId) {
+        const controllerId = play.activeFactionId;
+        if (!controllerId) {
           set({ playMoveHint: "No active faction" });
           return null;
         }
@@ -6458,7 +6545,7 @@ export const useCampaignStore = create<CampaignState>()(
         const check = canRecruitShip(
           state.campaign,
           planet,
-          factionId,
+          controllerId,
           role,
           dest,
         );
@@ -6466,6 +6553,7 @@ export const useCampaignStore = create<CampaignState>()(
           set({ playMoveHint: check.message });
           return null;
         }
+        const factionId = check.ownerFactionId;
         const cost = shipBpCost(role);
         const faction = state.campaign.factions.find((f) => f.id === factionId);
         const ports = ownedSpacePorts(planet, factionId);

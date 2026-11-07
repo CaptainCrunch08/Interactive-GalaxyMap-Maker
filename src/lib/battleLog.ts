@@ -4,6 +4,7 @@ import type {
   CampaignBattleLogEntry,
   BattleTheater,
 } from "../types/campaign";
+import { formatBattleDate } from "./battleResolve";
 
 /** Build a planetary chronicle row from a planet battle entry. */
 export function planetaryLogEntry(
@@ -33,7 +34,7 @@ export function emptyBattleLogEntry(
 ): CampaignBattleLogEntry {
   return {
     id: crypto.randomUUID(),
-    date: new Date().toISOString().slice(0, 10),
+    date: formatBattleDate(),
     summary: "",
     outcome: "",
     theater,
@@ -62,13 +63,17 @@ export function ensureCampaignBattleLog(
       const prior = byId.get(battle.id);
       if (prior) {
         // Keep chronicle fields; refresh shared battle fields from planet copy.
+        // Prefer log `name` / favorite — planet.battles never stores chronicle title.
         const merged: CampaignBattleLogEntry = {
           ...prior,
           ...battle,
           theater: prior.theater ?? "planetary",
           planetId: prior.planetId ?? planet.id,
           systemId: prior.systemId ?? planet.systemId,
-          name: prior.name,
+          name: prior.name?.trim() || undefined,
+          favorite: prior.favorite || battle.favorite || undefined,
+          characterOutcomes:
+            prior.characterOutcomes ?? battle.characterOutcomes,
           locationLabel:
             prior.locationLabel?.trim() ||
             (systemName
@@ -121,6 +126,8 @@ export function battleEntryFromLog(
     defenderStrengthLostPct: entry.defenderStrengthLostPct,
     victoryKind: entry.victoryKind,
     victorFactionId: entry.victorFactionId,
+    favorite: entry.favorite,
+    characterOutcomes: entry.characterOutcomes,
     killedCharacterIds: entry.killedCharacterIds,
   };
 }

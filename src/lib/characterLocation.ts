@@ -219,6 +219,25 @@ export function markCharactersDeceased(
   );
 }
 
+/** Apply battle fates to encyclopedia character statuses. */
+export function applyCharacterBattleFates(
+  characters: CampaignCharacter[],
+  outcomes: Iterable<{ characterId: string; fate: "survived" | "deceased" | "lost" }>,
+): CampaignCharacter[] {
+  const byId = new Map<string, "survived" | "deceased" | "lost">();
+  for (const o of outcomes) byId.set(o.characterId, o.fate);
+  if (byId.size === 0) return characters;
+  return characters.map((c) => {
+    const fate = byId.get(c.id);
+    if (!fate) return c;
+    if (fate === "deceased") return { ...c, status: "deceased" as const };
+    if (fate === "lost") return { ...c, status: "lost" as const };
+    // Survived — clear lost, but don't resurrect the dead.
+    if (c.status === "deceased") return c;
+    return { ...c, status: "alive" as const };
+  });
+}
+
 /** Clear placements that reference deleted map entities. */
 export function scrubCharacterPlacements(
   characters: CampaignCharacter[],
