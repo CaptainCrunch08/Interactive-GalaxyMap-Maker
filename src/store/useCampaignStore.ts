@@ -3840,7 +3840,12 @@ export const useCampaignStore = create<CampaignState>()(
           factionId,
           symbolId: faction?.defaultSymbolId,
           dir: preferredDetachmentSpawnDir(
-            planet ?? { cities: [], armies: [] },
+            planet ?? {
+              cities: [],
+              armies: [],
+              structures: [],
+              independentDistricts: [],
+            },
             factionId,
           ),
           notes: "",
