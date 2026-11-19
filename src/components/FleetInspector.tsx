@@ -3,6 +3,7 @@ import { SHIP_ROLE_LABELS, SHIP_ROLE_ORDER } from "../types/campaign";
 import {
   chassisSummary,
   fleetSystemId,
+  isActiveFleet,
   locationLabel,
   shipsSortedByRole,
 } from "../lib/fleets";
@@ -32,6 +33,8 @@ import { factionSymbolIds } from "../lib/factionSymbols";
 import { charactersOnFleet } from "../lib/characterLocation";
 import { sortedByName } from "../lib/sortOptions";
 import { factionsSortedByName, getFactionById } from "../lib/territory";
+import { areFederated } from "../lib/federation";
+import { isArmyOnStationEntrance } from "../lib/warpGates";
 import { normalizeCampaignPlay } from "../types/campaign";
 import { useCampaignStore } from "../store/useCampaignStore";
 import { AutoGrowTextarea } from "./AutoGrowTextarea";
@@ -77,6 +80,7 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
   const disembarkArmyFromEscort = useCampaignStore(
     (s) => s.disembarkArmyFromEscort,
   );
+  const spawnArmyOntoEscort = useCampaignStore((s) => s.spawnArmyOntoEscort);
   const seizeTransportFleet = useCampaignStore((s) => s.seizeTransportFleet);
   const destroyEscortFleet = useCampaignStore((s) => s.destroyEscortFleet);
   const openSpaceBattleResolve = useCampaignStore(
@@ -115,14 +119,17 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
       : null;
   const sameSystemFriends = (campaign.fleets ?? []).filter(
     (f) =>
+      isActiveFleet(f) &&
       f.id !== fleet.id &&
       f.factionId === fleet.factionId &&
       fleetSystemId(f) === fleetSystemId(fleet),
   );
   const opposingSameOrbit = (campaign.fleets ?? []).filter(
     (f) =>
+      isActiveFleet(f) &&
       f.id !== fleet.id &&
       f.factionId !== fleet.factionId &&
+      !areFederated(campaign.factions, f.factionId, fleet.factionId) &&
       fleetsShareOrbit(f, fleet),
   );
 
@@ -260,10 +267,14 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
                 </option>
               ))}
           </select>
-          <p className="text-[10px] text-muted mb-2">
-            {chassisSummary(fleet) || "No ships"}
-          </p>
-          <p className="text-xs text-star mb-2">
+          <label className="block text-xs text-muted mb-1">Notes</label>
+          <AutoGrowTextarea
+            className={inputClass + " min-h-20 mb-2"}
+            value={fleet.notes}
+            onChange={(e) => updateFleet(fleet.id, { notes: e.target.value })}
+            placeholder="Orders, composition notes…"
+          />
+          <p className="text-xs text-star mb-1">
             Fleet power{" "}
             <span className="text-cyan font-medium">
               {power}/{powerCap}
@@ -275,6 +286,9 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
                 · {mpLeft}/{FLEET_MOVE_POINTS} MP
               </span>
             ) : null}
+          </p>
+          <p className="text-[10px] text-muted mb-2">
+            {chassisSummary(fleet) || "No ships"}
           </p>
           <button
             type="button"
@@ -359,9 +373,18 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
               {shipsSortedByRole(fleet.ships).map((ship) => {
                 const role = shipRole(ship);
                 const surfaceArmies =
-                  orbitPlanet?.armies?.filter(
-                    (a) => a.factionId === fleet.factionId,
-                  ) ?? [];
+                  orbitPlanet?.armies?.filter((a) => {
+                    if (a.factionId !== fleet.factionId) return false;
+                    // Warp stations: only entrance squares can be extracted.
+                    if (orbitPlanet.type === "warp_gate") {
+                      return isArmyOnStationEntrance(
+                        a.dir,
+                        orbitPlanet.id,
+                        orbitPlanet.stationMazeId,
+                      );
+                    }
+                    return true;
+                  }) ?? [];
                 return (
                   <li
                     key={ship.id}
@@ -441,6 +464,18 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
                                 </option>
                               ))}
                             </select>
+                          )}
+                        {!play.active &&
+                          (ship.embarkedArmies?.length ?? 0) === 0 && (
+                            <button
+                              type="button"
+                              className="hud-btn w-full text-[10px]"
+                              onClick={() =>
+                                spawnArmyOntoEscort(fleet.id, ship.id)
+                              }
+                            >
+                              Spawn detachment aboard
+                            </button>
                           )}
                       </div>
                     )}
@@ -579,16 +614,6 @@ export function FleetInspector({ fleet, onClose }: FleetInspectorProps) {
         )}
 
         <section>
-          <label className="block text-xs text-muted mb-1">Notes</label>
-          <AutoGrowTextarea
-            className={inputClass + " min-h-20"}
-            value={fleet.notes}
-            onChange={(e) => updateFleet(fleet.id, { notes: e.target.value })}
-            placeholder="Orders, composition notes…"
-          />
-        </section>
-
-        <section>
           <button
             type="button"
             className="text-xs px-2 py-1 rounded border border-crimson/50 text-crimson"
@@ -622,8 +647,10 @@ export function FleetListSection({
   const selectFleet = useCampaignStore((s) => s.selectFleet);
   const addFleet = useCampaignStore((s) => s.addFleet);
 
-  const fleets = (campaign.fleets ?? []).filter((f) =>
-    systemId ? f.location.systemId === systemId : true,
+  const fleets = (campaign.fleets ?? []).filter(
+    (f) =>
+      isActiveFleet(f) &&
+      (systemId ? f.location.systemId === systemId : true),
   );
 
   return (

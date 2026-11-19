@@ -245,7 +245,11 @@ export function scrubCharacterPlacements(
 ): CampaignCharacter[] {
   const systemIds = new Set(campaign.systems.map((s) => s.id));
   const planetIds = new Set(campaign.planets.map((p) => p.id));
-  const fleetIds = new Set((campaign.fleets ?? []).map((f) => f.id));
+  const fleetIds = new Set(
+    (campaign.fleets ?? [])
+      .filter((f) => f.status !== "lost" && f.status !== "dead")
+      .map((f) => f.id),
+  );
   const armyIds = new Set(
     campaign.planets.flatMap((p) => (p.armies ?? []).map((a) => a.id)),
   );

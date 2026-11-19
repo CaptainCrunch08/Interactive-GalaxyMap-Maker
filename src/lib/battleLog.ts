@@ -4,7 +4,7 @@ import type {
   CampaignBattleLogEntry,
   BattleTheater,
 } from "../types/campaign";
-import { formatBattleDate } from "./battleResolve";
+import { battleDateSortKey, formatBattleDate } from "./battleResolve";
 
 /** Build a planetary chronicle row from a planet battle entry. */
 export function planetaryLogEntry(
@@ -93,13 +93,14 @@ export function ensureCampaignBattleLog(
   return [...byId.values()].sort(compareBattleLogNewestFirst);
 }
 
+/** Newest Imperial date first (DD.MM.YYY.M41), not lexicographic string order. */
 export function compareBattleLogNewestFirst(
   a: CampaignBattleLogEntry,
   b: CampaignBattleLogEntry,
 ): number {
-  const da = a.date?.trim() ?? "";
-  const db = b.date?.trim() ?? "";
-  if (da !== db) return db.localeCompare(da);
+  const ka = battleDateSortKey(a.date);
+  const kb = battleDateSortKey(b.date);
+  if (ka !== kb) return kb - ka;
   return b.id.localeCompare(a.id);
 }
 
@@ -114,6 +115,8 @@ export function battleEntryFromLog(
     outcome: entry.outcome,
     attackerFactionId: entry.attackerFactionId,
     defenderFactionId: entry.defenderFactionId,
+    attackerParticipants: entry.attackerParticipants,
+    defenderParticipants: entry.defenderParticipants,
     attackerArmyId: entry.attackerArmyId,
     defenderArmyId: entry.defenderArmyId,
     attackerSupportArmyIds: entry.attackerSupportArmyIds,
@@ -122,10 +125,13 @@ export function battleEntryFromLog(
     defenderVp: entry.defenderVp,
     attackerCasualties: entry.attackerCasualties,
     defenderCasualties: entry.defenderCasualties,
+    attackerCasualtyBreakdown: entry.attackerCasualtyBreakdown,
+    defenderCasualtyBreakdown: entry.defenderCasualtyBreakdown,
     attackerStrengthLostPct: entry.attackerStrengthLostPct,
     defenderStrengthLostPct: entry.defenderStrengthLostPct,
     victoryKind: entry.victoryKind,
     victorFactionId: entry.victorFactionId,
+    victorFactionIds: entry.victorFactionIds,
     favorite: entry.favorite,
     characterOutcomes: entry.characterOutcomes,
     killedCharacterIds: entry.killedCharacterIds,
@@ -149,9 +155,9 @@ export function patchBattleLog(
   battleId: string,
   patch: Partial<CampaignBattleLogEntry>,
 ): CampaignBattleLogEntry[] {
-  return (log ?? []).map((e) =>
-    e.id === battleId ? { ...e, ...patch } : e,
-  );
+  return (log ?? [])
+    .map((e) => (e.id === battleId ? { ...e, ...patch } : e))
+    .sort(compareBattleLogNewestFirst);
 }
 
 export function removeBattleLog(

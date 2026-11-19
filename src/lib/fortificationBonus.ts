@@ -3,6 +3,7 @@ import { armyStrength, combinedForceStrength } from "./battleResolve";
 import { armyTileIndex } from "./armyActions";
 import { isDistrictActivated } from "./activation";
 import { buildHexSphere } from "./hexSphere";
+import { settlementTerrainBlockReason } from "./manufactorumRules";
 import { SETTLEMENT_HEX_FREQUENCY } from "./settlements";
 import { tilesAreHexAdjacent } from "./supplyNetwork";
 
@@ -24,9 +25,13 @@ function tileOnOrAdjacent(armyTile: number, featureTile: number): boolean {
  * Trench bonus: unit must stand on a trench hex. +1% for that hex, plus +1%
  * for each adjacent trench-line structure, capped at {@link TRENCH_STR_BONUS_MAX_PCT}.
  */
+function structureIsActive(planet: Planet, st: PlanetStructure): boolean {
+  return settlementTerrainBlockReason(planet, st.tileIndex) == null;
+}
+
 function trenchBonusPercent(planet: Planet, armyTile: number): number {
   const trenches = (planet.structures ?? []).filter(
-    (st) => st.kind === "trench_line",
+    (st) => st.kind === "trench_line" && structureIsActive(planet, st),
   );
   const onTrench = trenches.find((st) => st.tileIndex === armyTile);
   if (!onTrench) return 0;
@@ -63,6 +68,7 @@ export function fortificationStrBonusPercent(
 
   for (const st of planet.structures ?? []) {
     if (st.kind !== "outpost") continue;
+    if (!structureIsActive(planet, st)) continue;
     if (st.controllingFactionId !== army.factionId) continue;
     if (tileOnOrAdjacent(tile, st.tileIndex)) {
       bonus += OUTPOST_STR_BONUS_PCT;

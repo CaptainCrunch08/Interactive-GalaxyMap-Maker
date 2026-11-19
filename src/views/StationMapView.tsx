@@ -14,6 +14,11 @@ import {
   STATION_GRID_ROWS,
 } from "../lib/stationHex";
 import { buildStationMaze } from "../lib/stationMaze";
+import { STATION_MAZE_CATALOG_COUNT } from "../lib/stationMazeCatalog";
+import {
+  isStationTileVisible,
+  stationVisibleWalkableTiles,
+} from "../lib/stationVision";
 import {
   armyMovementRemaining,
   ARMY_MOVE_RANGE,
@@ -31,7 +36,7 @@ import {
   engageTargetsForStationArmy,
 } from "../lib/battleResolve";
 
-const TILE = 18;
+const TILE = 22;
 const GAP = 1;
 
 export function StationMapView() {
@@ -55,8 +60,11 @@ export function StationMapView() {
 
   const grid = useMemo(() => buildStationGrid(), []);
   const maze = useMemo(
-    () => (planet ? buildStationMaze(planet.id) : null),
-    [planet?.id],
+    () =>
+      planet
+        ? buildStationMaze(planet.id, planet.stationMazeId)
+        : null,
+    [planet?.id, planet?.stationMazeId],
   );
   const play = normalizeCampaignPlay(campaign.play);
 
@@ -76,6 +84,17 @@ export function StationMapView() {
     });
     return { pts, width, height, step };
   }, [grid.tileCount]);
+
+  const visible = useMemo(() => {
+    if (!planet || !maze) return null;
+    return stationVisibleWalkableTiles({
+      maze,
+      planet,
+      playActive: play.active,
+      viewerFactionId: play.activeFactionId,
+      armies: planet.armies,
+    });
+  }, [planet, maze, play.active, play.activeFactionId]);
 
   if (!planet || planet.type !== "warp_gate" || !maze) {
     return (
@@ -127,7 +146,13 @@ export function StationMapView() {
   const engageArmyId =
     play.active && selectedArmy && !moveBlock ? selectedArmy.id : null;
   const engageTargets = engageArmyId
-    ? engageTargetsForStationArmy(armies, engageArmyId, planet.id)
+    ? engageTargetsForStationArmy(
+        armies,
+        engageArmyId,
+        planet.id,
+        campaign.factions,
+        planet.stationMazeId,
+      )
     : new Map<number, string[]>();
   const fightTiles = new Set(engageTargets.keys());
 
@@ -135,10 +160,12 @@ export function StationMapView() {
     !!selectedArmy &&
     !!crown &&
     selectedTile === crown.tileIndex &&
+    isStationTileVisible(crown.tileIndex, visible) &&
     crown.controllingFactionId !== selectedArmy.factionId;
 
   const onTileClick = (tileIndex: number) => {
     if (!maze.walkable.has(tileIndex)) return;
+    if (!isStationTileVisible(tileIndex, visible)) return;
 
     // Engage rival on fightable tile (Play mode).
     if (engageArmyId && fightTiles.has(tileIndex)) {
@@ -179,6 +206,11 @@ export function StationMapView() {
     return m?.[0] ?? fallback;
   };
 
+  const fogActive = visible != null;
+  const viewingFaction = play.active
+    ? getFactionById(campaign, play.activeFactionId ?? undefined)
+    : null;
+
   return (
     <div className="relative h-full w-full galaxy-bg overflow-hidden flex flex-col">
       <div className="galaxy-nebula pointer-events-none absolute inset-0 opacity-40" />
@@ -186,6 +218,9 @@ export function StationMapView() {
       <div className="relative z-[1] shrink-0 px-4 pt-3 pb-1 text-center">
         <p className="text-[10px] font-display uppercase tracking-[0.2em] text-muted">
           Warp gate station · corridor maze
+          {planet.stationMazeId != null
+            ? ` · layout ${planet.stationMazeId + 1}/${STATION_MAZE_CATALOG_COUNT}`
+            : ""}
         </p>
         <h1 className="font-display text-xl text-star">{planet.name}</h1>
         <p className="text-xs text-brass mt-0.5">
@@ -197,9 +232,13 @@ export function StationMapView() {
           {` · ${armies.length} detachments`}
         </p>
         <p className="text-[10px] text-muted mt-1 max-w-xl mx-auto leading-snug">
-          {engageArmyId
-            ? "Red tiles are valid fights — click a highlighted rival to open the battle report · Move up to 3 tiles per turn"
-            : "Enter at the bottom boarding locks (orbit fleet or transport cargo BP), push through the corridors, seize the Relay Crown."}
+          {fogActive
+            ? viewingFaction
+              ? `${viewingFaction.name}: entrance squares stay visible; other corridors reveal next to your detachments until you seize the Relay Crown.`
+              : "Campaign play — entrances stay visible; explore other corridors with your detachments."
+            : engageArmyId
+              ? "Red tiles are valid fights — click a highlighted rival to open the battle report · Move up to 3 tiles per turn"
+              : "Green entrance squares are where escorts land detachments. Outside campaign play the full station is visible."}
         </p>
         {playMoveHint && (
           <p className="text-[11px] text-brass mt-1">{playMoveHint}</p>
@@ -237,7 +276,6 @@ export function StationMapView() {
             </filter>
           </defs>
 
-          {/* Black void with subtle grid */}
           <rect width={layout.width} height={layout.height} fill="#000000" />
           <rect
             width={layout.width}
@@ -245,12 +283,15 @@ export function StationMapView() {
             fill="url(#station-grid-bg)"
           />
 
-          {/* Corridors */}
           {layout.pts.map(({ i, x, y }) => {
             if (!maze.walkable.has(i)) return null;
+            if (!isStationTileVisible(i, visible)) return null;
             const st = structuresByTile.get(i);
-            const isCrown = st?.kind === "relay_crown";
-            const isDock = maze.dockTiles.includes(i);
+            const isCrown =
+              st?.kind === "relay_crown" || i === maze.crownTile;
+            const isEntranceA = i === maze.entranceA;
+            const isEntranceB = i === maze.entranceB;
+            const isDock = isEntranceA || isEntranceB;
             const isChamber = maze.chamberTiles.includes(i);
             const inReach = reach.has(i);
             const isFight = fightTiles.has(i);
@@ -260,7 +301,11 @@ export function StationMapView() {
               ? owner?.color ?? "#e8c547"
               : isChamber
                 ? chamberGlow(st?.notes, "#3b82f6")
-                : null;
+                : isDock
+                  ? "#22c55e"
+                  : null;
+            const cx = x + TILE / 2;
+            const cy = y + TILE / 2;
 
             return (
               <g key={i}>
@@ -289,7 +334,7 @@ export function StationMapView() {
                       : isCrown
                         ? "#3f3a2a"
                         : isDock
-                          ? "#1e293b"
+                          ? "#166534"
                           : isChamber
                             ? "#273244"
                             : "#4b5563"
@@ -306,7 +351,7 @@ export function StationMapView() {
                             : isCrown
                               ? "#e8c547"
                               : isDock
-                                ? "#f87171"
+                                ? "#4ade80"
                                 : "#1f2937"
                   }
                   strokeWidth={
@@ -317,50 +362,48 @@ export function StationMapView() {
                   onMouseLeave={() => setHoverTile(null)}
                   onClick={() => onTileClick(i)}
                 />
-                {/* Floor plating lines */}
-                <path
-                  d={`M ${x + 3} ${y + TILE / 2} H ${x + TILE - 3}`}
-                  stroke="#111827"
-                  strokeWidth={0.6}
-                  opacity={0.35}
-                  className="pointer-events-none"
-                />
+                {!isDock && (
+                  <path
+                    d={`M ${x + 3} ${y + TILE / 2} H ${x + TILE - 3}`}
+                    stroke="#111827"
+                    strokeWidth={0.6}
+                    opacity={0.35}
+                    className="pointer-events-none"
+                  />
+                )}
                 {isDock && (
-                  <>
-                    <path
-                      d={`M ${x + TILE / 2} ${y + 4} L ${x + 5} ${y + TILE - 4} L ${x + TILE - 5} ${y + TILE - 4} Z`}
-                      fill="none"
-                      stroke="#f87171"
-                      strokeWidth={1.2}
-                      className="pointer-events-none"
-                    />
-                    <text
-                      x={x + TILE / 2}
-                      y={y + TILE / 2 + 2}
-                      textAnchor="middle"
-                      fill="#fecaca"
-                      fontSize={6}
-                      fontFamily="var(--font-display)"
-                      className="pointer-events-none"
-                    >
-                      IN
-                    </text>
-                  </>
+                  <title>
+                    {isEntranceA
+                      ? "Boarding Lock A · ingress"
+                      : "Boarding Lock B · ingress"}
+                  </title>
                 )}
                 {isCrown && (
-                  <text
-                    x={x + TILE / 2}
-                    y={y + TILE / 2 + 2}
-                    textAnchor="middle"
-                    fill="#fde68a"
-                    fontSize={6}
-                    fontFamily="var(--font-display)"
-                    className="pointer-events-none"
-                  >
-                    CROWN
-                  </text>
+                  <g className="pointer-events-none">
+                    <path
+                      d={`M ${cx - 6} ${cy + 3.5}
+                         L ${cx - 6} ${cy - 2}
+                         L ${cx - 2.5} ${cy + 1}
+                         L ${cx} ${cy - 4.5}
+                         L ${cx + 2.5} ${cy + 1}
+                         L ${cx + 6} ${cy - 2}
+                         L ${cx + 6} ${cy + 3.5} Z`}
+                      fill="#facc15"
+                      stroke="#ca8a04"
+                      strokeWidth={0.8}
+                    />
+                    <rect
+                      x={cx - 6}
+                      y={cy + 3.5}
+                      width={12}
+                      height={2.2}
+                      rx={0.4}
+                      fill="#fde68a"
+                    />
+                    <title>Relay Crown</title>
+                  </g>
                 )}
-                {st && (
+                {st && !isDock && !isCrown && (
                   <title>
                     {`${st.name} · ${STRUCTURE_KIND_LABELS[st.kind] ?? st.kind}`}
                   </title>
@@ -369,13 +412,13 @@ export function StationMapView() {
             );
           })}
 
-          {/* Armies */}
           {armies.map((army) => {
             const tile = nearestStationTile(
               army.dir,
               undefined,
               maze.walkable,
             );
+            if (!isStationTileVisible(tile, visible)) return null;
             const pt = layout.pts[tile];
             if (!pt) return null;
             const fac = getFactionById(campaign, army.factionId);
@@ -417,7 +460,9 @@ export function StationMapView() {
                   cy={cy}
                   r={selected ? 7 : 5.5}
                   fill={fac?.color ?? "#4fd2ff"}
-                  stroke={selected ? "#fff" : canEngageHere ? "#ef4444" : "#0a1018"}
+                  stroke={
+                    selected ? "#fff" : canEngageHere ? "#ef4444" : "#0a1018"
+                  }
                   strokeWidth={selected || canEngageHere ? 2 : 1.2}
                 />
                 <title>
@@ -435,7 +480,7 @@ export function StationMapView() {
           className="hud-btn"
           onClick={() => boardWarpGate(planet.id)}
         >
-          Board from orbit
+          Land from escort
         </button>
         {canSeize && selectedArmy && (
           <button

@@ -24,7 +24,7 @@ function asVec3(dir: { x: number; y: number; z: number }) {
 /** Tile index under an army on a planet or warp-gate station. */
 export function armyTileIndex(planet: Planet, army: Pick<Army, "dir">): number {
   if (planet.type === "warp_gate") {
-    const maze = buildStationMaze(planet.id);
+    const maze = buildStationMaze(planet.id, planet.stationMazeId);
     return nearestStationTile(army.dir, undefined, maze.walkable);
   }
   const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
@@ -37,7 +37,7 @@ export function armiesAdjacentOnPlanet(
   b: Pick<Army, "dir">,
 ): boolean {
   if (planet.type === "warp_gate") {
-    return stationArmiesAreAdjacent(a, b, planet.id);
+    return stationArmiesAreAdjacent(a, b, planet.id, planet.stationMazeId);
   }
   const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
   return armiesAreAdjacent(a, b, sphere);

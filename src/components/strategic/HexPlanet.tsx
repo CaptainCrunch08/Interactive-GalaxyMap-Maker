@@ -551,7 +551,16 @@ function buildSettlementMarkers(
   independentDistricts: District[] = [],
   opts?: {
     showRuleWarnings?: boolean;
-    planet?: Pick<Planet, "cities" | "independentDistricts" | "structures">;
+    planet?: Pick<
+      Planet,
+      | "id"
+      | "type"
+      | "classification"
+      | "tileTerrain"
+      | "cities"
+      | "independentDistricts"
+      | "structures"
+    >;
     tileClaims?: Record<string, string>;
     structures?: PlanetStructure[];
   },
@@ -712,7 +721,7 @@ function buildSettlementMarkers(
       }
     }
 
-    for (const district of city.districts) {
+    for (const district of city.districts ?? []) {
       addDistrictMarker(district, city.id);
     }
   }
@@ -769,7 +778,7 @@ function buildSupplyLinkLines(
 
   const stationDir = new Map<string, SphereDir>();
   for (const city of cities) {
-    for (const d of city.districts) {
+    for (const d of city.districts ?? []) {
       if (d.kind === "supply_station") stationDir.set(d.id, d.dir);
     }
   }
@@ -803,11 +812,18 @@ function buildSupplyLinkLines(
 }
 
 /** AP feeds, spire↔underhive, ore→manufactorum arcs. */
-function buildInteractionLinkLines(planet: {
-  cities?: City[];
-  independentDistricts?: District[];
-  structures?: PlanetStructure[];
-}): THREE.Group {
+function buildInteractionLinkLines(
+  planet: Pick<
+    Planet,
+    | "id"
+    | "type"
+    | "classification"
+    | "tileTerrain"
+    | "cities"
+    | "independentDistricts"
+    | "structures"
+  >,
+): THREE.Group {
   const group = new THREE.Group();
   const links = collectPlanetInteractionLinks(planet as Planet);
   const r = PLANET_RADIUS * 1.052;
@@ -821,7 +837,10 @@ function buildInteractionLinkLines(planet: {
   return group;
 }
 
-function createCrossedSwordsTexture(tier: "heroic" | "epochal"): THREE.CanvasTexture {
+function createCrossedSwordsTexture(
+  tier: "heroic" | "epochal",
+  victorColors: string[] = [],
+): THREE.CanvasTexture {
   const size = 128;
   const canvas = document.createElement("canvas");
   canvas.width = size;
@@ -829,12 +848,41 @@ function createCrossedSwordsTexture(tier: "heroic" | "epochal"): THREE.CanvasTex
   const ctx = canvas.getContext("2d")!;
   ctx.clearRect(0, 0, size, size);
 
-  const metal = tier === "epochal" ? "#f0d060" : "#c8d0d8";
+  const cx = size / 2;
+  const cy = size / 2;
+  const colors =
+    victorColors.length > 0 ? victorColors.slice(0, 4) : ["#5a6a7a"];
+  const n = colors.length;
+  // Split disc from 12 o'clock (Y-thirds = seams at 12 / 4 / 8).
+  for (let i = 0; i < n; i++) {
+    const start = (i / n) * Math.PI * 2 - Math.PI / 2;
+    const end = ((i + 1) / n) * Math.PI * 2 - Math.PI / 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, 56, start, end);
+    ctx.closePath();
+    ctx.fillStyle = colors[i]!;
+    ctx.fill();
+  }
+  if (n > 1) {
+    ctx.strokeStyle = "rgba(10, 16, 24, 0.9)";
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = "round";
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2 - Math.PI / 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + Math.cos(a) * 56, cy + Math.sin(a) * 56);
+      ctx.stroke();
+    }
+  }
+
+  const metal = tier === "epochal" ? "#f0d060" : "#e8eef4";
   const grip = tier === "epochal" ? "#8b4518" : "#4a3020";
 
   const drawSword = (angle: number) => {
     ctx.save();
-    ctx.translate(size / 2, size / 2);
+    ctx.translate(cx, cy);
     ctx.rotate(angle);
     // blade
     ctx.fillStyle = metal;
@@ -873,7 +921,7 @@ function createCrossedSwordsTexture(tier: "heroic" | "epochal"): THREE.CanvasTex
   ctx.strokeStyle = tier === "epochal" ? "#e8c547" : "#9eb0c0";
   ctx.lineWidth = 3;
   ctx.beginPath();
-  ctx.arc(size / 2, size / 2, 58, 0, Math.PI * 2);
+  ctx.arc(cx, cy, 58, 0, Math.PI * 2);
   ctx.stroke();
 
   const tex = new THREE.CanvasTexture(canvas);
@@ -885,11 +933,19 @@ function createCrossedSwordsTexture(tier: "heroic" | "epochal"): THREE.CanvasTex
 function buildFamousBattleMarkers(
   sites: FamousBattleSite[],
   selectedId: string | null,
+  factions: Faction[],
 ): THREE.Group {
   const group = new THREE.Group();
   for (const site of sites) {
     const selected = selectedId === site.id;
-    const tex = createCrossedSwordsTexture(site.tier);
+    const victorIds =
+      site.victorFactionIds && site.victorFactionIds.length > 0
+        ? site.victorFactionIds
+        : [site.victorFactionId];
+    const colors = victorIds.map((id) =>
+      territoryColor(factions, id, "#6a8296"),
+    );
+    const tex = createCrossedSwordsTexture(site.tier, colors);
     const size = selected ? 0.14 : 0.11;
     const mat = new THREE.MeshBasicMaterial({
       map: tex,
@@ -1265,7 +1321,7 @@ function setArmyWallTile(
   root.userData.selected = selected;
   root.userData.stackIndex = stackIndex;
   root.userData.isPentagon =
-    (planetSphere().tiles[tileIndex]?.ring.length ?? 6) === 5;
+    (planetSphere().tiles[tileIndex]?.ring?.length ?? 6) === 5;
   // Pick pad first so the filled hex wins over neighboring thin walls.
   root.add(pickPad, wall, rail);
 }
@@ -1505,6 +1561,10 @@ export function HexPlanet({
       {
         showRuleWarnings: showDistrictRuleWarnings,
         planet: {
+          id: planetId,
+          type: planetType,
+          classification,
+          tileTerrain,
           cities,
           independentDistricts,
           structures,
@@ -1531,6 +1591,10 @@ export function HexPlanet({
     planet.add(supplyLinks);
 
     let interactionLinks = buildInteractionLinkLines({
+      id: planetId,
+      type: planetType,
+      classification,
+      tileTerrain,
       cities,
       independentDistricts,
       structures,
@@ -1548,6 +1612,7 @@ export function HexPlanet({
     let famousBattleMarkers = buildFamousBattleMarkers(
       famousBattleSites,
       selectedFamousBattleId,
+      factions,
     );
     planet.add(famousBattleMarkers);
     scene.add(planet);
@@ -1674,6 +1739,7 @@ export function HexPlanet({
         armiesList,
         attackerId,
         planetSphere(),
+        factions,
       );
       engageTargetsRef.current = targets;
       if (targets.size === 0) return;
@@ -2233,6 +2299,10 @@ export function HexPlanet({
           state.independentDistricts,
         );
         interactionLinks = buildInteractionLinkLines({
+          id: planetId,
+          type: planetType,
+          classification,
+          tileTerrain: state.tileTerrain,
           cities: state.cities,
           independentDistricts: state.independentDistricts,
           structures: state.structures,
@@ -2262,6 +2332,10 @@ export function HexPlanet({
           {
             showRuleWarnings: state.showDistrictRuleWarnings,
             planet: {
+              id: planetId,
+              type: planetType,
+              classification,
+              tileTerrain: state.tileTerrain,
               cities: state.cities,
               independentDistricts: state.independentDistricts,
               structures: state.structures,
@@ -2285,6 +2359,7 @@ export function HexPlanet({
         famousBattleMarkers = buildFamousBattleMarkers(
           state.famousBattleSites,
           state.selectedFamousBattleId,
+          state.factions,
         );
         planet.add(
           settlements,
@@ -2478,7 +2553,7 @@ export function HexPlanet({
         null;
     } else if (selectedDistrictId) {
       for (const city of citiesRef.current) {
-        const district = city.districts.find(
+        const district = (city.districts ?? []).find(
           (d) => d.id === selectedDistrictId,
         );
         if (district) {

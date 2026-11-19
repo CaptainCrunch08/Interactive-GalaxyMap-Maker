@@ -10,6 +10,8 @@ import {
   collectSupplyStations,
   tilesAreHexAdjacent,
 } from "./supplyNetwork";
+import { hiveSpireHabitatBlockReason } from "./planetClass";
+import { settlementTerrainBlockReason } from "./manufactorumRules";
 
 /** City hub contributes this many activation points. */
 export const CITY_ACTIVATION_POINTS = 2;
@@ -111,6 +113,7 @@ export function tileAdjacentToAnySpire(
 /**
  * AP contributed by a generator district.
  * Independent generators always contribute 0.
+ * Hive Spires / Underhives on uninhabitable worlds contribute 0.
  */
 export function generatorApContribution(
   planet: Planet,
@@ -118,13 +121,16 @@ export function generatorApContribution(
   district: District,
 ): number {
   if (!cityId) return 0; // independents provide nothing
+  if (settlementTerrainBlockReason(planet, district.tileIndex)) return 0;
   if (district.kind === "spire") {
+    if (hiveSpireHabitatBlockReason(planet)) return 0;
     if (spireHasAdjacentSpire(planet, district.tileIndex, district.id)) {
       return 0;
     }
     return SPIRE_ACTIVATION_POINTS;
   }
   if (district.kind === "underhive") {
+    if (hiveSpireHabitatBlockReason(planet)) return 0;
     if (!tileAdjacentToAnySpire(planet, district.tileIndex)) return 0;
     return UNDERHIVE_ACTIVATION_POINTS;
   }
@@ -135,6 +141,7 @@ export function generatorApContribution(
 }
 
 export function cityGeneratedAp(planet: Planet, city: City): number {
+  if (settlementTerrainBlockReason(planet, city.tileIndex, "Cities")) return 0;
   let n = CITY_ACTIVATION_POINTS;
   for (const d of city.districts) {
     if (!isApGenerator(d.kind)) continue;
@@ -153,6 +160,22 @@ export function districtPlacementWarnings(
   opts?: { ignoreDistrictId?: string },
 ): string[] {
   const warnings: string[] = [];
+  const terrainErr = settlementTerrainBlockReason(
+    planet,
+    tileIndex,
+    "Districts",
+  );
+  if (terrainErr) warnings.push(`${terrainErr} — inactive`);
+  if (kind === "spire" || kind === "underhive") {
+    const habitat = hiveSpireHabitatBlockReason(planet);
+    if (habitat) {
+      warnings.push(
+        kind === "spire"
+          ? "Uninhabitable world — Hive Spire provides 0 AP"
+          : "Uninhabitable world — Underhive provides 0 AP",
+      );
+    }
+  }
   if (kind === "spire") {
     if (spireHasAdjacentSpire(planet, tileIndex, opts?.ignoreDistrictId)) {
       warnings.push(
@@ -194,6 +217,8 @@ export function canPlaceSpireAtTile(
   planet: Planet,
   tileIndex: number,
 ): string | null {
+  const habitat = hiveSpireHabitatBlockReason(planet);
+  if (habitat) return habitat;
   if (spireHasAdjacentSpire(planet, tileIndex)) {
     return "Hive Spires cannot be placed adjacent to another Hive Spire";
   }
@@ -204,6 +229,8 @@ export function canPlaceUnderhiveAtTile(
   planet: Planet,
   tileIndex: number,
 ): string | null {
+  const habitat = hiveSpireHabitatBlockReason(planet);
+  if (habitat) return habitat;
   if (!tileAdjacentToAnySpire(planet, tileIndex)) {
     return "Underhive must be placed adjacent to a Hive Spire";
   }
@@ -354,6 +381,14 @@ export function computeActivation(planet: Planet): ActivationSnapshot {
 
   const cities = planet.cities ?? [];
   for (const city of cities) {
+    const hubTerrain = settlementTerrainBlockReason(
+      planet,
+      city.tileIndex,
+      "Cities",
+    );
+    if (hubTerrain) {
+      warnings.push(`${city.name}: ${hubTerrain} — provides 0 AP`);
+    }
     cityAp.set(city.id, cityGeneratedAp(planet, city));
     for (const d of city.districts) {
       for (const w of districtPlacementWarnings(planet, d.kind, d.tileIndex, {
@@ -386,6 +421,7 @@ export function computeActivation(planet: Planet): ActivationSnapshot {
       if (!city) continue;
       for (const d of city.districts) {
         if (!isApConsumer(d.kind)) continue;
+        if (settlementTerrainBlockReason(planet, d.tileIndex)) continue;
         if (dist(d.tileIndex, city.tileIndex) > ACTIVATION_RANGE) continue;
         consumers.push({ id: d.id, kind: d.kind, cityId: id });
       }

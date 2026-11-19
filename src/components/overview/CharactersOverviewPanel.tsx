@@ -398,7 +398,9 @@ function CharacterForm({
   }, [campaign.planets, systemNameById]);
 
   const fleetOptions = useMemo(() => {
-    let fleets = [...(campaign.fleets ?? [])];
+    let fleets = [...(campaign.fleets ?? [])].filter(
+      (f) => f.status !== "lost" && f.status !== "dead",
+    );
     if (draft.factionId) {
       fleets = fleets.filter((f) => f.factionId === draft.factionId);
     }

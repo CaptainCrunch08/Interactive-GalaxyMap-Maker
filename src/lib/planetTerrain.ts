@@ -605,7 +605,8 @@ function colorFor(
 
 function seedFromId(id: string): number {
   let s = 0;
-  for (let i = 0; i < id.length; i++) s = (s * 31 + id.charCodeAt(i)) | 0;
+  const key = id ?? "";
+  for (let i = 0; i < key.length; i++) s = (s * 31 + key.charCodeAt(i)) | 0;
   return Math.abs(s) % 10000;
 }
 
@@ -1078,6 +1079,42 @@ export const TERRAIN_KIND_LABELS: Record<TerrainKind, string> = {
   savanna: "Savanna",
 };
 
+/**
+ * Hex biomes where Play-mode may build manufactorums (barren maps to
+ * wasteland; chem spill = toxic). Existing manufactorums work on any hex.
+ */
+export const MANUFACTORUM_TERRAIN_KINDS: ReadonlySet<TerrainKind> = new Set([
+  "wasteland", // barren
+  "crater",
+  "agri",
+  "iron_rich",
+  "urban",
+  "toxic", // chem spill
+]);
+
+export function isManufactorumTerrain(kind: TerrainKind | null | undefined): boolean {
+  return kind != null && MANUFACTORUM_TERRAIN_KINDS.has(kind);
+}
+
+/**
+ * Cities, districts, and structures cannot generate, place, or activate
+ * on these biomes.
+ */
+export const SETTLEMENT_FORBIDDEN_TERRAIN_KINDS: ReadonlySet<TerrainKind> =
+  new Set(["ocean", "lava"]);
+
+/** @deprecated Use {@link SETTLEMENT_FORBIDDEN_TERRAIN_KINDS}. */
+export const CITY_FORBIDDEN_TERRAIN_KINDS = SETTLEMENT_FORBIDDEN_TERRAIN_KINDS;
+
+export function isSettlementForbiddenTerrain(
+  kind: TerrainKind | null | undefined,
+): boolean {
+  return kind != null && SETTLEMENT_FORBIDDEN_TERRAIN_KINDS.has(kind);
+}
+
+/** @deprecated Use {@link isSettlementForbiddenTerrain}. */
+export const isCityForbiddenTerrain = isSettlementForbiddenTerrain;
+
 export const TERRAIN_KIND_ORDER: TerrainKind[] = [
   "ocean",
   "ice",
@@ -1105,6 +1142,9 @@ const LEGACY_TERRAIN: Record<string, TerrainKind> = {
   ruins: "wasteland",
   cloud: "wasteland",
   savannah: "savanna",
+  barren: "wasteland",
+  chem_spill: "toxic",
+  "chem spill": "toxic",
 };
 
 export function isTerrainKind(value: unknown): value is TerrainKind {

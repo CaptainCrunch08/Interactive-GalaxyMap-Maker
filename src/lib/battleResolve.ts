@@ -1,9 +1,21 @@
 import type {
   Army,
+  BattleCasualtyBreakdown,
   BattleEntry,
+  BattleSideParticipant,
   Campaign,
+  Faction,
   VictoryKind,
 } from "../types/campaign";
+import {
+  formatParticipantsCasualtiesLine,
+  legacyFieldsFromParticipants,
+  totalLoreFromParticipants,
+} from "./battleSides";
+import {
+  battleTotalLoreCasualties,
+  formatLoreCount,
+} from "./modelCasualties";
 import {
   nearestTileIndex,
   type HexSphere,
@@ -14,6 +26,7 @@ import {
   nearestStationTile,
 } from "./stationHex";
 import { buildStationMaze } from "./stationMaze";
+import { areFederated } from "./federation";
 
 export type BattleResolveInput = {
   planetId: string;
@@ -21,8 +34,15 @@ export type BattleResolveInput = {
   defenderArmyId: string;
   attackerVp: number;
   defenderVp: number;
+  /** Total lore deaths (derived from category breakdown when present). */
   attackerCasualties: number;
   defenderCasualties: number;
+  attackerCasualtyBreakdown?: BattleCasualtyBreakdown;
+  defenderCasualtyBreakdown?: BattleCasualtyBreakdown;
+  /** All attacking factions (federation allies) with per-faction casualties. */
+  attackerParticipants?: BattleSideParticipant[];
+  /** All defending factions with per-faction casualties. */
+  defenderParticipants?: BattleSideParticipant[];
   /** Percent of each attacking force detachment lost this battle (0–100). */
   attackerStrengthLostPct: number;
   /** Percent of each defending force detachment lost this battle (0–100). */
@@ -37,6 +57,8 @@ export type BattleResolveInput = {
   characterOutcomes?: { characterId: string; fate: "survived" | "deceased" | "lost" }[];
   /** Star this fight as Important in the chronicle. */
   favorite?: boolean;
+  /** Player-written description filled in as the tabletop fight unfolds. */
+  description?: string;
 };
 
 export type BattleResolvePending = {
@@ -225,6 +247,30 @@ export function formatBattleDate(d = new Date()): string {
   return `${dd}.${mm}.${yyy}.M41`;
 }
 
+/**
+ * Sortable key for DD.MM.YYY.M41 (and close variants). Higher = later in time.
+ * Undated / unparseable → 0 (sorts as earliest).
+ */
+export function battleDateSortKey(date: string | undefined | null): number {
+  const t = date?.trim() ?? "";
+  const m = t.match(/^(\d{1,2})\.(\d{1,2})\.(\d{1,4})\.(M\d{1,2})$/i);
+  if (!m) return 0;
+  const day = Number(m[1]);
+  const month = Number(m[2]);
+  const year = Number(m[3]);
+  const mill = Number(m[4]!.slice(1));
+  if (
+    !Number.isFinite(day) ||
+    !Number.isFinite(month) ||
+    !Number.isFinite(year) ||
+    !Number.isFinite(mill)
+  ) {
+    return 0;
+  }
+  // mill · year · month · day — year may be 2–4 digits in hand-edited logs
+  return mill * 1_000_000_000 + year * 10_000 + month * 100 + day;
+}
+
 export function buildBattleRecord(args: {
   id: string;
   planetName: string;
@@ -246,13 +292,22 @@ export function buildBattleRecord(args: {
   defenderVp: number;
   attackerCasualties: number;
   defenderCasualties: number;
+  attackerCasualtyBreakdown?: BattleCasualtyBreakdown;
+  defenderCasualtyBreakdown?: BattleCasualtyBreakdown;
+  attackerParticipants?: BattleSideParticipant[];
+  defenderParticipants?: BattleSideParticipant[];
+  attackerFactionNames?: string[];
+  defenderFactionNames?: string[];
   attackerStrengthLostPct: number;
   defenderStrengthLostPct: number;
   victoryKind: VictoryKind;
   victorFactionId: string | null;
+  /** Entire winning side (defaults to expanding `victorFactionId`'s side). */
+  victorFactionIds?: string[] | null;
   killedCharacterIds?: string[];
   characterOutcomes?: { characterId: string; fate: "survived" | "deceased" | "lost" }[];
   favorite?: boolean;
+  description?: string;
 }): BattleEntry {
   const {
     victoryKind,
@@ -264,16 +319,77 @@ export function buildBattleRecord(args: {
     planetName,
     attackerVp,
     defenderVp,
-    attackerCasualties,
-    defenderCasualties,
   } = args;
 
+  const attackers =
+    args.attackerParticipants && args.attackerParticipants.length > 0
+      ? args.attackerParticipants
+      : [
+          {
+            factionId: args.attackerFactionId,
+            casualtyBreakdown: args.attackerCasualtyBreakdown,
+            casualties: args.attackerCasualties,
+          },
+        ];
+  const defenders =
+    args.defenderParticipants && args.defenderParticipants.length > 0
+      ? args.defenderParticipants
+      : [
+          {
+            factionId: args.defenderFactionId,
+            casualtyBreakdown: args.defenderCasualtyBreakdown,
+            casualties: args.defenderCasualties,
+          },
+        ];
+  const legacy = legacyFieldsFromParticipants(attackers, defenders);
+  const attackerCasualties =
+    totalLoreFromParticipants(attackers) || args.attackerCasualties;
+  const defenderCasualties =
+    totalLoreFromParticipants(defenders) || args.defenderCasualties;
+
+  const nameOf = (id: string, fallback: string) => {
+    const fromAtk = attackers.findIndex((p) => p.factionId === id);
+    if (fromAtk >= 0 && args.attackerFactionNames?.[fromAtk]) {
+      return args.attackerFactionNames[fromAtk]!;
+    }
+    const fromDef = defenders.findIndex((p) => p.factionId === id);
+    if (fromDef >= 0 && args.defenderFactionNames?.[fromDef]) {
+      return args.defenderFactionNames[fromDef]!;
+    }
+    if (id === args.attackerFactionId) return attackerFactionName;
+    if (id === args.defenderFactionId) return defenderFactionName;
+    return fallback;
+  };
+
+  const atkFactionLabel =
+    args.attackerFactionNames && args.attackerFactionNames.length > 1
+      ? args.attackerFactionNames.join(" / ")
+      : attackerFactionName;
+  const defFactionLabel =
+    args.defenderFactionNames && args.defenderFactionNames.length > 1
+      ? args.defenderFactionNames.join(" / ")
+      : defenderFactionName;
+
+  const resolvedVictorIds =
+    victoryKind === "draw"
+      ? []
+      : args.victorFactionIds && args.victorFactionIds.length > 0
+        ? args.victorFactionIds
+        : victorFactionId
+          ? (() => {
+              const atkIds = attackers.map((p) => p.factionId);
+              const defIds = defenders.map((p) => p.factionId);
+              if (atkIds.includes(victorFactionId)) return atkIds;
+              if (defIds.includes(victorFactionId)) return defIds;
+              return [victorFactionId];
+            })()
+          : [];
   const victorLabel =
     victoryKind === "draw"
       ? "Neither side claimed victory"
-      : victorFactionId === args.attackerFactionId
-        ? attackerFactionName
-        : defenderFactionName;
+      : resolvedVictorIds.length > 0
+        ? resolvedVictorIds.map((id) => nameOf(id, "Victor")).join(" / ")
+        : "Victor";
 
   const atkSupport =
     args.attackerSupportNames && args.attackerSupportNames.length > 0
@@ -284,7 +400,22 @@ export function buildBattleRecord(args: {
       ? ` Supported by ${args.defenderSupportNames.join(", ")}.`
       : "";
 
-  const summary = `${attackerName} (${attackerFactionName}, combined STR ${args.attackerCombinedStrength})${atkSupport} engaged ${defenderName} (${defenderFactionName}, combined STR ${args.defenderCombinedStrength})${defSupport} on ${planetName}. Table result ${attackerVp}–${defenderVp} VP. Casualties ${attackerCasualties} / ${defenderCasualties}.`;
+  const atkDetail = formatParticipantsCasualtiesLine(attackers, (id) =>
+    nameOf(id, "Attacker"),
+  );
+  const defDetail = formatParticipantsCasualtiesLine(defenders, (id) =>
+    nameOf(id, "Defender"),
+  );
+  const casLine =
+    atkDetail || defDetail
+      ? `Lore casualties ${formatLoreCount(attackerCasualties)} / ${formatLoreCount(defenderCasualties)}${atkDetail ? ` (atk: ${atkDetail})` : ""}${defDetail ? ` (def: ${defDetail})` : ""}.`
+      : `Lore casualties ${formatLoreCount(attackerCasualties)} / ${formatLoreCount(defenderCasualties)}.`;
+
+  const autoSummary = `${attackerName} (${atkFactionLabel}, combined STR ${args.attackerCombinedStrength})${atkSupport} engaged ${defenderName} (${defFactionLabel}, combined STR ${args.defenderCombinedStrength})${defSupport} on ${planetName}. Table result ${attackerVp}–${defenderVp} VP. ${casLine}`;
+  const written = args.description?.trim();
+  const summary = written
+    ? `${written}\n\n${autoSummary}`
+    : autoSummary;
 
   const outcome =
     victoryKind === "draw"
@@ -296,20 +427,19 @@ export function buildBattleRecord(args: {
     date: formatBattleDate(),
     summary,
     outcome,
-    attackerFactionId: args.attackerFactionId,
-    defenderFactionId: args.defenderFactionId,
+    ...legacy,
     attackerArmyId: args.attackerArmyId,
     defenderArmyId: args.defenderArmyId,
     attackerSupportArmyIds: args.attackerSupportArmyIds,
     defenderSupportArmyIds: args.defenderSupportArmyIds,
     attackerVp: args.attackerVp,
     defenderVp: args.defenderVp,
-    attackerCasualties: args.attackerCasualties,
-    defenderCasualties: args.defenderCasualties,
     attackerStrengthLostPct: args.attackerStrengthLostPct,
     defenderStrengthLostPct: args.defenderStrengthLostPct,
     victoryKind,
-    victorFactionId,
+    victorFactionId: resolvedVictorIds[0] ?? victorFactionId,
+    victorFactionIds:
+      resolvedVictorIds.length > 0 ? resolvedVictorIds : undefined,
     killedCharacterIds:
       args.killedCharacterIds && args.killedCharacterIds.length > 0
         ? [...args.killedCharacterIds]
@@ -347,22 +477,16 @@ export function isImportantBattle(entry: {
   );
 }
 
-/** Sum recorded battle casualties for Galactic Overview KIA. */
+/** Sum recorded lore battle casualties for Galactic Overview KIA. */
 export function totalBattleCasualties(campaign: Campaign): number {
   let n = 0;
   const log = campaign.battleLog;
   if (log && log.length > 0) {
-    for (const b of log) {
-      n += b.attackerCasualties ?? 0;
-      n += b.defenderCasualties ?? 0;
-    }
+    for (const b of log) n += battleTotalLoreCasualties(b);
     return n;
   }
   for (const p of campaign.planets ?? []) {
-    for (const b of p.battles ?? []) {
-      n += b.attackerCasualties ?? 0;
-      n += b.defenderCasualties ?? 0;
-    }
+    for (const b of p.battles ?? []) n += battleTotalLoreCasualties(b);
   }
   return n;
 }
@@ -399,8 +523,9 @@ export function stationArmiesAreAdjacent(
   a: Pick<Army, "dir">,
   b: Pick<Army, "dir">,
   planetId: string,
+  stationMazeId?: number,
 ): boolean {
-  const maze = buildStationMaze(planetId);
+  const maze = buildStationMaze(planetId, stationMazeId);
   const grid = buildStationGrid();
   const ta = nearestStationTile(a.dir, undefined, maze.walkable);
   const tb = nearestStationTile(b.dir, undefined, maze.walkable);
@@ -416,6 +541,7 @@ export function engageTargetsForArmy(
   armies: Army[] | undefined,
   attackerId: string,
   sphere: HexSphere,
+  factions?: Faction[],
 ): Map<number, string[]> {
   const out = new Map<number, string[]>();
   const attacker = (armies ?? []).find((a) => a.id === attackerId);
@@ -426,6 +552,12 @@ export function engageTargetsForArmy(
   for (const army of armies ?? []) {
     if (army.id === attackerId) continue;
     if (army.factionId === attacker.factionId) continue;
+    if (
+      factions &&
+      areFederated(factions, army.factionId, attacker.factionId)
+    ) {
+      continue;
+    }
     const tile = nearestTileIndex(sphere, asVec3(army.dir));
     if (!fightTiles.has(tile)) continue;
     const list = out.get(tile) ?? [];
@@ -443,11 +575,13 @@ export function engageTargetsForStationArmy(
   armies: Army[] | undefined,
   attackerId: string,
   planetId: string,
+  factions?: Faction[],
+  stationMazeId?: number,
 ): Map<number, string[]> {
   const out = new Map<number, string[]>();
   const attacker = (armies ?? []).find((a) => a.id === attackerId);
   if (!attacker) return out;
-  const maze = buildStationMaze(planetId);
+  const maze = buildStationMaze(planetId, stationMazeId);
   const grid = buildStationGrid();
   const atkTile = nearestStationTile(attacker.dir, undefined, maze.walkable);
   const fightTiles = new Set<number>([atkTile]);
@@ -458,6 +592,12 @@ export function engageTargetsForStationArmy(
   for (const army of armies ?? []) {
     if (army.id === attackerId) continue;
     if (army.factionId === attacker.factionId) continue;
+    if (
+      factions &&
+      areFederated(factions, army.factionId, attacker.factionId)
+    ) {
+      continue;
+    }
     const tile = nearestStationTile(army.dir, undefined, maze.walkable);
     if (!fightTiles.has(tile)) continue;
     const list = out.get(tile) ?? [];
@@ -468,7 +608,7 @@ export function engageTargetsForStationArmy(
 }
 
 /**
- * Same-faction detachments adjacent to a primary that can join as supports.
+ * Banner-allied detachments adjacent to a primary that can join as supports.
  * Excludes the primary, the opposing primary, and optionally armies that already acted.
  * Pass a HexSphere for planet surfaces, or a warp-gate planetId string for stations.
  */
@@ -478,6 +618,7 @@ export function eligibleSupportArmies(
   opposingPrimaryId: string,
   sphereOrStationPlanetId: HexSphere | string,
   alreadyActedIds?: ReadonlySet<string> | string[],
+  factions?: Faction[],
 ): Army[] {
   const acted = alreadyActedIds
     ? alreadyActedIds instanceof Set
@@ -494,7 +635,10 @@ export function eligibleSupportArmies(
       : sphereOrStationPlanetId;
   return (armies ?? []).filter((a) => {
     if (a.id === primary.id || a.id === opposingPrimaryId) return false;
-    if (a.factionId !== primary.factionId) return false;
+    const allied = factions
+      ? areFederated(factions, a.factionId, primary.factionId)
+      : a.factionId === primary.factionId;
+    if (!allied) return false;
     if (acted?.has(a.id)) return false;
     if (stationId) return stationArmiesAreAdjacent(primary, a, stationId);
     return armiesAreAdjacent(primary, a, sphere!);

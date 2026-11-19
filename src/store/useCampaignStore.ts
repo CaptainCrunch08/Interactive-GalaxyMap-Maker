@@ -77,7 +77,7 @@ import {
   withSymbolAssigned,
   withSymbolUnassigned,
 } from "../lib/factionSymbols";
-import { eligibleParentFactions } from "../lib/federation";
+import { areFederated, eligibleParentFactions } from "../lib/federation";
 import type {
   Army,
   ArmySymbol,
@@ -114,12 +114,15 @@ import {
 } from "../types/campaign";
 import {
   createShip,
+  ensurePastFleetsFromBattleLog,
   ESCORT_ARMY_CAPACITY,
   fleetsShareOrbit,
   fleetSystemId,
+  isActiveFleet,
   isValidFleetMove,
   normalizeShip,
   normalizeShipCargo,
+  retireFleet,
 } from "../lib/fleets";
 import {
   canAddShipRole,
@@ -174,6 +177,7 @@ import {
   tileIndexFromDir,
 } from "../lib/armyLanding";
 import { withHistoryCapture } from "../lib/galaxyHistory";
+import { downloadCampaign } from "../lib/io";
 import {
   isPerfDebugEnabled,
   reportPersistSize,
@@ -230,12 +234,15 @@ import {
   armyMovementUsed,
   federationTurnOrder,
   fleetHasBattled,
+  fleetLandingsRemaining,
   fleetMovementRemaining,
+  FLEET_LANDING_LIMIT,
   playMoveBlockReason,
   sanitizePlayFederationTurn,
   turnLabel,
   withArmyActionsExhausted,
   withFleetBattled,
+  withFleetLandingUsed,
   withFleetMpSpent,
   withPlay,
 } from "../lib/play";
@@ -256,6 +263,7 @@ import { buildStationMaze } from "../lib/stationMaze";
 import {
   applyWarpGateOwnership,
   fleetAtWarpGate,
+  isArmyOnStationEntrance,
   linkedWarpGate,
   linkWarpGates,
   placeArmyOnStationTile,
@@ -318,6 +326,7 @@ function buildPlayCityDistrict(
     check.city,
     args.tileIndex,
     args.label,
+    args.kind,
   );
   if (placeErr) {
     set({ playMoveHint: placeErr });
@@ -542,8 +551,10 @@ function ensureCampaignSettlements(campaign: Campaign): Campaign {
   return {
     ...campaign,
     symbols: campaign.symbols ?? [],
-    fleets: (campaign.fleets ?? []).map((f) => ({
+    fleets: ensurePastFleetsFromBattleLog(campaign).map((f) => ({
       ...f,
+      status:
+        f.status === "lost" || f.status === "dead" ? f.status : "alive",
       ships: (f.ships ?? []).map((s) => normalizeShip(s)),
     })),
     characters: campaign.characters ?? [],
@@ -893,6 +904,11 @@ interface CampaignState {
   ) => void;
 
   addArmy: (planetId: string, factionId: string) => string;
+  /**
+   * Edit mode: place one detachment of each site's controlling faction on
+   * every city hub and bastion.
+   */
+  addArmiesToCitiesAndBastions: (planetId: string) => number;
   updateArmy: (
     planetId: string,
     armyId: string,
@@ -972,6 +988,15 @@ interface CampaignState {
     shipId: string,
     armyId: string,
   ) => boolean;
+  /**
+   * Edit mode only: spawn a new detachment directly onto an escort
+   * (no surface embark required).
+   */
+  spawnArmyOntoEscort: (
+    fleetId: string,
+    shipId: string,
+    factionId?: string,
+  ) => string | null;
   /** Seize a standalone enemy transport fleet in the same orbit (1 MP). */
   seizeTransportFleet: (attackerFleetId: string, targetFleetId: string) => boolean;
   /** Destroy a standalone enemy escort fleet in the same orbit (1 MP). */
@@ -1217,11 +1242,10 @@ export const useCampaignStore = create<CampaignState>()(
       },
 
       saveGalaxy: () => {
-        const campaign = get().campaign;
-        void import("../lib/io").then(({ downloadCampaign }) => {
-          downloadCampaign(campaign);
-          get().markSaved();
-        });
+        // Sync download — async import() drops the user gesture and Chrome
+        // silently blocks a.download after the promise resolves.
+        downloadCampaign(get().campaign);
+        get().markSaved();
       },
 
       markSaved: () => set({ isDirty: false }),
@@ -1653,7 +1677,19 @@ export const useCampaignStore = create<CampaignState>()(
 
       updateSystem: (id, patch) => {
         const state = get();
-        if (patch.dysonSphere === false) {
+        let patchIn = { ...patch };
+        if (!state.editMode && "starClass" in patchIn) {
+          const { starClass: _drop, ...rest } = patchIn;
+          patchIn = rest;
+          if (Object.keys(patchIn).length === 0) {
+            set({
+              playMoveHint:
+                "Open Edit Galaxy → Contents to change star class",
+            });
+            return;
+          }
+        }
+        if (patchIn.dysonSphere === false) {
           const hasGate = state.campaign.planets.some(
             (p) => p.systemId === id && p.type === "warp_gate",
           );
@@ -1667,7 +1703,7 @@ export const useCampaignStore = create<CampaignState>()(
         }
         set((s) => {
           const current = s.campaign.systems.find((sys) => sys.id === id);
-          let nextPatch = patch;
+          let nextPatch = patchIn;
           if (patch.name !== undefined && current) {
             const unique = ensureUniqueSystemName(
               patch.name,
@@ -1918,10 +1954,33 @@ export const useCampaignStore = create<CampaignState>()(
 
       updatePlanet: (id, patch) =>
         set((s) => {
+          let nextPatch = { ...patch };
+          if (!s.editMode) {
+            const locked =
+              "type" in nextPatch ||
+              "classification" in nextPatch ||
+              "customTypeLabel" in nextPatch;
+            if (locked) {
+              const {
+                type: _t,
+                classification: _c,
+                customTypeLabel: _l,
+                ...rest
+              } = nextPatch;
+              nextPatch = rest;
+              if (Object.keys(nextPatch).length === 0) {
+                return {
+                  ...s,
+                  playMoveHint:
+                    "Open Edit Galaxy → Contents to change world type or classification",
+                };
+              }
+            }
+          }
           const current = s.campaign.planets.find((p) => p.id === id);
           if (
             current &&
-            patch.type === "warp_gate" &&
+            nextPatch.type === "warp_gate" &&
             current.type !== "warp_gate"
           ) {
             const blocked = warpGatePlacementBlockedReason(
@@ -1935,11 +1994,11 @@ export const useCampaignStore = create<CampaignState>()(
           }
           const planets = s.campaign.planets.map((p) => {
             if (p.id !== id) return p;
-            const next = { ...p, ...patch };
+            const next = { ...p, ...nextPatch };
             if (
-              patch.type &&
-              patch.type !== p.type &&
-              patch.name === undefined
+              nextPatch.type &&
+              nextPatch.type !== p.type &&
+              nextPatch.name === undefined
             ) {
               const system = s.campaign.systems.find(
                 (sys) => sys.id === p.systemId,
@@ -1952,15 +2011,15 @@ export const useCampaignStore = create<CampaignState>()(
                 );
                 next.name = defaultPlanetName(
                   systemName,
-                  patch.type,
+                  nextPatch.type,
                   siblings,
                 );
               }
             }
             if (
-              patch.classification &&
-              patch.classification !== p.classification &&
-              patch.visualModelId === undefined
+              nextPatch.classification &&
+              nextPatch.classification !== p.classification &&
+              nextPatch.visualModelId === undefined
             ) {
               next.visualModelId = pickPlanetVisualModel(next.classification);
             }
@@ -1984,7 +2043,7 @@ export const useCampaignStore = create<CampaignState>()(
           });
           const planet = planets.find((p) => p.id === id);
           let systems = s.campaign.systems;
-          if (planet && "controllingFactionId" in patch) {
+          if (planet && "controllingFactionId" in nextPatch) {
             systems = syncSystemOwnerInSystems(
           s.campaign.systems,
           planets,
@@ -1993,19 +2052,19 @@ export const useCampaignStore = create<CampaignState>()(
         );
           }
           // Warp gates require a Dyson Sphere megastructure in their system.
-          if (planet && patch.type === "warp_gate") {
+          if (planet && nextPatch.type === "warp_gate") {
             systems = systems.map((sys) =>
               sys.id === planet.systemId ? { ...sys, dysonSphere: true } : sys,
             );
           }
           const nextPlanets =
-            planet && patch.type === "warp_gate"
+            planet && nextPatch.type === "warp_gate"
               ? planets.map((p) =>
                   p.id === id ? ensurePlanetCities(p) : p,
                 )
               : planet &&
-                  patch.type &&
-                  patch.type !== "warp_gate" &&
+                  nextPatch.type &&
+                  nextPatch.type !== "warp_gate" &&
                   current?.type === "warp_gate"
                 ? unlinkWarpGate(planets, id)
                 : planets;
@@ -3804,6 +3863,74 @@ export const useCampaignStore = create<CampaignState>()(
         return id;
       },
 
+      addArmiesToCitiesAndBastions: (planetId) => {
+        if (normalizeCampaignPlay(get().campaign.play).active) {
+          set({
+            playMoveHint:
+              "In Play mode, recruit detachments with building points at a War Camp",
+          });
+          return 0;
+        }
+        const state = get();
+        const planet = state.campaign.planets.find((p) => p.id === planetId);
+        if (!planet) return 0;
+
+        const sites: { factionId: string; dir: SphereDir }[] = [];
+        for (const city of planet.cities ?? []) {
+          if (!city.controllingFactionId) continue;
+          sites.push({
+            factionId: city.controllingFactionId,
+            dir: { ...city.dir },
+          });
+          for (const d of city.districts ?? []) {
+            if (d.kind !== "bastion" || !d.controllingFactionId) continue;
+            sites.push({
+              factionId: d.controllingFactionId,
+              dir: { ...d.dir },
+            });
+          }
+        }
+        for (const d of planet.independentDistricts ?? []) {
+          if (d.kind !== "bastion" || !d.controllingFactionId) continue;
+          sites.push({
+            factionId: d.controllingFactionId,
+            dir: { ...d.dir },
+          });
+        }
+        if (sites.length === 0) return 0;
+
+        const spawned: Army[] = sites.map((site) => {
+          const faction = state.campaign.factions.find(
+            (f) => f.id === site.factionId,
+          );
+          return {
+            id: crypto.randomUUID(),
+            name: `${faction?.name ?? "Army"} Detachment`,
+            factionId: site.factionId,
+            symbolId: faction?.defaultSymbolId,
+            dir: site.dir,
+            notes: "",
+            strengthPercent: 100,
+          };
+        });
+
+        set((s) => ({
+          ...withCampaign(s, {
+            ...s.campaign,
+            planets: s.campaign.planets.map((p) =>
+              p.id === planetId
+                ? { ...p, armies: [...(p.armies ?? []), ...spawned] }
+                : p,
+            ),
+          }),
+          selectedArmyId: spawned[spawned.length - 1]?.id ?? s.selectedArmyId,
+          placingArmyId: null,
+          orbitLandingArmyId: null,
+          inspectorOpen: true,
+        }));
+        return spawned.length;
+      },
+
       updateArmy: (planetId, armyId, patch) =>
         set((s) => {
           const nextCampaign = {
@@ -3897,7 +4024,7 @@ export const useCampaignStore = create<CampaignState>()(
         const isGate = planet.type === "warp_gate";
         let distance: number;
         if (isGate) {
-          const maze = buildStationMaze(planet.id);
+          const maze = buildStationMaze(planet.id, planet.stationMazeId);
           const fromTile = nearestStationTile(army.dir, undefined, maze.walkable);
           const toTile = nearestStationTile(dir, undefined, maze.walkable);
           if (!maze.walkable.has(toTile)) {
@@ -4016,9 +4143,10 @@ export const useCampaignStore = create<CampaignState>()(
           army.factionId,
         );
         const dir = dirForTileIndex(tileIndex);
+        const play = normalizeCampaignPlay(state.campaign.play);
 
         set((s) => {
-          const campaign = {
+          let campaign = {
             ...s.campaign,
             planets: s.campaign.planets.map((p) =>
               p.id !== planetId
@@ -4031,16 +4159,23 @@ export const useCampaignStore = create<CampaignState>()(
                   },
             ),
           };
+          // Fresh from orbit — cannot move further this turn.
+          if (play.active) {
+            campaign = withPlay(
+              campaign,
+              withArmyActionsExhausted(play, armyId),
+            );
+          }
           return {
             ...withCampaign(s, withHistoryCapture(campaign)),
             placingArmyId: null,
             orbitLandingArmyId: null,
             selectedArmyId: armyId,
             playMoveHint: exactPort
-              ? `${army.name} landed at the Space Port`
+              ? `${army.name} landed at the Space Port · no movement left`
               : tileIndex === aimTile
-                ? `${army.name} landed on the aimed hex`
-                : `${army.name} scattered to a hex near the aim point`,
+                ? `${army.name} landed on the aimed hex · no movement left`
+                : `${army.name} scattered near the aim point · no movement left`,
           };
         });
         return true;
@@ -4122,6 +4257,19 @@ export const useCampaignStore = create<CampaignState>()(
           set({ playMoveHint: "Detachments must belong to rival factions" });
           return;
         }
+        if (
+          areFederated(
+            state.campaign.factions,
+            attacker.factionId,
+            defender.factionId,
+          )
+        ) {
+          set({
+            playMoveHint:
+              "Detachments under the same federation banner cannot fight each other",
+          });
+          return;
+        }
         const canEngage =
           planet.type === "warp_gate"
             ? stationArmiesAreAdjacent(attacker, defender, planet.id)
@@ -4184,6 +4332,10 @@ export const useCampaignStore = create<CampaignState>()(
 
         const attackerVp = Math.max(0, Math.round(input.attackerVp));
         const defenderVp = Math.max(0, Math.round(input.defenderVp));
+        const attackerParticipants = input.attackerParticipants;
+        const defenderParticipants = input.defenderParticipants;
+        const attackerCasualtyBreakdown = input.attackerCasualtyBreakdown;
+        const defenderCasualtyBreakdown = input.defenderCasualtyBreakdown;
         const attackerCasualties = Math.max(
           0,
           Math.round(input.attackerCasualties),
@@ -4213,6 +4365,7 @@ export const useCampaignStore = create<CampaignState>()(
           defender.id,
           supportCtx,
           acted,
+          state.campaign.factions,
         );
         const eligibleDef = eligibleSupportArmies(
           planet.armies,
@@ -4220,6 +4373,7 @@ export const useCampaignStore = create<CampaignState>()(
           attacker.id,
           supportCtx,
           acted,
+          state.campaign.factions,
         );
         const atkEligibleIds = new Set(eligibleAtk.map((a) => a.id));
         const defEligibleIds = new Set(eligibleDef.map((a) => a.id));
@@ -4260,12 +4414,17 @@ export const useCampaignStore = create<CampaignState>()(
           defenderCasualties,
         });
         const victoryKind = classified.kind;
-        const victorFactionId =
+        const victorFactionIds =
           classified.victorSide === "attacker"
-            ? attacker.factionId
+            ? (attackerParticipants?.map((p) => p.factionId) ?? [
+                attacker.factionId,
+              ])
             : classified.victorSide === "defender"
-              ? defender.factionId
-              : null;
+              ? (defenderParticipants?.map((p) => p.factionId) ?? [
+                  defender.factionId,
+                ])
+              : [];
+        const victorFactionId = victorFactionIds[0] ?? null;
 
         const attackerFaction = state.campaign.factions.find(
           (f) => f.id === attacker.factionId,
@@ -4367,13 +4526,29 @@ export const useCampaignStore = create<CampaignState>()(
           defenderVp,
           attackerCasualties,
           defenderCasualties,
+          attackerCasualtyBreakdown,
+          defenderCasualtyBreakdown,
+          attackerParticipants,
+          defenderParticipants,
+          attackerFactionNames: attackerParticipants?.map(
+            (p) =>
+              state.campaign.factions.find((f) => f.id === p.factionId)?.name ??
+              "Unknown",
+          ),
+          defenderFactionNames: defenderParticipants?.map(
+            (p) =>
+              state.campaign.factions.find((f) => f.id === p.factionId)?.name ??
+              "Unknown",
+          ),
           attackerStrengthLostPct,
           defenderStrengthLostPct,
           victoryKind,
           victorFactionId,
+          victorFactionIds,
           killedCharacterIds,
           characterOutcomes,
           favorite: input.favorite === true,
+          description: input.description,
         });
 
         set((s) => {
@@ -4383,7 +4558,7 @@ export const useCampaignStore = create<CampaignState>()(
                   nearestStationTile(
                     battleMonumentDir(attacker, defender),
                     undefined,
-                    buildStationMaze(planet.id).walkable,
+                    buildStationMaze(planet.id, planet.stationMazeId).walkable,
                   ),
                 )
               : battleMonumentDir(attacker, defender);
@@ -4392,10 +4567,16 @@ export const useCampaignStore = create<CampaignState>()(
               ? nearestStationTile(
                   monumentDir,
                   undefined,
-                  buildStationMaze(planet.id).walkable,
+                  buildStationMaze(planet.id, planet.stationMazeId).walkable,
                 )
               : nearestTileIndex(sphere, monumentDir);
           const siteId = crypto.randomUUID();
+          const victorLabelJoined = victorFactionIds
+            .map(
+              (id) =>
+                s.campaign.factions.find((f) => f.id === id)?.name ?? "Victor",
+            )
+            .join(" / ");
           const famousSite =
             (victoryKind === "heroic" || victoryKind === "epochal") &&
             victorFactionId
@@ -4419,10 +4600,9 @@ export const useCampaignStore = create<CampaignState>()(
                   attackerVp,
                   defenderVp,
                   victorFactionId,
-                  victorLabel:
-                    victorFactionId === attacker.factionId
-                      ? attackerFaction?.name ?? "Attacker"
-                      : defenderFaction?.name ?? "Defender",
+                  victorFactionIds:
+                    victorFactionIds.length > 0 ? victorFactionIds : undefined,
+                  victorLabel: victorLabelJoined || "Victor",
                 }
               : null;
 
@@ -4617,6 +4797,7 @@ export const useCampaignStore = create<CampaignState>()(
           ships: [createShip("line", 1), createShip("escort", 1)],
           location: { kind: "system", systemId },
           notes: "",
+          status: "alive",
         };
         set((s) => ({
           ...withCampaign(
@@ -4637,18 +4818,32 @@ export const useCampaignStore = create<CampaignState>()(
       },
 
       updateFleet: (fleetId, patch) =>
-        set((s) =>
-          withCampaign(
-            s,
-            {
+        set((s) => {
+          const fleets = (s.campaign.fleets ?? []).map((f) =>
+            f.id === fleetId ? { ...f, ...patch } : f,
+          );
+          const next = {
+            ...s.campaign,
+            fleets,
+            characters: scrubCharacterPlacements(s.campaign.characters ?? [], {
               ...s.campaign,
-              fleets: (s.campaign.fleets ?? []).map((f) =>
-                f.id === fleetId ? { ...f, ...patch } : f,
-              ),
-            },
-            { coalesceKey: `fleet:${fleetId}` },
-          ),
-        ),
+              fleets,
+            }),
+          };
+          const updated = fleets.find((f) => f.id === fleetId);
+          const inactive = updated && !isActiveFleet(updated);
+          return {
+            ...withCampaign(s, next, { coalesceKey: `fleet:${fleetId}` }),
+            selectedFleetId:
+              inactive && s.selectedFleetId === fleetId
+                ? null
+                : s.selectedFleetId,
+            fleetMoveModeId:
+              inactive && s.fleetMoveModeId === fleetId
+                ? null
+                : s.fleetMoveModeId,
+          };
+        }),
 
       deleteFleet: (fleetId) =>
         set((s) => {
@@ -4958,7 +5153,7 @@ export const useCampaignStore = create<CampaignState>()(
           });
           return false;
         }
-        const maze = buildStationMaze(planet.id);
+        const maze = buildStationMaze(planet.id, planet.stationMazeId);
         const armyTile = nearestStationTile(army.dir, undefined, maze.walkable);
         const crown = (planet.structures ?? []).find(
           (s) => s.kind === RELAY_CROWN_KIND,
@@ -5024,22 +5219,46 @@ export const useCampaignStore = create<CampaignState>()(
           set({ playMoveHint: "Not a warp gate" });
           return null;
         }
-        const orbiting = (state.campaign.fleets ?? []).some(
+        const orbitFleets = (state.campaign.fleets ?? []).filter(
           (f) =>
             f.factionId === factionId &&
             f.location.kind === "orbit" &&
             f.location.planetId === planetId,
         );
-        if (!orbiting) {
+        if (orbitFleets.length === 0) {
           set({
             playMoveHint:
-              "Orbit this warp gate with a fleet before boarding the station",
+              "Orbit this warp gate with a fleet before landing on the station",
           });
           return null;
         }
 
-        const docks = stationDockTiles(planetId);
-        const maze = buildStationMaze(planetId);
+        // Play / edit: land an embarked escort detachment onto an entrance.
+        for (const fleet of orbitFleets) {
+          for (const ship of fleet.ships) {
+            if (shipRole(ship) !== "escort") continue;
+            const embarked = ship.embarkedArmies?.[0];
+            if (!embarked) continue;
+            const ok = get().disembarkArmyFromEscort(
+              fleet.id,
+              ship.id,
+              embarked.id,
+            );
+            return ok ? embarked.id : null;
+          }
+        }
+
+        if (play.active) {
+          set({
+            playMoveHint:
+              "Embark a detachment on an escort in orbit, then land on an entrance square",
+          });
+          return null;
+        }
+
+        // Edit mode only: place a free detachment on an open entrance (no BP).
+        const docks = stationDockTiles(planetId, planet.stationMazeId);
+        const maze = buildStationMaze(planetId, planet.stationMazeId);
         const occupied = new Set(
           (planet.armies ?? []).map((a) =>
             nearestStationTile(a.dir, undefined, maze.walkable),
@@ -5062,66 +5281,20 @@ export const useCampaignStore = create<CampaignState>()(
           strengthPercent: 100,
         };
 
-        // Prefer transport cargo from an orbiting fleet, else any planet BP bank.
-        let spendFleetId: string | null = null;
-        let spendPlanetId: string | null = null;
-        if (play.active) {
-          const orbitFleets = (state.campaign.fleets ?? []).filter(
-            (f) =>
-              f.factionId === factionId &&
-              f.location.kind === "orbit" &&
-              f.location.planetId === planetId &&
-              fleetCargoBp(f) >= DETACHMENT_BP_COST,
-          );
-          if (orbitFleets[0]) {
-            spendFleetId = orbitFleets[0].id;
-          } else {
-            for (const p of state.campaign.planets) {
-              const bp = (p.buildingPoints ?? {})[factionId] ?? 0;
-              if (bp >= DETACHMENT_BP_COST) {
-                spendPlanetId = p.id;
-                break;
-              }
-            }
-            if (!spendPlanetId) {
-              set({
-                playMoveHint: `Need ${DETACHMENT_BP_COST} BP in transport holds or on a world to board`,
-              });
-              return null;
-            }
-          }
-        }
-
         set((s) => {
-          let fleets = s.campaign.fleets ?? [];
-          if (spendFleetId) {
-            fleets = fleets.map((f) => {
-              if (f.id !== spendFleetId) return f;
-              return spendFleetCargo(f, DETACHMENT_BP_COST) ?? f;
-            });
-          }
-          const planets = s.campaign.planets.map((p) => {
-            let next = p;
-            if (spendPlanetId && p.id === spendPlanetId) {
-              next = spendBuildingPoints(next, factionId, DETACHMENT_BP_COST);
-            }
-            if (p.id === planetId) {
-              return {
-                ...next,
-                armies: [...(next.armies ?? []), army],
-              };
-            }
-            return next;
-          });
+          const planets = s.campaign.planets.map((p) =>
+            p.id === planetId
+              ? { ...p, armies: [...(p.armies ?? []), army] }
+              : p,
+          );
           return {
             ...withCampaign(
               s,
-              withHistoryCapture({ ...s.campaign, planets, fleets }),
+              withHistoryCapture({ ...s.campaign, planets }),
             ),
             selectedArmyId: id,
-            playMoveHint: spendFleetId
-              ? "Boarding detachment deployed from transport cargo — climb to the Relay Crown"
-              : "Boarding detachment deployed at the bottom locks — climb to the Relay Crown",
+            playMoveHint:
+              "Boarding detachment placed on an entrance — climb to the Relay Crown",
             inspectorOpen: true,
           };
         });
@@ -5297,6 +5470,16 @@ export const useCampaignStore = create<CampaignState>()(
           set({ playMoveHint: "Detachment not found on this world" });
           return false;
         }
+        if (
+          planet.type === "warp_gate" &&
+          !isArmyOnStationEntrance(army.dir, planet.id, planet.stationMazeId)
+        ) {
+          set({
+            playMoveHint:
+              "Move the detachment onto an entrance square to embark",
+          });
+          return false;
+        }
         const play = normalizeCampaignPlay(state.campaign.play);
         set((s) => {
           let campaign = {
@@ -5361,6 +5544,13 @@ export const useCampaignStore = create<CampaignState>()(
           set({ playMoveHint: "Cannot disembark onto this body" });
           return false;
         }
+        const play = normalizeCampaignPlay(state.campaign.play);
+        if (play.active && fleetLandingsRemaining(play, fleetId) <= 0) {
+          set({
+            playMoveHint: `This fleet already landed ${FLEET_LANDING_LIMIT} detachments this turn`,
+          });
+          return false;
+        }
         const mpBlock = playMoveBlockReason(
           state.campaign,
           fleet.factionId,
@@ -5378,14 +5568,13 @@ export const useCampaignStore = create<CampaignState>()(
           set({ playMoveHint: "Embarked detachment not found" });
           return false;
         }
-        const play = normalizeCampaignPlay(state.campaign.play);
         let placed: Army = {
           ...army,
           dir: preferredDetachmentSpawnDir(planet, fleet.factionId),
         };
         if (planet.type === "warp_gate") {
-          const docks = stationDockTiles(planet.id);
-          const maze = buildStationMaze(planet.id);
+          const docks = stationDockTiles(planet.id, planet.stationMazeId);
+          const maze = buildStationMaze(planet.id, planet.stationMazeId);
           const occupied = new Set(
             (planet.armies ?? []).map((a) =>
               nearestStationTile(a.dir, undefined, maze.walkable),
@@ -5428,24 +5617,108 @@ export const useCampaignStore = create<CampaignState>()(
             ),
           };
           if (play.active) {
-            campaign = withPlay(campaign, withFleetMpSpent(play, fleetId, 1));
+            let nextPlay = {
+              ...withFleetMpSpent(play, fleetId, 1),
+              ...withFleetLandingUsed(play, fleetId),
+            };
+            campaign = withPlay(campaign, nextPlay);
+            // Warp-gate docks place immediately — no further move this turn.
+            if (planet.type === "warp_gate") {
+              campaign = withPlay(
+                campaign,
+                withArmyActionsExhausted(
+                  normalizeCampaignPlay(campaign.play),
+                  armyId,
+                ),
+              );
+            }
           }
           return {
             ...withCampaign(s, withHistoryCapture(campaign)),
             selectedArmyId: armyId,
             focusedPlanetId: planet.id,
             selectedPlanetId: planet.id,
-            viewLevel: planet.type === "warp_gate" ? "strategic" : "strategic",
+            viewLevel: "strategic",
             placingArmyId: planet.type === "warp_gate" ? null : armyId,
             orbitLandingArmyId: planet.type === "warp_gate" ? null : armyId,
             playMoveHint:
               planet.type === "warp_gate"
-                ? `${army.name} disembarked at the boarding locks`
+                ? `${army.name} disembarked at the boarding locks · no movement left`
                 : `${army.name} disembarked — click a controlled Space Port to land exactly, or any hex to scatter within 4`,
             inspectorOpen: true,
           };
         });
         return true;
+      },
+
+      spawnArmyOntoEscort: (fleetId, shipId, factionId) => {
+        const state = get();
+        if (normalizeCampaignPlay(state.campaign.play).active) {
+          set({
+            playMoveHint:
+              "In Play mode, embark detachments from the surface instead",
+          });
+          return null;
+        }
+        const fleet = (state.campaign.fleets ?? []).find((f) => f.id === fleetId);
+        if (!fleet) {
+          set({ playMoveHint: "Fleet not found" });
+          return null;
+        }
+        const ship = fleet.ships.find((s) => s.id === shipId);
+        if (!ship || shipRole(ship) !== "escort") {
+          set({ playMoveHint: "Select an escort" });
+          return null;
+        }
+        const embarked = ship.embarkedArmyIds ?? [];
+        if (embarked.length >= ESCORT_ARMY_CAPACITY) {
+          set({ playMoveHint: "Escort already carries a detachment" });
+          return null;
+        }
+        const ownerId = factionId ?? fleet.factionId;
+        const faction = state.campaign.factions.find((f) => f.id === ownerId);
+        const id = crypto.randomUUID();
+        const army: Army = {
+          id,
+          name: `${faction?.name ?? "Army"} Detachment`,
+          factionId: ownerId,
+          symbolId: faction?.defaultSymbolId,
+          dir: { x: 0, y: 1, z: 0 },
+          notes: "Spawned aboard escort",
+          strengthPercent: 100,
+        };
+        set((s) => ({
+          ...withCampaign(
+            s,
+            withHistoryCapture({
+              ...s.campaign,
+              fleets: (s.campaign.fleets ?? []).map((f) =>
+                f.id !== fleetId
+                  ? f
+                  : {
+                      ...f,
+                      ships: f.ships.map((sh) =>
+                        sh.id !== shipId
+                          ? sh
+                          : {
+                              ...sh,
+                              embarkedArmyIds: [
+                                ...(sh.embarkedArmyIds ?? []),
+                                id,
+                              ],
+                              embarkedArmies: [
+                                ...(sh.embarkedArmies ?? []),
+                                army,
+                              ],
+                            },
+                      ),
+                    },
+              ),
+            }),
+          ),
+          playMoveHint: `${army.name} spawned on ${ship.name}`,
+        }));
+        return id;
       },
 
       seizeTransportFleet: (attackerFleetId, targetFleetId) => {
@@ -5459,6 +5732,18 @@ export const useCampaignStore = create<CampaignState>()(
         if (!attacker || !target) return false;
         if (attacker.factionId === target.factionId) {
           set({ playMoveHint: "Cannot seize a friendly transport" });
+          return false;
+        }
+        if (
+          areFederated(
+            state.campaign.factions,
+            attacker.factionId,
+            target.factionId,
+          )
+        ) {
+          set({
+            playMoveHint: "Cannot seize a federation ally's transport",
+          });
           return false;
         }
         if (!fleetsShareOrbit(attacker, target)) {
@@ -5483,16 +5768,18 @@ export const useCampaignStore = create<CampaignState>()(
         const play = normalizeCampaignPlay(state.campaign.play);
         const seizedShips = target.ships.map((s) => ({ ...s }));
         set((s) => {
-          let fleets = (s.campaign.fleets ?? [])
-            .filter((f) => f.id !== targetFleetId)
-            .map((f) =>
-              f.id === attackerFleetId
-                ? clampFleetPower({
-                    ...f,
-                    ships: [...f.ships, ...seizedShips],
-                  })
-                : f,
-            );
+          let fleets = (s.campaign.fleets ?? []).map((f) => {
+            if (f.id === targetFleetId) {
+              return retireFleet({ ...f, ships: [] }, "dead");
+            }
+            if (f.id === attackerFleetId) {
+              return clampFleetPower({
+                ...f,
+                ships: [...f.ships, ...seizedShips],
+              });
+            }
+            return f;
+          });
           let campaign = {
             ...s.campaign,
             fleets,
@@ -5529,6 +5816,18 @@ export const useCampaignStore = create<CampaignState>()(
           set({ playMoveHint: "Cannot destroy a friendly escort" });
           return false;
         }
+        if (
+          areFederated(
+            state.campaign.factions,
+            attacker.factionId,
+            target.factionId,
+          )
+        ) {
+          set({
+            playMoveHint: "Cannot destroy a federation ally's escort",
+          });
+          return false;
+        }
         if (!fleetsShareOrbit(attacker, target)) {
           set({ playMoveHint: "Must share the same orbit" });
           return false;
@@ -5563,8 +5862,8 @@ export const useCampaignStore = create<CampaignState>()(
             notices.push(crash.result.message);
           }
         }
-        const fleets = (campaign.fleets ?? []).filter(
-          (f) => f.id !== targetFleetId,
+        const fleets = (campaign.fleets ?? []).map((f) =>
+          f.id === targetFleetId ? retireFleet(f, "dead") : f,
         );
         campaign = {
           ...campaign,
@@ -5592,13 +5891,17 @@ export const useCampaignStore = create<CampaignState>()(
       openSpaceBattleResolve: (attackerFleetId, defenderFleetId) => {
         const state = get();
         const attacker = (state.campaign.fleets ?? []).find(
-          (f) => f.id === attackerFleetId,
+          (f) => f.id === attackerFleetId && isActiveFleet(f),
         );
         const defender = (state.campaign.fleets ?? []).find(
-          (f) => f.id === defenderFleetId,
+          (f) => f.id === defenderFleetId && isActiveFleet(f),
         );
         if (!attacker || !defender) return;
-        const err = canFleetsSpaceBattle(attacker, defender);
+        const err = canFleetsSpaceBattle(
+          attacker,
+          defender,
+          state.campaign.factions,
+        );
         if (err) {
           set({ playMoveHint: err });
           return;
@@ -5654,37 +5957,50 @@ export const useCampaignStore = create<CampaignState>()(
         });
         const play = normalizeCampaignPlay(state.campaign.play);
         set((s) => {
-          let fleets = [...(s.campaign.fleets ?? [])];
-          const applySide = (
-            fleetId: string,
-            wiped: boolean,
-            flagshipGone: boolean,
-          ) => {
-            if (wiped) {
-              fleets = fleets.filter((f) => f.id !== fleetId);
-              return;
+          let campaign: Campaign = { ...s.campaign };
+          const notices: string[] = [];
+          const wipeFleet = (fleetId: string) => {
+            const target = (campaign.fleets ?? []).find((f) => f.id === fleetId);
+            if (!target || !isActiveFleet(target)) return;
+            for (const ship of target.ships) {
+              for (const army of ship.embarkedArmies ?? []) {
+                const crash = crashLandArmy(
+                  campaign,
+                  army,
+                  fleetSystemId(target),
+                );
+                if ("error" in crash) continue;
+                campaign = crash.campaign;
+                notices.push(crash.result.message);
+              }
             }
-            fleets = fleets.map((f) => {
-              if (f.id !== fleetId) return f;
-              return flagshipGone ? destroyFleetFlagship(f) : f;
-            });
+            campaign = {
+              ...campaign,
+              fleets: (campaign.fleets ?? []).map((f) =>
+                f.id === fleetId ? retireFleet(f, "dead") : f,
+              ),
+            };
           };
-          applySide(
-            attacker.id,
-            input.attackerFleetDestroyed,
-            input.attackerFlagshipDestroyed,
-          );
-          applySide(
-            defender.id,
-            input.defenderFleetDestroyed,
-            input.defenderFlagshipDestroyed,
-          );
-          let campaign: Campaign = {
-            ...s.campaign,
-            fleets,
-            battleLog: upsertBattleLog(s.campaign.battleLog, logEntry),
-            characters: scrubCharacterPlacements(s.campaign.characters ?? [], {
-              ...s.campaign,
+          const damageFleet = (fleetId: string, flagshipGone: boolean) => {
+            if (!flagshipGone) return;
+            campaign = {
+              ...campaign,
+              fleets: (campaign.fleets ?? []).map((f) =>
+                f.id === fleetId ? destroyFleetFlagship(f) : f,
+              ),
+            };
+          };
+          if (input.attackerFleetDestroyed) wipeFleet(attacker.id);
+          else damageFleet(attacker.id, input.attackerFlagshipDestroyed);
+          if (input.defenderFleetDestroyed) wipeFleet(defender.id);
+          else damageFleet(defender.id, input.defenderFlagshipDestroyed);
+
+          const fleets = campaign.fleets ?? [];
+          campaign = {
+            ...campaign,
+            battleLog: upsertBattleLog(campaign.battleLog, logEntry),
+            characters: scrubCharacterPlacements(campaign.characters ?? [], {
+              ...campaign,
               fleets,
             }),
           };
@@ -5697,12 +6013,18 @@ export const useCampaignStore = create<CampaignState>()(
           return {
             ...withCampaign(s, withHistoryCapture(campaign)),
             spaceBattleResolve: null,
-            selectedFleetId: fleets.some((f) => f.id === attacker.id)
+            selectedFleetId: fleets.some(
+              (f) => f.id === attacker.id && isActiveFleet(f),
+            )
               ? attacker.id
-              : fleets.some((f) => f.id === defender.id)
+              : fleets.some((f) => f.id === defender.id && isActiveFleet(f))
                 ? defender.id
                 : null,
             playMoveHint: logEntry.outcome,
+            escortCrashNotices:
+              notices.length > 0
+                ? [...s.escortCrashNotices, ...notices]
+                : s.escortCrashNotices,
           };
         });
         return true;
@@ -6310,6 +6632,7 @@ export const useCampaignStore = create<CampaignState>()(
             activeFactionId,
             fleetMovementUsed: {},
             fleetBattledIds: [],
+            fleetLandingsUsed: {},
             movedArmyIds: [],
             armyMovementUsed: {},
             armyCampEnteredRound: {},
@@ -6343,6 +6666,7 @@ export const useCampaignStore = create<CampaignState>()(
               activeFactionId: null,
               fleetMovementUsed: {},
               fleetBattledIds: [],
+              fleetLandingsUsed: {},
               movedArmyIds: [],
               armyMovementUsed: {},
               armyCampEnteredRound: {},
@@ -6387,6 +6711,7 @@ export const useCampaignStore = create<CampaignState>()(
             activeFactionId: nextFactionId,
             fleetMovementUsed: {},
             fleetBattledIds: [],
+            fleetLandingsUsed: {},
             movedArmyIds: [],
             armyMovementUsed: {},
             armyCampEnteredRound: play.armyCampEnteredRound,
@@ -6615,6 +6940,7 @@ export const useCampaignStore = create<CampaignState>()(
             planetId: planet.id,
           },
           notes: "",
+          status: "alive",
         };
         set((s) => ({
           ...withCampaign(

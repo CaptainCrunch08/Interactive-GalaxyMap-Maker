@@ -1,8 +1,9 @@
 import type { SphereDir } from "../types/campaign";
+import { STATION_MAZE_COLS, STATION_MAZE_ROWS } from "./stationMazeCatalog";
 
-/** Station floorplan size (taller than wide for a bottom→top climb). */
-export const STATION_GRID_COLS = 21;
-export const STATION_GRID_ROWS = 27;
+/** Station floorplan size — compact 17×15 corridor maze. */
+export const STATION_GRID_COLS = STATION_MAZE_COLS;
+export const STATION_GRID_ROWS = STATION_MAZE_ROWS;
 
 /** @deprecated Use STATION_GRID_COLS / ROWS — kept for call-site compatibility. */
 export const STATION_HEX_RADIUS = STATION_GRID_COLS;
@@ -176,5 +177,21 @@ export function stationTilesInRange(
     out.add(tile);
     return false;
   });
+  return out;
+}
+
+/** Own tile + orthogonal neighbors (vision when exploring a gate). */
+export function stationAdjacentTiles(
+  tileIndex: number,
+  walkable?: ReadonlySet<number> | null,
+): Set<number> {
+  const { neighbors } = buildStationGrid();
+  const out = new Set<number>();
+  if (walkable && !walkable.has(tileIndex)) return out;
+  out.add(tileIndex);
+  for (const n of neighbors[tileIndex] ?? []) {
+    if (walkable && !walkable.has(n)) continue;
+    out.add(n);
+  }
   return out;
 }

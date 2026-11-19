@@ -15,8 +15,18 @@ import {
   STRUCTURE_KIND_LABELS,
 } from "../types/campaign";
 import { bannerFactionId } from "./federation";
-import { buildHexSphere, hexTileDistance, type HexSphere } from "./hexSphere";
+import {
+  buildHexSphere,
+  hexTileDistance,
+  nearestTileIndex,
+  type HexSphere,
+} from "./hexSphere";
 import { normalizePlanetClassification } from "./planetClass";
+import {
+  isSettlementForbiddenTerrain,
+  normalizeTerrainKind,
+  sampleTerrainAtDirection,
+} from "./planetTerrain";
 import { generateWarpGateSurface, ensureWarpGateSurface } from "./warpGateSurface";
 
 /** Must match HexPlanet FREQUENCY so tile indices stay valid. */
@@ -441,6 +451,44 @@ export function planetHasNoSurfaceSettlements(
   );
 }
 
+function terrainKindAtTile(
+  planet: Pick<Planet, "id" | "type" | "classification" | "tileTerrain">,
+  tileIndex: number,
+) {
+  const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
+  const tile = sphere.tiles[tileIndex];
+  if (!tile) return null;
+  const override = normalizeTerrainKind(
+    planet.tileTerrain?.[String(tileIndex)],
+  );
+  return sampleTerrainAtDirection(
+    tile.center.x,
+    tile.center.y,
+    tile.center.z,
+    planet.id,
+    normalizePlanetClassification(planet.classification),
+    planet.type,
+    override,
+  ).kind;
+}
+
+/** Tiles whose biome cannot host cities, districts, or structures (ocean / lava). */
+export function settlementForbiddenTileSet(
+  planet: Pick<Planet, "id" | "type" | "classification" | "tileTerrain">,
+): Set<number> {
+  const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
+  const blocked = new Set<number>();
+  for (let i = 0; i < sphere.tiles.length; i++) {
+    if (isSettlementForbiddenTerrain(terrainKindAtTile(planet, i))) {
+      blocked.add(i);
+    }
+  }
+  return blocked;
+}
+
+/** @deprecated Use {@link settlementForbiddenTileSet}. */
+export const cityForbiddenTileSet = settlementForbiddenTileSet;
+
 /**
  * Place cities on unique hub tiles; each district gets its own adjacent tile.
  * No two settlements share a tile.
@@ -459,13 +507,21 @@ export function generatePlanetCities(
     randInt(rng, cMin, cMax),
     Math.floor(sphere.tiles.length / (MIN_CITY_HUB_SEPARATION * 3)),
   );
+  const classification = normalizePlanetClassification(options.classification);
+  const terrainBlocked = settlementForbiddenTileSet({
+    id: planetId,
+    type,
+    classification,
+    tileTerrain: undefined,
+  });
   const hubTiles = pickCityHubTiles(
     sphere,
     cityCount,
     MIN_CITY_HUB_SEPARATION,
     rng,
+    terrainBlocked,
   );
-  const used = new Set<number>(hubTiles);
+  const used = new Set<number>([...hubTiles, ...terrainBlocked]);
   const kinds = DISTRICT_KINDS[type];
   const {
     defaultFactionId,
@@ -685,7 +741,8 @@ function tryShufflePlanetSettlements(
   const structureTiles = new Set(
     (planet.structures ?? []).map((s) => s.tileIndex),
   );
-  const blocked = new Set<number>(structureTiles);
+  const terrainBlocked = settlementForbiddenTileSet(planet);
+  const blocked = new Set<number>([...structureTiles, ...terrainBlocked]);
   const citiesIn = planet.cities ?? [];
   const independentsIn = planet.independentDistricts ?? [];
 
@@ -869,14 +926,21 @@ export function generatePlanetStructures(
 ): PlanetStructure[] {
   const rng = mulberry32(seedFromString(planetId + ":structures"));
   const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
+  const terrainBlocked = settlementForbiddenTileSet({
+    id: planetId,
+    type,
+    classification: normalizePlanetClassification(options.classification),
+    tileTerrain: undefined,
+  });
+  const blocked = new Set<number>([...occupied, ...terrainBlocked]);
   const [sMin, sMax] = STRUCTURE_COUNT[type];
-  const freeSlots = sphere.tiles.length - occupied.size;
+  const freeSlots = sphere.tiles.length - blocked.size;
   const count = Math.min(randInt(rng, sMin, sMax), Math.max(0, freeSlots));
   if (count === 0) return [];
 
   const pool = STRUCTURE_POOL[type];
   if (pool.length === 0) return [];
-  const tiles = pickSpreadTiles(sphere, count, 2, rng, occupied);
+  const tiles = pickSpreadTiles(sphere, count, 2, rng, blocked);
   const {
     defaultFactionId,
     rivalFactionId,
@@ -1024,7 +1088,7 @@ export function settlementTileSet(
   const set = new Set<number>();
   for (const city of cities) {
     set.add(city.tileIndex);
-    for (const d of city.districts) set.add(d.tileIndex);
+    for (const d of city.districts ?? []) set.add(d.tileIndex);
   }
   for (const d of independentDistricts) set.add(d.tileIndex);
   for (const s of structures) set.add(s.tileIndex);
@@ -1037,15 +1101,18 @@ export function createStructureOnFreeHex(
   kind: StructureKind,
   options?: { name?: string; controllingFactionId?: string },
 ): PlanetStructure | null {
+  // Relay crowns exist only in the center chamber of warp-gate stations.
+  if (kind === "relay_crown") return null;
   const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
   const occupied = settlementTileSet(
     planet.cities ?? [],
     planet.structures ?? [],
     planet.independentDistricts ?? [],
   );
+  const terrainBlocked = settlementForbiddenTileSet(planet);
   let tileIndex = -1;
   for (let i = 0; i < sphere.tiles.length; i++) {
-    if (!occupied.has(i)) {
+    if (!occupied.has(i) && !terrainBlocked.has(i)) {
       tileIndex = i;
       break;
     }
@@ -1062,6 +1129,8 @@ export function createStructureAtTile(
   options?: { name?: string; controllingFactionId?: string },
 ): PlanetStructure | null {
   if (!(kind in STRUCTURE_KIND_LABELS)) return null;
+  // Relay crowns are warp-gate station fixtures — never place on worlds.
+  if (kind === "relay_crown") return null;
   const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
   if (tileIndex < 0 || tileIndex >= sphere.tiles.length) return null;
   const occupied = settlementTileSet(
@@ -1070,6 +1139,9 @@ export function createStructureAtTile(
     planet.independentDistricts ?? [],
   );
   if (occupied.has(tileIndex)) return null;
+  if (isSettlementForbiddenTerrain(terrainKindAtTile(planet, tileIndex))) {
+    return null;
+  }
   const count = (planet.structures ?? []).filter((s) => s.kind === kind).length;
   return {
     id: crypto.randomUUID(),
@@ -1095,10 +1167,14 @@ export function createCityOnFreeHex(
     planet.independentDistricts ?? [],
   );
   const cities = planet.cities ?? [];
+  const terrainBlocked = settlementForbiddenTileSet(planet);
   const candidates = sphere.tiles
     .map((_, i) => i)
     .filter(
-      (i) => !occupied.has(i) && tileRespectsCitySeparation(cities, i),
+      (i) =>
+        !occupied.has(i) &&
+        !terrainBlocked.has(i) &&
+        tileRespectsCitySeparation(cities, i),
     );
   if (candidates.length === 0) return null;
   const tileIndex =
@@ -1121,6 +1197,9 @@ export function createCityAtTile(
   );
   if (occupied.has(tileIndex)) return null;
   if (!tileRespectsCitySeparation(planet.cities ?? [], tileIndex)) return null;
+  if (isSettlementForbiddenTerrain(terrainKindAtTile(planet, tileIndex))) {
+    return null;
+  }
   const n = (planet.cities ?? []).length + 1;
   const owner =
     options?.controllingFactionId ?? planet.controllingFactionId;
@@ -1196,6 +1275,9 @@ export function createIndependentDistrictAtTile(
     planet.independentDistricts ?? [],
   );
   if (occupied.has(tileIndex)) return null;
+  if (isSettlementForbiddenTerrain(terrainKindAtTile(planet, tileIndex))) {
+    return null;
+  }
   const existing = [
     ...(planet.cities ?? []).flatMap((c) => c.districts),
     ...(planet.independentDistricts ?? []),
@@ -1243,6 +1325,9 @@ export function createDistrictAtTile(
     planet.independentDistricts ?? [],
   );
   if (occupied.has(tileIndex)) return null;
+  if (isSettlementForbiddenTerrain(terrainKindAtTile(planet, tileIndex))) {
+    return null;
+  }
   const cities = planet.cities ?? [];
   const city = cities.find((c) => c.id === cityId);
   if (!city) {
@@ -1318,7 +1403,7 @@ export function syncSettlementDirs<
     ...planet,
     cities: (planet.cities ?? []).map((c) => ({
       ...fixDir(c),
-      districts: c.districts.map(fixDir),
+      districts: (c.districts ?? []).map(fixDir),
     })),
     independentDistricts: (planet.independentDistricts ?? []).map(fixDir),
     structures: (planet.structures ?? []).map(fixDir),
@@ -1521,7 +1606,7 @@ export function tileOwnerMap(
     if (city.controllingFactionId != null) {
       map.set(city.tileIndex, city.controllingFactionId);
     }
-    for (const d of city.districts) {
+    for (const d of city.districts ?? []) {
       if (d.controllingFactionId != null) {
         map.set(d.tileIndex, d.controllingFactionId);
       }
@@ -1585,42 +1670,91 @@ export function planetOwnerFromCities(
 }
 
 /**
- * Default detachment spawn: an owned city hub if the faction controls any,
- * otherwise `fallback` (e.g. war camp), else first city / north pole.
- * When several owned cities exist, prefer the least crowded hub.
+ * Default detachment spawn (edit / non-Play recruit helpers):
+ * owned free city hub → owned free bastion → owned free outpost →
+ * owned free trench line → `fallback` if free → any hex without a detachment.
+ * A site is "taken" when another detachment already occupies that hex.
  */
 export function preferredDetachmentSpawnDir(
-  planet: Pick<Planet, "cities" | "armies">,
+  planet: Pick<
+    Planet,
+    "cities" | "armies" | "structures" | "independentDistricts"
+  >,
   factionId: string,
   fallback?: SphereDir,
 ): SphereDir {
-  const owned = (planet.cities ?? []).filter(
+  const sphere = buildHexSphere(SETTLEMENT_HEX_FREQUENCY);
+  const occupied = new Set<number>();
+  for (const army of planet.armies ?? []) {
+    occupied.add(nearestTileIndex(sphere, army.dir));
+  }
+
+  const pickFree = (
+    sites: { tileIndex: number; dir: SphereDir }[],
+  ): SphereDir | null => {
+    for (const site of sites) {
+      if (typeof site.tileIndex !== "number") continue;
+      if (occupied.has(site.tileIndex)) continue;
+      return { ...site.dir };
+    }
+    return null;
+  };
+
+  const ownedCities = (planet.cities ?? []).filter(
     (c) => c.controllingFactionId === factionId,
   );
-  if (owned.length === 0) {
-    return (
-      fallback ??
-      (planet.cities?.[0] ? { ...planet.cities[0].dir } : { x: 0, y: 1, z: 0 })
-    );
-  }
-  const crowding = (city: (typeof owned)[0]) =>
-    (planet.armies ?? []).filter((a) => {
-      const dot =
-        a.dir.x * city.dir.x + a.dir.y * city.dir.y + a.dir.z * city.dir.z;
-      return dot > 0.92;
-    }).length;
+  const fromCity = pickFree(ownedCities);
+  if (fromCity) return fromCity;
 
-  let best = owned[0]!;
-  let bestN = crowding(best);
-  for (let i = 1; i < owned.length; i++) {
-    const c = owned[i]!;
-    const n = crowding(c);
-    if (n < bestN) {
-      best = c;
-      bestN = n;
+  const ownedBastions: { tileIndex: number; dir: SphereDir }[] = [];
+  for (const city of planet.cities ?? []) {
+    for (const d of city.districts ?? []) {
+      if (
+        d.kind === "bastion" &&
+        d.controllingFactionId === factionId
+      ) {
+        ownedBastions.push(d);
+      }
     }
   }
-  return { ...best.dir };
+  for (const d of planet.independentDistricts ?? []) {
+    if (d.kind === "bastion" && d.controllingFactionId === factionId) {
+      ownedBastions.push(d);
+    }
+  }
+  const fromBastion = pickFree(ownedBastions);
+  if (fromBastion) return fromBastion;
+
+  const structures = planet.structures ?? [];
+  const fromOutpost = pickFree(
+    structures.filter(
+      (s) =>
+        s.kind === "outpost" && s.controllingFactionId === factionId,
+    ),
+  );
+  if (fromOutpost) return fromOutpost;
+
+  const fromTrench = pickFree(
+    structures.filter(
+      (s) =>
+        s.kind === "trench_line" && s.controllingFactionId === factionId,
+    ),
+  );
+  if (fromTrench) return fromTrench;
+
+  if (fallback) {
+    const fallbackTile = nearestTileIndex(sphere, fallback);
+    if (!occupied.has(fallbackTile)) return { ...fallback };
+  }
+
+  for (let i = 0; i < sphere.tiles.length; i++) {
+    if (!occupied.has(i)) return dirFromTile(sphere, i);
+  }
+
+  return (
+    fallback ??
+    (planet.cities?.[0] ? { ...planet.cities[0].dir } : { x: 0, y: 1, z: 0 })
+  );
 }
 
 /** Resolve city / district / structure occupying a hex tile. */
@@ -1722,13 +1856,24 @@ export function ensurePlanetCities(
     };
   }
 
-  const cities = planet.cities ?? [];
-  const structures = planet.structures ?? [];
-  const independents = planet.independentDistricts ?? [];
+  // Relay crowns only belong on warp-gate stations.
+  const scrubbed =
+    (planet.structures ?? []).some((s) => s.kind === "relay_crown")
+      ? {
+          ...planet,
+          structures: (planet.structures ?? []).filter(
+            (s) => s.kind !== "relay_crown",
+          ),
+        }
+      : planet;
+
+  const cities = scrubbed.cities ?? [];
+  const structures = scrubbed.structures ?? [];
+  const independents = scrubbed.independentDistricts ?? [];
 
   // Already initialized: keep player deletions (empty lists stay empty).
-  if (planet.surfaceReady) {
-    return finalizeExistingSurface(planet);
+  if (scrubbed.surfaceReady) {
+    return finalizeExistingSurface(scrubbed);
   }
 
   // Legacy / first touch with existing settlement data — adopt, don't rebuild.

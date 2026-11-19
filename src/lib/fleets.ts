@@ -1,7 +1,10 @@
 import type {
+  Army,
   Campaign,
+  CampaignBattleLogEntry,
   Fleet,
   FleetLocation,
+  FleetStatus,
   Ship,
   ShipRole,
   StarSystem,
@@ -27,16 +30,122 @@ export function normalizeShipChassis(chassis: string): ShipRole {
   return normalizeShipRole(chassis);
 }
 
+export function fleetStatus(fleet: Fleet): FleetStatus {
+  return fleet.status === "lost" || fleet.status === "dead"
+    ? fleet.status
+    : "alive";
+}
+
+/** True when the fleet still operates on the map. */
+export function isActiveFleet(fleet: Fleet): boolean {
+  return fleetStatus(fleet) === "alive";
+}
+
+/** Fleets that appear on the map / can act. */
+export function activeFleets(fleets: Fleet[] | undefined): Fleet[] {
+  return (fleets ?? []).filter(isActiveFleet);
+}
+
+/** Retire a fleet from the map but keep its encyclopedia sheet. */
+export function retireFleet(
+  fleet: Fleet,
+  status: Exclude<FleetStatus, "alive">,
+): Fleet {
+  return {
+    ...fleet,
+    status,
+    ships: fleet.ships.map((ship) => {
+      if (shipRole(ship) !== "escort") return ship;
+      return {
+        ...ship,
+        embarkedArmyIds: [],
+        embarkedArmies: [],
+      };
+    }),
+  };
+}
+
+/** Detachments currently embarked across this fleet's escorts. */
+export function embarkedDetachmentsOnFleet(fleet: Fleet): Army[] {
+  const out: Army[] = [];
+  for (const ship of fleet.ships) {
+    for (const army of ship.embarkedArmies ?? []) {
+      out.push(army);
+    }
+  }
+  return out;
+}
+
+/** Battle-log entries where this fleet fought (attacker or defender). */
+export function battlesForFleet(
+  battleLog: CampaignBattleLogEntry[] | undefined,
+  fleetId: string,
+): CampaignBattleLogEntry[] {
+  return (battleLog ?? []).filter(
+    (b) => b.attackerFleetId === fleetId || b.defenderFleetId === fleetId,
+  );
+}
+
+/**
+ * Restore encyclopedia sheets for fleets wiped before status archival existed.
+ * Stubs are marked dead and kept off the map.
+ */
+export function ensurePastFleetsFromBattleLog(campaign: Campaign): Fleet[] {
+  const fleets = [...(campaign.fleets ?? [])];
+  const known = new Set(fleets.map((f) => f.id));
+  const fallbackSystemId = campaign.systems[0]?.id;
+
+  for (const battle of campaign.battleLog ?? []) {
+    const sides: {
+      fleetId?: string;
+      factionId?: string;
+    }[] = [
+      {
+        fleetId: battle.attackerFleetId,
+        factionId: battle.attackerFactionId,
+      },
+      {
+        fleetId: battle.defenderFleetId,
+        factionId: battle.defenderFactionId,
+      },
+    ];
+    for (const side of sides) {
+      if (!side.fleetId || !side.factionId || known.has(side.fleetId)) continue;
+      const systemId = battle.systemId ?? fallbackSystemId;
+      if (!systemId) continue;
+      known.add(side.fleetId);
+      const location: FleetLocation =
+        battle.planetId
+          ? {
+              kind: "orbit",
+              systemId,
+              planetId: battle.planetId,
+            }
+          : { kind: "system", systemId };
+      fleets.push({
+        id: side.fleetId,
+        name: "Destroyed Fleet",
+        factionId: side.factionId,
+        ships: [],
+        location,
+        notes: "",
+        status: "dead",
+      });
+    }
+  }
+  return fleets;
+}
+
 export function fleetSystemId(fleet: Fleet): string {
   return fleet.location.systemId;
 }
 
 export function fleetsInSystem(fleets: Fleet[], systemId: string): Fleet[] {
-  return fleets.filter((f) => fleetSystemId(f) === systemId);
+  return activeFleets(fleets).filter((f) => fleetSystemId(f) === systemId);
 }
 
 export function fleetsAtSystemStar(fleets: Fleet[], systemId: string): Fleet[] {
-  return fleets.filter(
+  return activeFleets(fleets).filter(
     (f) => f.location.kind === "system" && f.location.systemId === systemId,
   );
 }
@@ -46,7 +155,7 @@ export function fleetsInOrbit(
   systemId: string,
   planetId: string,
 ): Fleet[] {
-  return fleets.filter(
+  return activeFleets(fleets).filter(
     (f) =>
       f.location.kind === "orbit" &&
       f.location.systemId === systemId &&
@@ -57,7 +166,7 @@ export function fleetsInOrbit(
 /** Group fleets by system for galaxy map badges. */
 export function fleetsBySystemId(fleets: Fleet[]): Map<string, Fleet[]> {
   const map = new Map<string, Fleet[]>();
-  for (const fleet of fleets) {
+  for (const fleet of activeFleets(fleets)) {
     const sid = fleetSystemId(fleet);
     const list = map.get(sid);
     if (list) list.push(fleet);
@@ -165,6 +274,7 @@ export function normalizeShipCargo(ship: Ship): Ship {
 export function normalizeFleetShips(fleet: Fleet): Fleet {
   return {
     ...fleet,
+    status: fleetStatus(fleet),
     ships: shipsSortedByRole(fleet.ships.map((s) => normalizeShip(s))),
   };
 }

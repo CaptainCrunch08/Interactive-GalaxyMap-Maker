@@ -21,6 +21,7 @@ import {
 import { getCampaignHyperlanes } from "../lib/hyperlanes";
 import { getSystemOwnership } from "../lib/territory";
 import { campaignMapSize } from "../types/campaign";
+import { galaxyFleetRingRadius } from "../lib/systemLayout";
 
 export function GalaxyView() {
   const transformRef = useRef<ReactZoomPanPinchRef>(null);
@@ -217,13 +218,15 @@ export function GalaxyView() {
                     fac,
                     campaign.symbols,
                   )}
-                  x={system.x + 22}
-                  y={system.y - 28}
+                  x={system.x}
+                  y={system.y}
                   selected={selectedFleetId === fleet.id}
                   moving={fleetMoveModeId === fleet.id}
                   mapScale={mapScale}
                   offsetIndex={i}
                   stackCount={systemFleets.length}
+                  layout="ring"
+                  ringRadius={galaxyFleetRingRadius(systemFleets.length)}
                   onSelect={() => selectFleet(fleet.id)}
                 />
               );

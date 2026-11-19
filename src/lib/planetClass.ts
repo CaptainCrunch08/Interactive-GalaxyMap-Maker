@@ -21,6 +21,40 @@ export function normalizePlanetClassification(
 }
 
 /**
+ * Climate classes that can host Hive Spires / Underhives (strictly habitable).
+ */
+export const HABITABLE_SPIRE_CLASSIFICATIONS: readonly PlanetClassification[] = [
+  "arid",
+  "desert",
+  "earthlike",
+  "islands",
+  "jungle",
+  "savannah",
+  "swamp",
+  "super_earth",
+  "tidally_locked",
+  "toxic",
+  "water",
+] as const;
+
+export function canHostHiveSpire(
+  planet: Pick<Planet, "classification" | "type">,
+): boolean {
+  if (planet.type === "warp_gate" || planet.type === "asteroid_belt") {
+    return false;
+  }
+  const c = normalizePlanetClassification(planet.classification);
+  return (HABITABLE_SPIRE_CLASSIFICATIONS as readonly string[]).includes(c);
+}
+
+export function hiveSpireHabitatBlockReason(
+  planet: Pick<Planet, "classification" | "type" | "name">,
+): string | null {
+  if (canHostHiveSpire(planet)) return null;
+  return "Hive Spires and Underhives require a habitable world (arid, desert, earth-like, islands, jungle, savannah, swamp, super earth, tidally locked, toxic, or water)";
+}
+
+/**
  * Worlds that support the strategic hex surface map.
  * Gas giants have no land surface; asteroid belts use a separate view.
  */

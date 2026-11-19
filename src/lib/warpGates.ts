@@ -303,8 +303,14 @@ export function warpLaneSystemPairs(
   return pairs;
 }
 
-export function armyStationTile(armyDir: SphereDir, planetId?: string): number {
-  const walkable = planetId ? buildStationMaze(planetId).walkable : null;
+export function armyStationTile(
+  armyDir: SphereDir,
+  planetId?: string,
+  stationMazeId?: number,
+): number {
+  const walkable = planetId
+    ? buildStationMaze(planetId, stationMazeId).walkable
+    : null;
   return nearestStationTile(armyDir, STATION_HEX_RADIUS, walkable);
 }
 
@@ -312,13 +318,30 @@ export function placeArmyOnStationTile(tileIndex: number): SphereDir {
   return stationDirFromTile(tileIndex, STATION_HEX_RADIUS);
 }
 
-export function stationCenterTile(planetId?: string): number {
-  if (planetId) return buildStationMaze(planetId).crownTile;
+export function stationCenterTile(
+  planetId?: string,
+  stationMazeId?: number,
+): number {
+  if (planetId) return buildStationMaze(planetId, stationMazeId).crownTile;
   return 0;
 }
 
-/** Boarding locks at the bottom of the station maze. */
-export function stationDockTiles(planetId?: string): number[] {
-  if (planetId) return buildStationMaze(planetId).dockTiles;
-  return buildStationMaze("default-docks").dockTiles;
+/** Boarding locks / entrances of the station maze. */
+export function stationDockTiles(
+  planetId?: string,
+  stationMazeId?: number,
+): number[] {
+  if (planetId) return buildStationMaze(planetId, stationMazeId).dockTiles;
+  return buildStationMaze(0).dockTiles;
+}
+
+/** True when a detachment stands on a boarding-lock / entrance tile. */
+export function isArmyOnStationEntrance(
+  armyDir: SphereDir,
+  planetId: string,
+  stationMazeId?: number,
+): boolean {
+  const maze = buildStationMaze(planetId, stationMazeId);
+  const tile = nearestStationTile(armyDir, STATION_HEX_RADIUS, maze.walkable);
+  return maze.dockTiles.includes(tile);
 }

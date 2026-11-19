@@ -42,6 +42,36 @@ export const ARMY_MOVE_RANGE = 3;
 /** Move points each fleet gets per turn. */
 export const FLEET_MOVE_POINTS = 3;
 
+/** Max detachments a fleet may land (disembark) per turn. */
+export const FLEET_LANDING_LIMIT = 2;
+
+export function fleetLandingsUsed(
+  play: CampaignPlay,
+  fleetId: string,
+): number {
+  const n = play.fleetLandingsUsed?.[fleetId] ?? 0;
+  return Math.max(0, Math.floor(n));
+}
+
+export function fleetLandingsRemaining(
+  play: CampaignPlay,
+  fleetId: string,
+): number {
+  return Math.max(0, FLEET_LANDING_LIMIT - fleetLandingsUsed(play, fleetId));
+}
+
+export function withFleetLandingUsed(
+  play: CampaignPlay,
+  fleetId: string,
+): Pick<CampaignPlay, "fleetLandingsUsed"> {
+  return {
+    fleetLandingsUsed: {
+      ...(play.fleetLandingsUsed ?? {}),
+      [fleetId]: fleetLandingsUsed(play, fleetId) + 1,
+    },
+  };
+}
+
 export function armyMovementUsed(
   play: CampaignPlay,
   armyId: string,

@@ -6,6 +6,7 @@ import {
 } from "./buildingPoints";
 import { armyStrength, totalBattleCasualties } from "./battleResolve";
 import { bannerFactionId, rootFactions } from "./federation";
+import { isActiveFleet } from "./fleets";
 import { fleetPower, shipRole } from "./fleetPower";
 import { getSystemOwnership } from "./territory";
 
@@ -121,6 +122,7 @@ function rawMilitary(campaign: Campaign, bannerId: string): number {
   const factions = campaign.factions;
   let score = 0;
   for (const fleet of campaign.fleets ?? []) {
+    if (!isActiveFleet(fleet)) continue;
     if (!underBanner(factions, fleet.factionId, bannerId)) continue;
     score += fleetPower(fleet) * 0.35;
   }
@@ -263,6 +265,7 @@ function rawGrowth(campaign: Campaign, bannerId: string): number {
     }
   }
   for (const fleet of campaign.fleets ?? []) {
+    if (!isActiveFleet(fleet)) continue;
     if (!underBanner(factions, fleet.factionId, bannerId)) continue;
     for (const ship of fleet.ships ?? []) {
       if (shipRole(ship) === "transport") score += 8;
@@ -352,6 +355,7 @@ function rawMomentum(campaign: Campaign, bannerId: string): number {
   );
 
   for (const fleet of campaign.fleets ?? []) {
+    if (!isActiveFleet(fleet)) continue;
     if (!underBanner(factions, fleet.factionId, bannerId)) continue;
     const sys = fleet.location.systemId;
     const shipWeight = fleetPower(fleet);

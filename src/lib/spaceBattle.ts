@@ -1,6 +1,7 @@
 import type {
   Campaign,
   CampaignBattleLogEntry,
+  Faction,
   Fleet,
   Planet,
   VictoryKind,
@@ -23,6 +24,7 @@ import { normalizePlanetClassification } from "./planetClass";
 import { getFactionById } from "./territory";
 import { SETTLEMENT_HEX_FREQUENCY } from "./settlements";
 import type { Army } from "../types/campaign";
+import { areFederated } from "./federation";
 
 export type SpaceBattlePending = {
   attackerFleetId: string;
@@ -41,10 +43,17 @@ export type SpaceBattleInput = {
 export function canFleetsSpaceBattle(
   attacker: Fleet,
   defender: Fleet,
+  factions?: Faction[],
 ): string | null {
   if (attacker.id === defender.id) return "Pick two different fleets";
   if (attacker.factionId === defender.factionId) {
     return "Fleets must belong to opposing factions";
+  }
+  if (
+    factions &&
+    areFederated(factions, attacker.factionId, defender.factionId)
+  ) {
+    return "Fleets under the same federation banner cannot fight each other";
   }
   if (!fleetsShareOrbit(attacker, defender)) {
     return "Fleets must be in the same orbit (same star or planet)";
@@ -141,6 +150,7 @@ export function buildSpaceBattleLogEntry(args: {
       : victorSide === "defender"
         ? defender.factionId
         : null;
+  const victorFactionIds = victorFactionId ? [victorFactionId] : undefined;
   const victorLabel =
     kind === "draw"
       ? "Neither side claimed victory"
@@ -181,6 +191,7 @@ export function buildSpaceBattleLogEntry(args: {
     defenderVp: input.defenderVp,
     victoryKind: kind,
     victorFactionId,
+    victorFactionIds,
   };
 }
 
@@ -286,8 +297,12 @@ export function crashLandArmy(
   };
 }
 
-export function fleetsCanEngage(a: Fleet, b: Fleet): boolean {
-  return canFleetsSpaceBattle(a, b) == null;
+export function fleetsCanEngage(
+  a: Fleet,
+  b: Fleet,
+  factions?: Faction[],
+): boolean {
+  return canFleetsSpaceBattle(a, b, factions) == null;
 }
 
 export function fleetHasFlagshipForBattle(fleet: Fleet): boolean {

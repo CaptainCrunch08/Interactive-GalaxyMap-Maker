@@ -43,12 +43,14 @@ export function snapshotGalaxyFrame(
     }
   }
 
-  const fleets: GalaxyHistoryFleet[] = (campaign.fleets ?? []).map((f) => ({
-    id: f.id,
-    name: f.name,
-    factionId: f.factionId,
-    location: { ...f.location },
-  }));
+  const fleets: GalaxyHistoryFleet[] = (campaign.fleets ?? [])
+    .filter((f) => f.status !== "lost" && f.status !== "dead")
+    .map((f) => ({
+      id: f.id,
+      name: f.name,
+      factionId: f.factionId,
+      location: { ...f.location },
+    }));
 
   return {
     id: opts?.id ?? crypto.randomUUID(),

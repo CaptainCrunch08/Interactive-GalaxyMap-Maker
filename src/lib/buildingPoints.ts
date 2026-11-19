@@ -37,11 +37,17 @@ import {
 import { armyTileIndex } from "./armyActions";
 import { activePlayerControlsFaction } from "./play";
 import { federationMemberIds } from "./federation";
+import { hiveSpireHabitatBlockReason } from "./planetClass";
+import {
+  isManufactorumOperational,
+  manufactorumTerrainBlockReason,
+  settlementTerrainBlockReason,
+} from "./manufactorumRules";
 
 export { DOMED_HABITAT_BP_COST, SPIRE_BP_COST, UNDERHIVE_BP_COST };
 
 /** BP per owned manufactorum district at start of turn. */
-export const MANUFACTORUM_BP_INCOME = 10;
+export const MANUFACTORUM_BP_INCOME = 50;
 
 /** Extra BP per owned ore mine linked to an owned manufactorum. */
 export const ORE_MINE_BP_BONUS = 5;
@@ -91,8 +97,10 @@ export function demolishBpCost(
 /** Re-export transport hold capacity. */
 export { TRANSPORT_BP_CAPACITY };
 
-/** Utility hull BP cost (0 fleet power). */
+/** Escort hull BP cost (0 fleet power). */
 export const UTILITY_SHIP_BP_COST = 500;
+/** Transport hull BP cost (0 fleet power). */
+export const TRANSPORT_SHIP_BP_COST = 250;
 /** Line fleet detachment: 1000 BP → 100 FP. */
 export const LINE_SHIP_BP_COST = 1000;
 /** Flagship: 2000 BP → 200 FP. */
@@ -102,7 +110,7 @@ export const SHIP_BP_COST: Record<ShipRole, number> = {
   flagship: FLAGSHIP_BP_COST,
   line: LINE_SHIP_BP_COST,
   escort: UTILITY_SHIP_BP_COST,
-  transport: UTILITY_SHIP_BP_COST,
+  transport: TRANSPORT_SHIP_BP_COST,
 };
 
 export function shipBpCost(role: ShipRole): number {
@@ -142,7 +150,9 @@ export function collectOwnedManufactorums(
     "manufactorum",
     factionId,
     snap,
-  ).map((x) => x.district);
+  )
+    .map((x) => x.district)
+    .filter((d) => isManufactorumOperational(planet, d));
 }
 
 export function countOwnedManufactorums(
@@ -157,7 +167,10 @@ export function collectOwnedOreMines(
   factionId: string,
 ): PlanetStructure[] {
   return (planet.structures ?? []).filter(
-    (s) => s.kind === "ore_mine" && structureOwnedBy(s, factionId),
+    (s) =>
+      s.kind === "ore_mine" &&
+      structureOwnedBy(s, factionId) &&
+      settlementTerrainBlockReason(planet, s.tileIndex) == null,
   );
 }
 
@@ -326,6 +339,12 @@ export function canPlaceOutpostAtTile(
     planet.independentDistricts ?? [],
   );
   if (occupied.has(tileIndex)) return "That hex is occupied";
+  const terrainErr = settlementTerrainBlockReason(
+    planet,
+    tileIndex,
+    "Outposts",
+  );
+  if (terrainErr) return terrainErr;
   return null;
 }
 
@@ -335,6 +354,10 @@ export function canBuildSpire(
   factionId: string,
   cityId?: string | null,
 ): { ok: true; city: City } | { ok: false; reason: RecruitBlockReason; message: string } {
+  const habitat = hiveSpireHabitatBlockReason(planet);
+  if (habitat) {
+    return { ok: false, reason: "no_site", message: habitat };
+  }
   return canBuildCityAdjacentDistrict(
     campaign,
     planet,
@@ -351,6 +374,10 @@ export function canBuildUnderhive(
   factionId: string,
   cityId?: string | null,
 ): { ok: true; city: City } | { ok: false; reason: RecruitBlockReason; message: string } {
+  const habitat = hiveSpireHabitatBlockReason(planet);
+  if (habitat) {
+    return { ok: false, reason: "no_site", message: habitat };
+  }
   return canBuildCityAdjacentDistrict(
     campaign,
     planet,
@@ -452,6 +479,7 @@ export function canPlaceCityAdjacentDistrictAtTile(
   city: City,
   tileIndex: number,
   label = "District",
+  kind?: District["kind"],
 ): string | null {
   const occupied = settlementTileSet(
     planet.cities ?? [],
@@ -459,6 +487,12 @@ export function canPlaceCityAdjacentDistrictAtTile(
     planet.independentDistricts ?? [],
   );
   if (occupied.has(tileIndex)) return "That hex is occupied";
+  const forbidden = settlementTerrainBlockReason(planet, tileIndex, label);
+  if (forbidden) return forbidden;
+  if (kind === "manufactorum") {
+    const terrainErr = manufactorumTerrainBlockReason(planet, tileIndex);
+    if (terrainErr) return terrainErr;
+  }
   if (!isTileAroundCity(city, tileIndex)) {
     return `${label}s must be placed within 2 hexes of the city`;
   }
@@ -475,6 +509,7 @@ export function canPlaceManufactorumAtTile(
     city,
     tileIndex,
     "Manufactorum",
+    "manufactorum",
   );
 }
 
@@ -539,7 +574,7 @@ export function canPlaceTrenchLineAtTile(
   if (occupied.has(tileIndex)) {
     return "That hex is occupied — move the detachment to an empty hex";
   }
-  return null;
+  return settlementTerrainBlockReason(planet, tileIndex, "Trench lines");
 }
 
 /** Effective biome on a strategic hex (painted override or procedural). */
@@ -590,7 +625,7 @@ export function canBuildOreMine(
   return { ok: true };
 }
 
-/** Play placement: free hex on crater or iron-rich terrain. */
+/** Play placement: free hex on crater or iron-rich terrain (any hex on forge worlds). */
 export function canPlaceOreMineAtTile(
   planet: Planet,
   tileIndex: number,
@@ -601,6 +636,10 @@ export function canPlaceOreMineAtTile(
     planet.independentDistricts ?? [],
   );
   if (occupied.has(tileIndex)) return "That hex is occupied";
+  const forbidden = settlementTerrainBlockReason(planet, tileIndex, "Ore mines");
+  if (forbidden) return forbidden;
+  // Forge worlds: industrial spoil / craters may sit on any non-ocean/lava hex.
+  if (planet.type === "forge") return null;
   const terrain = terrainKindAtTile(planet, tileIndex);
   if (terrain !== "crater" && terrain !== "iron_rich") {
     return "Ore mines can only be built on crater or iron-rich hexes";

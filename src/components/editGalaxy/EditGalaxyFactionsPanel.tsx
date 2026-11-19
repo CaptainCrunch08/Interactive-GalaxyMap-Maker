@@ -8,11 +8,56 @@ import {
   childFactions,
   eligibleParentFactions,
 } from "../../lib/federation";
+import {
+  DEFAULT_MODEL_CATEGORY,
+  MODEL_CATEGORY_IDS,
+  resolveModelCategory,
+} from "../../lib/modelCasualties";
 import { sortedByName } from "../../lib/sortOptions";
 import { factionsSortedByName } from "../../lib/territory";
 import { useCampaignStore } from "../../store/useCampaignStore";
+import type {
+  Faction,
+  FactionModelCategoryConfig,
+  ModelCategoryId,
+} from "../../types/campaign";
 
 const inputClass = "hud-input";
+
+function patchFactionModelCategory(
+  faction: Faction,
+  id: ModelCategoryId,
+  patch: FactionModelCategoryConfig,
+): Faction["modelCategories"] {
+  const current = { ...(faction.modelCategories ?? {}) };
+  const prev = current[id];
+  const defaults = DEFAULT_MODEL_CATEGORY[id];
+
+  const labelRaw =
+    patch.label !== undefined ? patch.label : (prev?.label ?? "");
+  const labelTrim = labelRaw.trim();
+  const label =
+    labelTrim && labelTrim !== defaults.label ? labelTrim : undefined;
+
+  const multSource =
+    patch.multiplier !== undefined ? patch.multiplier : prev?.multiplier;
+  const multiplier =
+    multSource != null &&
+    Number.isFinite(multSource) &&
+    Math.round(multSource) !== defaults.multiplier
+      ? Math.max(0, Math.round(multSource))
+      : undefined;
+
+  if (label == null && multiplier == null) {
+    delete current[id];
+  } else {
+    current[id] = {
+      ...(label != null ? { label } : {}),
+      ...(multiplier != null ? { multiplier } : {}),
+    };
+  }
+  return Object.keys(current).length > 0 ? current : undefined;
+}
 
 export function EditGalaxyFactionsPanel() {
   const fileRef = useRef<HTMLInputElement>(null);
@@ -192,6 +237,72 @@ export function EditGalaxyFactionsPanel() {
                     }
                   />
                 </label>
+
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-muted mb-1">
+                    Battle casualty categories
+                  </p>
+                  <p className="text-[10px] text-muted mb-2 normal-case tracking-normal">
+                    Rename model types and set lore multipliers (models ×
+                    multiplier). Defaults: Swarm ×1000, Troops ×100, others ×1.
+                  </p>
+                  <ul className="space-y-1.5">
+                    {MODEL_CATEGORY_IDS.map((id) => {
+                      const resolved = resolveModelCategory(f, id);
+                      const override = f.modelCategories?.[id];
+                      return (
+                        <li
+                          key={id}
+                          className="grid grid-cols-[minmax(0,1fr)_5.5rem] gap-2 items-center"
+                        >
+                          <input
+                            className={inputClass + " text-sm"}
+                            value={override?.label ?? resolved.label}
+                            placeholder={DEFAULT_MODEL_CATEGORY[id].label}
+                            onChange={(e) =>
+                              updateFaction(f.id, {
+                                modelCategories: patchFactionModelCategory(
+                                  f,
+                                  id,
+                                  { label: e.target.value },
+                                ),
+                              })
+                            }
+                          />
+                          <label className="flex items-center gap-1 text-[10px] text-muted">
+                            ×
+                            <input
+                              className={inputClass + " w-full text-sm tabular-nums"}
+                              inputMode="numeric"
+                              value={
+                                override?.multiplier != null
+                                  ? String(override.multiplier)
+                                  : String(resolved.multiplier)
+                              }
+                              onChange={(e) => {
+                                const raw = e.target.value.trim();
+                                const n =
+                                  raw === ""
+                                    ? DEFAULT_MODEL_CATEGORY[id].multiplier
+                                    : Number(raw);
+                                if (!Number.isFinite(n)) return;
+                                updateFaction(f.id, {
+                                  modelCategories: patchFactionModelCategory(
+                                    f,
+                                    id,
+                                    {
+                                      multiplier: Math.max(0, Math.round(n)),
+                                    },
+                                  ),
+                                });
+                              }}
+                            />
+                          </label>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
 
                 <div>
                   <p className="text-[10px] uppercase tracking-wider text-muted mb-2">

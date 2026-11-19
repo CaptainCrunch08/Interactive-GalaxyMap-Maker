@@ -7,10 +7,11 @@ import {
   formationChassisList,
 } from "../../lib/shipMeshes";
 import { getShipIconDataUrl } from "../../lib/shipIconRenderer";
+import { fleetRingOffset } from "../../lib/systemLayout";
 
 const BADGE_ICON = 28;
-/** Base pixel size for a cruiser-scale hull in system view. */
-const SHIP_BASE = 22;
+/** Base pixel size for a cruiser-scale hull in system view (kept compact). */
+const SHIP_BASE = 13;
 /** Horizontal spacing between stacked fleets at the same location. */
 const BADGE_COL_GAP = 26;
 const SHIP_COL_GAP = 72;
@@ -18,7 +19,7 @@ const SHIP_COL_GAP = 72;
 const BADGE_ROW_GAP = 24;
 const SHIP_ROW_GAP = 48;
 const COLS = 4;
-const MAX_FORMATION = 7;
+const MAX_FORMATION = 4;
 
 type FleetMarkerProps = {
   fleet: Fleet;
@@ -31,25 +32,32 @@ type FleetMarkerProps = {
   moving: boolean;
   mapScale?: number;
   offsetIndex?: number;
-  /** Total fleets at this anchor — used to center the stack. */
+  /** Total fleets at this anchor — used to center the stack / ring. */
   stackCount?: number;
+  /**
+   * `grid` — legacy rows (galaxy badges).
+   * `ring` — encircle the body; `x`/`y` are the body center and
+   * `ringRadius` sets the orbit (system ship markers).
+   */
+  layout?: "grid" | "ring";
+  ringRadius?: number;
   /** System view uses low-poly ship models; galaxy keeps the diamond badge. */
   appearance?: "badge" | "ship";
   onSelect: () => void;
 };
 
-/** Wedge / V formation offsets (lead ship at index 0). */
+/** Compact wedge / V formation offsets (lead ship at index 0). */
 function formationOffset(
   index: number,
   total: number,
 ): { x: number; y: number } {
   if (total <= 1) return { x: 0, y: 0 };
-  if (index === 0) return { x: 6, y: 0 };
+  if (index === 0) return { x: 3, y: 0 };
   const pair = Math.ceil(index / 2);
   const side = index % 2 === 1 ? -1 : 1;
   return {
-    x: 6 - pair * 11,
-    y: side * (7 + pair * 2),
+    x: 3 - pair * 7,
+    y: side * (4 + pair * 1.5),
   };
 }
 
@@ -74,6 +82,8 @@ export function FleetMarker({
   mapScale: _mapScale = 1,
   offsetIndex = 0,
   stackCount,
+  layout = "grid",
+  ringRadius = 56,
   appearance = "badge",
   onSelect,
 }: FleetMarkerProps) {
@@ -86,12 +96,20 @@ export function FleetMarker({
   const rowGap = isShip ? SHIP_ROW_GAP : BADGE_ROW_GAP;
 
   const total = Math.max(stackCount ?? offsetIndex + 1, 1);
-  const col = offsetIndex % COLS;
-  const row = Math.floor(offsetIndex / COLS);
-  const colsInRow = Math.min(COLS, total - row * COLS);
-  const rowWidth = (colsInRow - 1) * colGap;
-  const ox = col * colGap - rowWidth / 2;
-  const oy = -row * rowGap;
+  let ox: number;
+  let oy: number;
+  if (layout === "ring") {
+    const ring = fleetRingOffset(offsetIndex, total, ringRadius);
+    ox = ring.x;
+    oy = ring.y;
+  } else {
+    const col = offsetIndex % COLS;
+    const row = Math.floor(offsetIndex / COLS);
+    const colsInRow = Math.min(COLS, total - row * COLS);
+    const rowWidth = (colsInRow - 1) * colGap;
+    ox = col * colGap - rowWidth / 2;
+    oy = -row * rowGap;
+  }
 
   const targetX = x + ox;
   const targetY = y + oy;
@@ -175,7 +193,7 @@ export function FleetMarker({
 
   return (
     <div
-      className="absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-0.5 z-20 pointer-events-none"
+      className="absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-0.5 z-[8] pointer-events-none"
       style={{
         left: display.x,
         top: display.y,
@@ -227,13 +245,13 @@ export function FleetMarker({
             </span>
             {symbolUrl ? (
               <span
-                className="absolute -bottom-1 -left-1 w-[16px] h-[16px] rounded-sm flex items-center justify-center z-10 overflow-hidden"
+                className="absolute -bottom-0.5 -left-0.5 w-[11px] h-[11px] rounded-sm flex items-center justify-center z-10 overflow-hidden"
                 style={{
                   background: color,
                   boxShadow:
                     selected || moving || animating
-                      ? `0 0 6px ${color}`
-                      : `0 0 3px ${color}88`,
+                      ? `0 0 5px ${color}`
+                      : `0 0 2px ${color}88`,
                   outline:
                     selected || moving || animating
                       ? `1px solid #e8f0f8`
@@ -244,23 +262,23 @@ export function FleetMarker({
                   src={symbolUrl}
                   alt=""
                   draggable={false}
-                  className="w-[12px] h-[12px] object-contain"
+                  className="w-[8px] h-[8px] object-contain"
                 />
               </span>
             ) : null}
             <span
-              className="absolute -bottom-0.5 -right-0.5 min-w-[12px] h-[12px] px-0.5 rounded-sm flex items-center justify-center text-[7px] font-bold leading-none z-10"
+              className="absolute -bottom-0.5 -right-0.5 min-w-[10px] h-[10px] px-0.5 rounded-sm flex items-center justify-center text-[6px] font-bold leading-none z-10"
               style={{
                 background: color,
                 color: "#0a1018",
                 boxShadow:
                   selected || moving || animating
-                    ? `0 0 6px ${color}`
-                    : `0 0 3px ${color}88`,
-                outline:
-                  selected || moving || animating
-                    ? `1px solid #e8f0f8`
-                    : undefined,
+                    ? `0 0 5px ${color}`
+                    : `0 0 2px ${color}88`,
+                  outline:
+                    selected || moving || animating
+                      ? `1px solid #e8f0f8`
+                      : undefined,
               }}
             >
               {power}

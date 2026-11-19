@@ -41,6 +41,11 @@ export class ViewErrorBoundary extends Component<Props, State> {
             <p className="mt-2 text-xs text-muted leading-relaxed">
               {this.state.error.message || "An unexpected error occurred."}
             </p>
+            {this.state.error.stack ? (
+              <pre className="mt-2 max-h-40 overflow-auto text-[10px] leading-snug text-rose-200/70 whitespace-pre-wrap">
+                {this.state.error.stack.split("\n").slice(0, 6).join("\n")}
+              </pre>
+            ) : null}
             <button type="button" className="hud-btn mt-3" onClick={this.retry}>
               Try again
             </button>

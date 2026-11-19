@@ -13,6 +13,13 @@ import {
 } from "../lib/fortificationBonus";
 import { charactersOnArmies } from "../lib/characterLocation";
 import { buildHexSphere } from "../lib/hexSphere";
+import { uniqueFactionIdsFromArmies } from "../lib/battleSides";
+import {
+  buildSideParticipant,
+  emptyModelCountDraft,
+  totalLoreFromBreakdown,
+  type ModelCountDraft,
+} from "../lib/modelCasualties";
 import { SETTLEMENT_HEX_FREQUENCY } from "../lib/settlements";
 import { getFactionById } from "../lib/territory";
 import {
@@ -20,7 +27,11 @@ import {
   type BattleCharacterFate,
   type Army,
   type CampaignCharacter,
+  type ModelCategoryId,
 } from "../types/campaign";
+import { BattleCasualtiesEditor } from "./BattleCasualtiesEditor";
+
+type FactionModelsMap = Record<string, ModelCountDraft>;
 
 function numOrEmpty(v: string): number {
   if (v.trim() === "") return 0;
@@ -171,8 +182,10 @@ export function BattleResolveModal() {
 
   const [attackerVp, setAttackerVp] = useState("0");
   const [defenderVp, setDefenderVp] = useState("0");
-  const [attackerCas, setAttackerCas] = useState("0");
-  const [defenderCas, setDefenderCas] = useState("0");
+  const [attackerModelsByFaction, setAttackerModelsByFaction] =
+    useState<FactionModelsMap>({});
+  const [defenderModelsByFaction, setDefenderModelsByFaction] =
+    useState<FactionModelsMap>({});
   const [attackerLost, setAttackerLost] = useState("0");
   const [defenderLost, setDefenderLost] = useState("0");
   const [attackerSupportIds, setAttackerSupportIds] = useState<string[]>([]);
@@ -181,6 +194,7 @@ export function BattleResolveModal() {
     Record<string, BattleCharacterFate>
   >({});
   const [favorite, setFavorite] = useState(false);
+  const [description, setDescription] = useState("");
 
   const pendingKey = pending
     ? `${pending.planetId}:${pending.attackerArmyId}:${pending.defenderArmyId}`
@@ -190,14 +204,15 @@ export function BattleResolveModal() {
     if (!pendingKey) return;
     setAttackerVp("0");
     setDefenderVp("0");
-    setAttackerCas("0");
-    setDefenderCas("0");
+    setAttackerModelsByFaction({});
+    setDefenderModelsByFaction({});
     setAttackerLost("0");
     setDefenderLost("0");
     setAttackerSupportIds([]);
     setDefenderSupportIds([]);
     setCharacterFates({});
     setFavorite(false);
+    setDescription("");
   }, [pendingKey]);
 
   const context = useMemo(() => {
@@ -223,6 +238,7 @@ export function BattleResolveModal() {
       defender.id,
       supportCtx,
       acted,
+      campaign.factions,
     );
     const defenderSupports = eligibleSupportArmies(
       planet.armies,
@@ -230,6 +246,7 @@ export function BattleResolveModal() {
       attacker.id,
       supportCtx,
       acted,
+      campaign.factions,
     );
 
     return {
@@ -243,14 +260,60 @@ export function BattleResolveModal() {
     };
   }, [pending, campaign]);
 
-  if (!pending || !context) return null;
+  const selectedAtkSupports = useMemo(() => {
+    if (!context) return [];
+    return context.attackerSupports.filter((a) =>
+      attackerSupportIds.includes(a.id),
+    );
+  }, [context, attackerSupportIds]);
+  const selectedDefSupports = useMemo(() => {
+    if (!context) return [];
+    return context.defenderSupports.filter((a) =>
+      defenderSupportIds.includes(a.id),
+    );
+  }, [context, defenderSupportIds]);
 
-  const selectedAtkSupports = context.attackerSupports.filter((a) =>
-    attackerSupportIds.includes(a.id),
-  );
-  const selectedDefSupports = context.defenderSupports.filter((a) =>
-    defenderSupportIds.includes(a.id),
-  );
+  const attackerFactionIds = useMemo(() => {
+    if (!context) return [] as string[];
+    return uniqueFactionIdsFromArmies(context.attacker, selectedAtkSupports);
+  }, [context, selectedAtkSupports]);
+  const defenderFactionIds = useMemo(() => {
+    if (!context) return [] as string[];
+    return uniqueFactionIdsFromArmies(context.defender, selectedDefSupports);
+  }, [context, selectedDefSupports]);
+
+  const atkFactionKey = attackerFactionIds.join("|");
+  const defFactionKey = defenderFactionIds.join("|");
+  useEffect(() => {
+    if (attackerFactionIds.length === 0) return;
+    setAttackerModelsByFaction((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const id of attackerFactionIds) {
+        if (!next[id]) {
+          next[id] = emptyModelCountDraft();
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [atkFactionKey, attackerFactionIds]);
+  useEffect(() => {
+    if (defenderFactionIds.length === 0) return;
+    setDefenderModelsByFaction((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const id of defenderFactionIds) {
+        if (!next[id]) {
+          next[id] = emptyModelCountDraft();
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [defFactionKey, defenderFactionIds]);
+
+  if (!pending || !context) return null;
 
   const attackerCharacters = charactersOnArmies(
     campaign.characters,
@@ -287,8 +350,56 @@ export function BattleResolveModal() {
   const dVp = numOrEmpty(defenderVp);
   const aLost = Math.max(0, Math.min(100, numOrEmpty(attackerLost)));
   const dLost = Math.max(0, Math.min(100, numOrEmpty(defenderLost)));
-  const aCas = Math.max(0, Math.round(numOrEmpty(attackerCas)));
-  const dCas = Math.max(0, Math.round(numOrEmpty(defenderCas)));
+
+  const attackerParticipants = attackerFactionIds.map((factionId) =>
+    buildSideParticipant(
+      factionId,
+      attackerModelsByFaction[factionId] ?? emptyModelCountDraft(),
+      getFactionById(campaign, factionId),
+    ),
+  );
+  const defenderParticipants = defenderFactionIds.map((factionId) =>
+    buildSideParticipant(
+      factionId,
+      defenderModelsByFaction[factionId] ?? emptyModelCountDraft(),
+      getFactionById(campaign, factionId),
+    ),
+  );
+  const aCas = attackerParticipants.reduce(
+    (sum, p) => sum + totalLoreFromBreakdown(p.casualtyBreakdown),
+    0,
+  );
+  const dCas = defenderParticipants.reduce(
+    (sum, p) => sum + totalLoreFromBreakdown(p.casualtyBreakdown),
+    0,
+  );
+
+  const setAttackerModel = (
+    factionId: string,
+    id: ModelCategoryId,
+    value: string,
+  ) => {
+    setAttackerModelsByFaction((prev) => ({
+      ...prev,
+      [factionId]: {
+        ...(prev[factionId] ?? emptyModelCountDraft()),
+        [id]: value,
+      },
+    }));
+  };
+  const setDefenderModel = (
+    factionId: string,
+    id: ModelCategoryId,
+    value: string,
+  ) => {
+    setDefenderModelsByFaction((prev) => ({
+      ...prev,
+      [factionId]: {
+        ...(prev[factionId] ?? emptyModelCountDraft()),
+        [id]: value,
+      },
+    }));
+  };
 
   let previewKind = classifyBattleVictory({
     attackerVp: aVp,
@@ -300,13 +411,18 @@ export function BattleResolveModal() {
     attackerCasualties: aCas,
     defenderCasualties: dCas,
   }).kind;
+  const atkFactionLabel = attackerFactionIds
+    .map((id) => getFactionById(campaign, id)?.name ?? "Unknown")
+    .join(" / ");
+  const defFactionLabel = defenderFactionIds
+    .map((id) => getFactionById(campaign, id)?.name ?? "Unknown")
+    .join(" / ");
+
   let previewVictor = "Draw";
   if (aVp > dVp) {
-    previewVictor =
-      context.attackerFaction?.name ?? context.attacker.name;
+    previewVictor = atkFactionLabel || context.attacker.name;
   } else if (dVp > aVp) {
-    previewVictor =
-      context.defenderFaction?.name ?? context.defender.name;
+    previewVictor = defFactionLabel || context.defender.name;
   }
 
   const nextForce = (
@@ -342,6 +458,10 @@ export function BattleResolveModal() {
       defenderVp: dVp,
       attackerCasualties: aCas,
       defenderCasualties: dCas,
+      attackerCasualtyBreakdown: attackerParticipants[0]?.casualtyBreakdown,
+      defenderCasualtyBreakdown: defenderParticipants[0]?.casualtyBreakdown,
+      attackerParticipants,
+      defenderParticipants,
       attackerStrengthLostPct: aLost,
       defenderStrengthLostPct: dLost,
       attackerSupportArmyIds: attackerSupportIds,
@@ -349,6 +469,7 @@ export function BattleResolveModal() {
       killedCharacterIds,
       characterOutcomes,
       favorite,
+      description,
     });
   };
 
@@ -370,10 +491,20 @@ export function BattleResolveModal() {
           <p className="text-xs text-muted mt-1">
             Play the game on the table, then enter the result for the engagement
             on <span className="text-star">{context.planet.name}</span>. Adjacent
-            same-faction detachments can support and share the % lost (uses
-            their turn).
+            federation detachments can support and share the % lost (uses their
+            turn).
           </p>
         </div>
+
+        <label className="block text-[10px] uppercase tracking-wider text-muted">
+          Battle description
+          <textarea
+            className="hud-input mt-1 w-full text-sm min-h-[5.5rem] resize-y"
+            value={description}
+            placeholder="Write the fight as it unfolds — turning points, heroics, aftermath…"
+            onChange={(e) => setDescription(e.target.value)}
+          />
+        </label>
 
         <div className="grid grid-cols-2 gap-3 text-xs">
           <div
@@ -392,7 +523,7 @@ export function BattleResolveModal() {
               {context.attacker.name}
             </p>
             <p className="text-muted truncate">
-              {context.attackerFaction?.name ?? "Unknown"} · STR{" "}
+              {atkFactionLabel || "Unknown"} · STR{" "}
               {armyStrength(context.attacker)}%
               {atkFort ? ` (${atkFort})` : ""}
             </p>
@@ -416,7 +547,7 @@ export function BattleResolveModal() {
               {context.defender.name}
             </p>
             <p className="text-muted truncate">
-              {context.defenderFaction?.name ?? "Unknown"} · STR{" "}
+              {defFactionLabel || "Unknown"} · STR{" "}
               {armyStrength(context.defender)}%
               {defFort ? ` (${defFort})` : ""}
             </p>
@@ -467,24 +598,6 @@ export function BattleResolveModal() {
             />
           </label>
           <label className="block text-[10px] uppercase tracking-wider text-muted">
-            Attacker casualties
-            <input
-              className="hud-input mt-1 w-full"
-              inputMode="numeric"
-              value={attackerCas}
-              onChange={(e) => setAttackerCas(e.target.value)}
-            />
-          </label>
-          <label className="block text-[10px] uppercase tracking-wider text-muted">
-            Defender casualties
-            <input
-              className="hud-input mt-1 w-full"
-              inputMode="numeric"
-              value={defenderCas}
-              onChange={(e) => setDefenderCas(e.target.value)}
-            />
-          </label>
-          <label className="block text-[10px] uppercase tracking-wider text-muted">
             Attacker force % lost
             <input
               className="hud-input mt-1 w-full"
@@ -502,6 +615,61 @@ export function BattleResolveModal() {
               onChange={(e) => setDefenderLost(e.target.value)}
             />
           </label>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="space-y-2">
+            <p className="text-[10px] uppercase tracking-wider text-muted">
+              Attacker casualties
+              {attackerFactionIds.length > 1
+                ? " · per faction"
+                : ""}
+            </p>
+            {attackerFactionIds.map((factionId) => {
+              const faction = getFactionById(campaign, factionId);
+              return (
+                <BattleCasualtiesEditor
+                  key={factionId}
+                  title={faction?.name ?? "Attacker"}
+                  accent={faction?.color}
+                  faction={faction}
+                  models={
+                    attackerModelsByFaction[factionId] ??
+                    emptyModelCountDraft()
+                  }
+                  onChange={(id, value) =>
+                    setAttackerModel(factionId, id, value)
+                  }
+                />
+              );
+            })}
+          </div>
+          <div className="space-y-2">
+            <p className="text-[10px] uppercase tracking-wider text-muted">
+              Defender casualties
+              {defenderFactionIds.length > 1
+                ? " · per faction"
+                : ""}
+            </p>
+            {defenderFactionIds.map((factionId) => {
+              const faction = getFactionById(campaign, factionId);
+              return (
+                <BattleCasualtiesEditor
+                  key={factionId}
+                  title={faction?.name ?? "Defender"}
+                  accent={faction?.color}
+                  faction={faction}
+                  models={
+                    defenderModelsByFaction[factionId] ??
+                    emptyModelCountDraft()
+                  }
+                  onChange={(id, value) =>
+                    setDefenderModel(factionId, id, value)
+                  }
+                />
+              );
+            })}
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(14rem,17rem)] gap-3 items-start">

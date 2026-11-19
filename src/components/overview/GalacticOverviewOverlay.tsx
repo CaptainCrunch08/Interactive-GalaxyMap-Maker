@@ -4,6 +4,7 @@ import { StrategicOverviewPanel } from "./StrategicOverviewPanel";
 import { FactionsOverviewPanel } from "./FactionsOverviewPanel";
 import { PlanetsOverviewPanel } from "./PlanetsOverviewPanel";
 import { CharactersOverviewPanel } from "./CharactersOverviewPanel";
+import { FleetsOverviewPanel } from "./FleetsOverviewPanel";
 import { BattlesOverviewPanel } from "./BattlesOverviewPanel";
 
 const TABS: { id: GalaxyOverviewTab; label: string }[] = [
@@ -11,6 +12,7 @@ const TABS: { id: GalaxyOverviewTab; label: string }[] = [
   { id: "factions", label: "Factions" },
   { id: "planets", label: "Planets" },
   { id: "characters", label: "Characters" },
+  { id: "fleets", label: "Fleets" },
   { id: "battles", label: "Battles" },
 ];
 
@@ -75,6 +77,7 @@ export function GalacticOverviewOverlay() {
         {tab === "factions" && <FactionsOverviewPanel />}
         {tab === "planets" && <PlanetsOverviewPanel />}
         {tab === "characters" && <CharactersOverviewPanel />}
+        {tab === "fleets" && <FleetsOverviewPanel />}
         {tab === "battles" && <BattlesOverviewPanel />}
       </div>
     </div>

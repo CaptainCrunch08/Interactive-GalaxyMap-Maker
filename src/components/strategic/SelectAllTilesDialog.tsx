@@ -7,11 +7,12 @@ import {
 } from "../../lib/planetTerrain";
 import { keysSortedByLabel } from "../../lib/sortOptions";
 import { fillAllTileTerrain } from "../../lib/terrainGenerate";
-import type { PlanetClassification } from "../../types/campaign";
+import type { PlanetClassification, PlanetType } from "../../types/campaign";
 
 type SelectAllTilesDialogProps = {
   open: boolean;
   classification: PlanetClassification;
+  planetType?: PlanetType | null;
   initialKind?: TerrainKind | null;
   reservedTiles?: number[];
   cityHubTiles?: number[];
@@ -22,6 +23,7 @@ type SelectAllTilesDialogProps = {
 export function SelectAllTilesDialog({
   open,
   classification,
+  planetType = null,
   initialKind = null,
   reservedTiles = [],
   cityHubTiles = [],
@@ -103,10 +105,15 @@ export function SelectAllTilesDialog({
             className="hud-btn hud-btn-active flex-1"
             onClick={() =>
               onConfirm(
-                fillAllTileTerrain(kind, undefined, {
-                  reservedTiles,
-                  cityHubTiles,
-                }),
+                fillAllTileTerrain(
+                  kind,
+                  undefined,
+                  {
+                    reservedTiles,
+                    cityHubTiles,
+                  },
+                  planetType,
+                ),
               )
             }
           >

@@ -30,6 +30,7 @@ import {
 import { tilesAreHexAdjacent } from "./supplyNetwork";
 import { buildHexSphere, hexTileDistance } from "./hexSphere";
 import { SETTLEMENT_HEX_FREQUENCY } from "./settlements";
+import { hiveSpireHabitatBlockReason } from "./planetClass";
 
 let sphereCache: ReturnType<typeof buildHexSphere> | null = null;
 function sphere() {
@@ -58,11 +59,17 @@ export function districtBuffDetail(
     }
     const ap = generatorApContribution(planet, cityId, district);
     if (district.kind === "spire") {
+      if (hiveSpireHabitatBlockReason(planet)) {
+        return `${kind} · 0 AP (uninhabitable world)`;
+      }
       return ap > 0
         ? `${kind} · +${ap} AP`
         : `${kind} · 0 AP (adjacent spire)`;
     }
     if (district.kind === "underhive") {
+      if (hiveSpireHabitatBlockReason(planet)) {
+        return `${kind} · 0 AP (uninhabitable world)`;
+      }
       return ap > 0
         ? `${kind} · +${ap} AP (linked spire)`
         : `${kind} · needs adjacent spire`;

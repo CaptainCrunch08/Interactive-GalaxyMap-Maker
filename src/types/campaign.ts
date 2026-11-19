@@ -66,6 +66,42 @@ export type StructureKind =
   | "ruins_site"
   | "supply_network";
 
+/**
+ * Tabletop-to-lore casualty buckets for detachment battles.
+ * Defaults: swarm ×1000, troops ×100, elites+ ×1.
+ */
+export type ModelCategoryId =
+  | "swarm"
+  | "troops"
+  | "elites"
+  | "beasts"
+  | "monsters_vehicles"
+  | "titans";
+
+/** Per-faction rename / multiplier override for a model category. */
+export interface FactionModelCategoryConfig {
+  /** Display name (e.g. "Gaunts" instead of "Troops"). */
+  label?: string;
+  /** Whole-number lore multiplier (models × multiplier). */
+  multiplier?: number;
+}
+
+/** One category's recorded casualties for a battle side. */
+export interface ModelCategoryCasualty {
+  /** Tabletop models killed. */
+  models: number;
+  /** Lore deaths at the time of recording (models × multiplier). */
+  lore: number;
+  /** Label used when recorded. */
+  label?: string;
+  /** Multiplier used when recorded. */
+  multiplier?: number;
+}
+
+export type BattleCasualtyBreakdown = Partial<
+  Record<ModelCategoryId, ModelCategoryCasualty>
+>;
+
 export interface Faction {
   id: string;
   name: string;
@@ -93,6 +129,13 @@ export interface Faction {
   defaultSymbolId?: string;
   /** All symbols owned by this faction (includes primary). Unique across factions. */
   symbolIds?: string[];
+  /**
+   * Optional renames / lore multipliers for battle casualty categories
+   * (Edit Galaxy → Factions).
+   */
+  modelCategories?: Partial<
+    Record<ModelCategoryId, FactionModelCategoryConfig>
+  >;
 }
 
 /** Alive / lost / deceased status for encyclopedia characters. */
@@ -218,7 +261,10 @@ export interface FamousBattleSite {
   defenderForceStrength: number;
   attackerVp: number;
   defenderVp: number;
+  /** Primary / first victor faction (compat). */
   victorFactionId: string;
+  /** All factions on the winning side (banner allies share the monument). */
+  victorFactionIds?: string[];
   victorLabel: string;
 }
 
@@ -230,27 +276,70 @@ export interface BattleCharacterOutcome {
   fate: BattleCharacterFate;
 }
 
+/**
+ * One faction fighting on a battle side (federation allies share a side,
+ * each with their own model / lore casualty counts).
+ */
+export interface BattleSideParticipant {
+  factionId: string;
+  casualtyBreakdown?: BattleCasualtyBreakdown;
+  /** Total lore deaths for this faction in the fight. */
+  casualties?: number;
+}
+
 export interface BattleEntry {
   id: string;
   date: string;
   summary: string;
   outcome: string;
   /** Structured fight result (absent on older narrative-only entries). */
+  /**
+   * Primary attacker faction (first of `attackerParticipants`, kept for
+   * older saves / simple displays).
+   */
   attackerFactionId?: string;
+  /** Primary defender faction (first of `defenderParticipants`). */
   defenderFactionId?: string;
+  /**
+   * All attacking factions (banner allies). Prefer this over the single id
+   * when present; each entry carries that faction's casualties.
+   */
+  attackerParticipants?: BattleSideParticipant[];
+  /** All defending factions (banner allies). */
+  defenderParticipants?: BattleSideParticipant[];
   attackerArmyId?: string;
   defenderArmyId?: string;
   attackerSupportArmyIds?: string[];
   defenderSupportArmyIds?: string[];
   attackerVp?: number;
   defenderVp?: number;
+  /**
+   * Total lore deaths for the attacker side (sum of participants, or legacy).
+   */
   attackerCasualties?: number;
+  /**
+   * Total lore deaths for the defender side (sum of participants, or legacy).
+   */
   defenderCasualties?: number;
+  /**
+   * @deprecated Prefer per-faction breakdowns on `attackerParticipants`.
+   * Kept for older single-faction battles.
+   */
+  attackerCasualtyBreakdown?: BattleCasualtyBreakdown;
+  /**
+   * @deprecated Prefer per-faction breakdowns on `defenderParticipants`.
+   */
+  defenderCasualtyBreakdown?: BattleCasualtyBreakdown;
   attackerStrengthLostPct?: number;
   defenderStrengthLostPct?: number;
   victoryKind?: VictoryKind;
-  /** Winning faction id, or null/omit on a draw. */
+  /** Primary winning faction id, or null/omit on a draw. */
   victorFactionId?: string | null;
+  /**
+   * All factions on the winning side (federation allies). Prefer this for
+   * markers / labels; falls back to expanding `victorFactionId`'s side.
+   */
+  victorFactionIds?: string[];
   /**
    * Manually starred as chronicle-important (even without Heroic/Epochal).
    */
@@ -288,7 +377,11 @@ export type GalaxyOverviewTab =
   | "factions"
   | "planets"
   | "characters"
+  | "fleets"
   | "battles";
+
+/** Alive / lost / dead status for encyclopedia fleets. */
+export type FleetStatus = "alive" | "lost" | "dead";
 
 export const BATTLE_THEATER_LABELS: Record<BattleTheater, string> = {
   planetary: "Planetary",
@@ -336,7 +429,13 @@ export interface Fleet {
   symbolId?: string;
   ships: Ship[];
   location: FleetLocation;
+  /** Lore / orders — shown on the fleet encyclopedia sheet. */
   notes: string;
+  /**
+   * Operational status. Inactive fleets (`lost` / `dead`) stay in the
+   * encyclopedia but leave the map. Defaults to alive on older saves.
+   */
+  status?: FleetStatus;
 }
 
 /** Main-sequence and exotic stellar types for map visuals. */
@@ -440,6 +539,11 @@ export interface Planet {
    * Missing / broken link → transit dumps the fleet at a random system.
    */
   linkedGateId?: string;
+  /**
+   * Fixed station maze catalog id (0–11). Only for `type === "warp_gate"`.
+   * Assigned when the gate is created; stable thereafter.
+   */
+  stationMazeId?: number;
   notes: string;
   battles: BattleEntry[];
   /** Cities and districts factions contest on the surface. */
@@ -537,6 +641,11 @@ export interface CampaignPlay {
   fleetMovementUsed?: Record<string, number>;
   /** Fleets that already fought a space battle this turn. */
   fleetBattledIds?: string[];
+  /**
+   * Detachments each fleet has already landed (disembarked) this turn
+   * (cap = FLEET_LANDING_LIMIT).
+   */
+  fleetLandingsUsed?: Record<string, number>;
   /**
    * @deprecated Migrated into fleetMovementUsed (full spend).
    * Kept optional for older saves.
@@ -819,6 +928,7 @@ export function inactivePlayState(): CampaignPlay {
     activeFactionId: null,
     fleetMovementUsed: {},
     fleetBattledIds: [],
+    fleetLandingsUsed: {},
     movedArmyIds: [],
     armyMovementUsed: {},
     armyCampEnteredRound: {},
@@ -857,6 +967,14 @@ export function normalizeCampaignPlay(
       }
     }
   }
+  const fleetLandingsUsed: Record<string, number> = {};
+  if (play.fleetLandingsUsed && typeof play.fleetLandingsUsed === "object") {
+    for (const [id, n] of Object.entries(play.fleetLandingsUsed)) {
+      if (typeof n === "number" && Number.isFinite(n) && n > 0) {
+        fleetLandingsUsed[id] = Math.max(0, Math.floor(n));
+      }
+    }
+  }
   // Legacy binary "already moved" → full spend for that fleet.
   if (Array.isArray(play.movedFleetIds)) {
     for (const id of play.movedFleetIds) {
@@ -880,6 +998,7 @@ export function normalizeCampaignPlay(
     fleetBattledIds: Array.isArray(play.fleetBattledIds)
       ? play.fleetBattledIds.filter((id): id is string => typeof id === "string")
       : [],
+    fleetLandingsUsed,
     movedArmyIds: Array.isArray(play.movedArmyIds)
       ? play.movedArmyIds.filter((id): id is string => typeof id === "string")
       : [],

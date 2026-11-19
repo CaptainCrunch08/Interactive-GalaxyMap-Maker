@@ -744,7 +744,17 @@ export const SETTLEMENT_FORBIDDEN_TERRAIN = new Set<TerrainKind>([
   "toxic",
 ]);
 
-export function isSettlementForbiddenTerrain(kind: TerrainKind): boolean {
+/**
+ * Biomes settlements cannot sit on. Forge worlds allow crater (and other
+ * industrial spoil) on any hex — only ocean / lava stay forbidden there.
+ */
+export function isSettlementForbiddenTerrain(
+  kind: TerrainKind,
+  planetType?: PlanetType | string | null,
+): boolean {
+  if (planetType === "forge") {
+    return kind === "ocean" || kind === "lava";
+  }
   return SETTLEMENT_FORBIDDEN_TERRAIN.has(kind);
 }
 
@@ -1028,20 +1038,22 @@ export function generateWorldTileTerrain(
       planetId: opts?.planetId,
       rng,
     });
-  return generateTileTerrainByPercents(weights, tileCount, rng, settlement);
+  return generateTileTerrainByPercents(weights, tileCount, rng, settlement, type);
 }
 
 /**
  * Assign every tile a terrain kind according to percentage weights.
  * Area follows normalized weights; shape follows share intent
  * (high % → few large regions, low % → many small lakes/patches).
- * Optional settlement tiles are kept off ocean / lava / chem spills.
+ * Optional settlement tiles are kept off ocean / lava / chem spills
+ * (forge worlds still allow crater / industrial spoil on any hex).
  */
 export function generateTileTerrainByPercents(
   weights: Partial<Record<TerrainKind, number>>,
   tileCount = strategicTileCount(),
   rng: () => number = Math.random,
   settlement?: TerrainGenSettlementOpts,
+  planetType?: PlanetType | null,
 ): Record<string, string> {
   const entries = TERRAIN_KIND_ORDER.map((kind) => ({
     kind,
@@ -1089,16 +1101,23 @@ export function generateTileTerrainByPercents(
   for (const kind of targets.keys()) counts.set(kind, 0);
 
   const landKinds = TERRAIN_KIND_ORDER.filter(
-    (k) => !isSettlementForbiddenTerrain(k) && (targets.get(k) ?? 0) > 0,
+    (k) =>
+      !isSettlementForbiddenTerrain(k, planetType) &&
+      (targets.get(k) ?? 0) > 0,
   );
   const anyLandKind =
     landKinds[0] ??
-    SETTLEMENT_PREFERRED_LAND.find((k) => !isSettlementForbiddenTerrain(k)) ??
-    SETTLEMENT_LAND_FALLBACK;
+    SETTLEMENT_PREFERRED_LAND.find(
+      (k) => !isSettlementForbiddenTerrain(k, planetType),
+    ) ??
+    (planetType === "forge" ? "crater" : SETTLEMENT_LAND_FALLBACK);
 
   const pickSettlementKind = (tile: number): TerrainKind => {
     // City hubs are always urban — settlements aren't underwater or on lava.
     if (cityHubs.has(tile)) return "urban";
+    if (planetType === "forge" && (targets.get("crater") ?? 0) > 0) {
+      return "crater";
+    }
     if ((targets.get("urban") ?? 0) > 0) return "urban";
     for (const k of landKinds) {
       if ((counts.get(k) ?? 0) < (targets.get(k) ?? 0)) return k;
@@ -1109,7 +1128,7 @@ export function generateTileTerrainByPercents(
   const claim = (tile: number, kind: TerrainKind): boolean => {
     if (tile < 0 || tile >= n) return false;
     if (assignment[tile] != null) return false;
-    if (reserved.has(tile) && isSettlementForbiddenTerrain(kind)) {
+    if (reserved.has(tile) && isSettlementForbiddenTerrain(kind, planetType)) {
       return false;
     }
     const have = counts.get(kind) ?? 0;
@@ -1123,7 +1142,9 @@ export function generateTileTerrainByPercents(
   /** Force-claim settlement tiles (may exceed quota slightly for urban). */
   const forceSettlement = (tile: number, kind: TerrainKind) => {
     if (assignment[tile] != null) return;
-    const safe = isSettlementForbiddenTerrain(kind) ? anyLandKind : kind;
+    const safe = isSettlementForbiddenTerrain(kind, planetType)
+      ? anyLandKind
+      : kind;
     assignment[tile] = safe;
     counts.set(safe, (counts.get(safe) ?? 0) + 1);
     // Bump target so growth doesn't starve this kind later.
@@ -1713,17 +1734,17 @@ export function generateTileTerrainByPercents(
     }
 
     if (!chosen) chosen = fallbackKind;
-    if (reserved.has(tile) && isSettlementForbiddenTerrain(chosen)) {
+    if (reserved.has(tile) && isSettlementForbiddenTerrain(chosen, planetType)) {
       chosen = pickSettlementKind(tile);
     }
     assignment[tile] = chosen;
     counts.set(chosen, (counts.get(chosen) ?? 0) + 1);
   }
 
-  // Final safety: settlements never keep ocean / lava / chem spill.
+  // Final safety: settlements never keep ocean / lava (/ chem spill off forge).
   for (const tile of reserved) {
     const k = assignment[tile];
-    if (!k || isSettlementForbiddenTerrain(k)) {
+    if (!k || isSettlementForbiddenTerrain(k, planetType)) {
       const safe = pickSettlementKind(tile);
       if (k && counts.has(k)) {
         counts.set(k, Math.max(0, (counts.get(k) ?? 1) - 1));
@@ -1736,7 +1757,7 @@ export function generateTileTerrainByPercents(
   const out: Record<string, string> = {};
   for (let i = 0; i < n; i++) {
     let kind = assignment[i] ?? fallbackKind;
-    if (reserved.has(i) && isSettlementForbiddenTerrain(kind)) {
+    if (reserved.has(i) && isSettlementForbiddenTerrain(kind, planetType)) {
       kind = pickSettlementKind(i);
     }
     out[String(i)] = kind;
@@ -1749,28 +1770,33 @@ export function fillAllTileTerrain(
   kind: TerrainKind,
   tileCount = strategicTileCount(),
   settlement?: TerrainGenSettlementOpts,
+  planetType?: PlanetType | null,
 ): Record<string, string> {
   const reserved = new Set<number>();
   for (const t of settlement?.reservedTiles ?? []) reserved.add(t);
   const cityHubs = new Set<number>();
   for (const t of settlement?.cityHubTiles ?? []) cityHubs.add(t);
+  const fallback =
+    planetType === "forge" && kind === "crater"
+      ? "crater"
+      : SETTLEMENT_LAND_FALLBACK;
   const out: Record<string, string> = {};
   for (let i = 0; i < tileCount; i++) {
-    if (reserved.has(i) && isSettlementForbiddenTerrain(kind)) {
-      out[String(i)] = SETTLEMENT_LAND_FALLBACK;
+    if (reserved.has(i) && isSettlementForbiddenTerrain(kind, planetType)) {
+      out[String(i)] = fallback;
     } else {
       out[String(i)] = kind;
     }
   }
-  // Prefer urban label on hubs when we had to substitute.
+  // Prefer urban label on hubs when we had to substitute (forge crater fill keeps crater).
   for (const hub of cityHubs) {
     if (
       hub >= 0 &&
       hub < tileCount &&
       reserved.has(hub) &&
-      isSettlementForbiddenTerrain(kind)
+      isSettlementForbiddenTerrain(kind, planetType)
     ) {
-      out[String(hub)] = "urban";
+      out[String(hub)] = planetType === "forge" ? fallback : "urban";
     }
   }
   return out;

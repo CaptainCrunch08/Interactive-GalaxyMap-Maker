@@ -12,6 +12,7 @@ import type {
 } from "../types/campaign";
 import { useCampaignStore } from "../store/useCampaignStore";
 import { promptCustomLabel } from "../lib/customLabel";
+import { downloadCampaign } from "../lib/io";
 import { megastructureName } from "../lib/stars";
 import { supportsStrategicSurface } from "../lib/planetClass";
 import { keysSortedByLabel, sortedByName } from "../lib/sortOptions";
@@ -230,12 +231,16 @@ export function InspectorPanel() {
   const regenerateSettlements = useCampaignStore((s) => s.regenerateSettlements);
   const shufflePlanetSurface = useCampaignStore((s) => s.shufflePlanetSurface);
   const addArmy = useCampaignStore((s) => s.addArmy);
+  const addArmiesToCitiesAndBastions = useCampaignStore(
+    (s) => s.addArmiesToCitiesAndBastions,
+  );
   const recruitDetachment = useCampaignStore((s) => s.recruitDetachment);
   const digTrenchWithArmy = useCampaignStore((s) => s.digTrenchWithArmy);
   const recruitShip = useCampaignStore((s) => s.recruitShip);
   const loadTransportCargo = useCampaignStore((s) => s.loadTransportCargo);
   const unloadTransportCargo = useCampaignStore((s) => s.unloadTransportCargo);
   const playBuildMode = useCampaignStore((s) => s.playBuildMode);
+  const editMode = useCampaignStore((s) => s.editMode);
   const [shipDest, setShipDest] = useState<"new" | string>("new");
   const [planetOpen, setPlanetOpen] = useState<
     Record<PlanetInspectorSection, boolean>
@@ -422,11 +427,7 @@ export function InspectorPanel() {
               <button
                 type="button"
                 className="hud-btn"
-                onClick={() => {
-                  void import("../lib/io").then(({ downloadCampaign }) =>
-                    downloadCampaign(campaign),
-                  );
-                }}
+                onClick={() => downloadCampaign(campaign)}
               >
                 Export
               </button>
@@ -720,6 +721,12 @@ export function InspectorPanel() {
               <select
                 className={inputClass + " mb-2"}
                 value={planet.type}
+                disabled={!editMode}
+                title={
+                  editMode
+                    ? undefined
+                    : "Open Edit Galaxy → Contents to change world type"
+                }
                 onChange={(e) => {
                   const next = e.target.value as PlanetType;
                   if (next === "custom") {
@@ -753,6 +760,7 @@ export function InspectorPanel() {
                     className={inputClass + " mt-1"}
                     value={planet.customTypeLabel ?? ""}
                     placeholder="e.g. Forge-Agri Hybrid"
+                    disabled={!editMode}
                     onChange={(e) =>
                       updatePlanet(planet.id, {
                         customTypeLabel: e.target.value,
@@ -846,6 +854,12 @@ export function InspectorPanel() {
                   <select
                     className={inputClass + " mb-2"}
                     value={planet.classification ?? "earthlike"}
+                    disabled={!editMode}
+                    title={
+                      editMode
+                        ? undefined
+                        : "Open Edit Galaxy → Contents to change classification"
+                    }
                     onChange={(e) =>
                       updatePlanet(planet.id, {
                         classification: e.target
@@ -2062,24 +2076,37 @@ export function InspectorPanel() {
               belowHeader={
                 campaign.factions.length > 0 &&
                 !normalizeCampaignPlay(campaign.play).active ? (
-                  <select
-                    className={inputClass + " w-full"}
-                    style={{ fontSize: "0.7rem" }}
-                    value=""
-                    onChange={(e) => {
-                      const fid = e.target.value;
-                      if (!fid || !planet) return;
-                      addArmy(planet.id, fid);
-                      e.target.value = "";
-                    }}
-                  >
-                    <option value="">+ Deploy…</option>
-                    {factionsSortedByName(campaign.factions).map((f) => (
-                      <option key={f.id} value={f.id}>
-                        {f.name}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="space-y-1.5">
+                    <select
+                      className={inputClass + " w-full"}
+                      style={{ fontSize: "0.7rem" }}
+                      value=""
+                      onChange={(e) => {
+                        const fid = e.target.value;
+                        if (!fid || !planet) return;
+                        addArmy(planet.id, fid);
+                        e.target.value = "";
+                      }}
+                    >
+                      <option value="">+ Deploy…</option>
+                      {factionsSortedByName(campaign.factions).map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.name}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="hud-btn w-full"
+                      style={{ fontSize: "0.7rem" }}
+                      onClick={() => {
+                        if (!planet) return;
+                        addArmiesToCitiesAndBastions(planet.id);
+                      }}
+                    >
+                      Add armies
+                    </button>
+                  </div>
                 ) : null
               }
             >
@@ -2432,9 +2459,14 @@ export function InspectorPanel() {
                           battle.defenderVp != null
                             ? ` · ${battle.attackerVp}–${battle.defenderVp} VP`
                             : ""}
-                          {battle.attackerCasualties != null ||
-                          battle.defenderCasualties != null
-                            ? ` · KIA ${(battle.attackerCasualties ?? 0) + (battle.defenderCasualties ?? 0)}`
+                          {(battle.attackerCasualties != null ||
+                            battle.defenderCasualties != null ||
+                            battle.attackerCasualtyBreakdown ||
+                            battle.defenderCasualtyBreakdown) &&
+                          (battle.attackerCasualties ?? 0) +
+                            (battle.defenderCasualties ?? 0) >
+                            0
+                            ? ` · Lore KIA ${((battle.attackerCasualties ?? 0) + (battle.defenderCasualties ?? 0)).toLocaleString("en-US")}`
                             : ""}
                         </p>
                       )}
@@ -2537,6 +2569,12 @@ export function InspectorPanel() {
               <select
                 className={inputClass + " mb-2"}
                 value={system.starClass ?? "G"}
+                disabled={!editMode}
+                title={
+                  editMode
+                    ? undefined
+                    : "Open Edit Galaxy → Contents to change star class"
+                }
                 onChange={(e) =>
                   updateSystem(system.id, {
                     starClass: e.target.value as StarClass,

@@ -16,10 +16,10 @@ import { useThrottledMapScale } from "../hooks/useThrottledMapScale";
 import {
   SYSTEM_VIEW_SIZE,
   maxOrbitRadius,
-  orbitFleetAnchor,
   orbitPosition,
   orbitRadiusForIndex,
-  STAR_FLEET_OFFSET,
+  planetFleetRingRadius,
+  starFleetRingRadius,
 } from "../lib/systemLayout";
 import {
   fleetsAtSystemStar,
@@ -319,7 +319,7 @@ export function SystemView() {
               };
 
               return (
-                <div key={planet.id}>
+                <div key={planet.id} className="relative z-10">
                   {planet.type === "asteroid_belt" ? (
                     <AsteroidBeltRing
                       planet={planet}
@@ -361,6 +361,7 @@ export function SystemView() {
               let ax: number;
               let ay: number;
               let peers: typeof fleets;
+              let ringRadius: number;
               if (fleet.location.kind === "orbit") {
                 const planetId = fleet.location.planetId;
                 const planet = planets.find((p) => p.id === planetId);
@@ -369,14 +370,19 @@ export function SystemView() {
                   typeof planet.orbitIndex === "number"
                     ? planet.orbitIndex
                     : planets.findIndex((p) => p.id === planet.id);
-                const anchor = orbitFleetAnchor(Math.max(0, orbitIndex), center);
-                ax = anchor.x;
-                ay = anchor.y;
+                const pos = orbitPosition(Math.max(0, orbitIndex));
+                ax = center + pos.x;
+                ay = center + pos.y;
                 peers = fleetsInOrbit(fleets, system.id, planetId);
+                ringRadius = planetFleetRingRadius(peers.length);
               } else {
-                ax = center + STAR_FLEET_OFFSET.x;
-                ay = center + STAR_FLEET_OFFSET.y;
+                ax = center;
+                ay = center;
                 peers = starFleets;
+                ringRadius = starFleetRingRadius(
+                  peers.length,
+                  displayStarSize,
+                );
               }
               const i = peers.findIndex((f) => f.id === fleet.id);
               if (i < 0) return null;
@@ -400,6 +406,8 @@ export function SystemView() {
                   mapScale={mapScale}
                   offsetIndex={i}
                   stackCount={peers.length}
+                  layout="ring"
+                  ringRadius={ringRadius}
                   appearance="ship"
                   onSelect={() => selectFleet(fleet.id)}
                 />

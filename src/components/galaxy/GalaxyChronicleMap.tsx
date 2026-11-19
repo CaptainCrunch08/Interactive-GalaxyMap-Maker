@@ -17,6 +17,7 @@ import { fleetsBySystemId } from "../../lib/fleets";
 import { getSystemOwnership } from "../../lib/territory";
 import type { Campaign } from "../../types/campaign";
 import { campaignMapSize } from "../../types/campaign";
+import { galaxyFleetRingRadius } from "../../lib/systemLayout";
 
 interface GalaxyChronicleMapProps {
   campaign: Campaign;
@@ -126,13 +127,15 @@ export function GalaxyChronicleMap({
                       fac,
                       campaign.symbols,
                     )}
-                    x={system.x + 22}
-                    y={system.y - 28}
+                    x={system.x}
+                    y={system.y}
                     selected={false}
                     moving={false}
                     mapScale={mapScale}
                     offsetIndex={i}
                     stackCount={systemFleets.length}
+                    layout="ring"
+                    ringRadius={galaxyFleetRingRadius(systemFleets.length)}
                     onSelect={() => undefined}
                   />
                 );

@@ -743,7 +743,9 @@ export function EditGalaxyContentsInspector({
                             })
                           }
                         >
-                          {keysSortedByLabel(STRUCTURE_KIND_LABELS).map((k) => (
+                          {keysSortedByLabel(STRUCTURE_KIND_LABELS)
+                            .filter((k) => k !== "relay_crown")
+                            .map((k) => (
                             <option key={k} value={k}>
                               {STRUCTURE_KIND_LABELS[k]}
                             </option>

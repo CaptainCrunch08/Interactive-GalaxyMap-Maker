@@ -234,7 +234,7 @@ export function StrategicView() {
   let selectedDistrictCityId: string | null = null;
   if (selectedDistrictId) {
     for (const city of cities) {
-      const d = city.districts.find((x) => x.id === selectedDistrictId);
+      const d = (city.districts ?? []).find((x) => x.id === selectedDistrictId);
       if (d) {
         selectedDistrict = d;
         selectedDistrictCityId = city.id;
@@ -257,7 +257,7 @@ export function StrategicView() {
         )
       : [];
   const districtCount =
-    cities.reduce((n, c) => n + c.districts.length, 0) +
+    cities.reduce((n, c) => n + (c.districts?.length ?? 0), 0) +
     (planet.independentDistricts?.length ?? 0);
   const paintFaction =
     terrainPaintFactionId && terrainPaintFactionId !== TERRAIN_PAINT_ERASE
@@ -278,7 +278,8 @@ export function StrategicView() {
   else if (selectedDistrictWarnings.length > 0)
     hint = selectedDistrictWarnings.join(" · ");
   else if (playBuildMode?.kind === "manufactorum")
-    hint = "Click a free hex within 2 of the city to build a manufactorum";
+    hint =
+      "Click a free wasteland, crater, agri, iron-rich, urban, or chem-spill hex within 2 of the city (any hex on forge worlds)";
   else if (playBuildMode?.kind === "bastion")
     hint = "Click a free hex within 2 of the city to build a bastion (+10% STR on hex)";
   else if (playBuildMode?.kind === "outpost")
@@ -923,6 +924,7 @@ export function StrategicView() {
       <SelectAllTilesDialog
         open={selectAllTilesOpen}
         classification={planet.classification}
+        planetType={planet.type}
         reservedTiles={settlementReservedTiles}
         cityHubTiles={cityHubTiles}
         initialKind={

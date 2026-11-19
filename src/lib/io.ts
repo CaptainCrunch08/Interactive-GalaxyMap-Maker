@@ -14,6 +14,31 @@ import { normalizeTerrainKind } from "./planetTerrain";
 import { reportPersistSize, utf8ByteLength } from "./perfDebug";
 import { sanitizePlayFederationTurn } from "./play";
 
+const modelCategoryIdSchema = z.enum([
+  "swarm",
+  "troops",
+  "elites",
+  "beasts",
+  "monsters_vehicles",
+  "titans",
+]);
+
+const factionModelCategoryConfigSchema = z.object({
+  label: z.string().optional(),
+  multiplier: z.number().int().nonnegative().optional(),
+});
+
+const battleCategoryCasualtySchema = z.object({
+  models: z.number().nonnegative(),
+  lore: z.number().nonnegative(),
+  label: z.string().optional(),
+  multiplier: z.number().int().nonnegative().optional(),
+});
+
+const battleCasualtyBreakdownSchema = z
+  .record(modelCategoryIdSchema, battleCategoryCasualtySchema)
+  .optional();
+
 const factionSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -29,6 +54,9 @@ const factionSchema = z.object({
   backstory: z.string().optional(),
   defaultSymbolId: z.string().optional(),
   symbolIds: z.array(z.string()).optional().default([]),
+  modelCategories: z
+    .record(modelCategoryIdSchema, factionModelCategoryConfigSchema)
+    .optional(),
 });
 
 const hyperlaneSchema = z.object({
@@ -180,6 +208,12 @@ const armySchema = z.object({
   strengthPercent: z.number().min(0).max(100).optional().default(100),
 });
 
+const battleSideParticipantSchema = z.object({
+  factionId: z.string(),
+  casualtyBreakdown: battleCasualtyBreakdownSchema,
+  casualties: z.number().optional(),
+});
+
 const battleEntrySchema = z.object({
   id: z.string(),
   date: z.string(),
@@ -187,6 +221,8 @@ const battleEntrySchema = z.object({
   outcome: z.string(),
   attackerFactionId: z.string().optional(),
   defenderFactionId: z.string().optional(),
+  attackerParticipants: z.array(battleSideParticipantSchema).optional(),
+  defenderParticipants: z.array(battleSideParticipantSchema).optional(),
   attackerArmyId: z.string().optional(),
   defenderArmyId: z.string().optional(),
   attackerSupportArmyIds: z.array(z.string()).optional(),
@@ -195,6 +231,8 @@ const battleEntrySchema = z.object({
   defenderVp: z.number().optional(),
   attackerCasualties: z.number().optional(),
   defenderCasualties: z.number().optional(),
+  attackerCasualtyBreakdown: battleCasualtyBreakdownSchema,
+  defenderCasualtyBreakdown: battleCasualtyBreakdownSchema,
   attackerStrengthLostPct: z.number().optional(),
   defenderStrengthLostPct: z.number().optional(),
   victoryKind: z
@@ -209,6 +247,7 @@ const battleEntrySchema = z.object({
     ])
     .optional(),
   victorFactionId: z.string().nullable().optional(),
+  victorFactionIds: z.array(z.string()).optional(),
   favorite: z.boolean().optional(),
   characterOutcomes: z
     .array(
@@ -246,6 +285,7 @@ const famousBattleSiteSchema = z.object({
   attackerVp: z.number(),
   defenderVp: z.number(),
   victorFactionId: z.string(),
+  victorFactionIds: z.array(z.string()).optional(),
   victorLabel: z.string(),
 });
 
@@ -309,6 +349,7 @@ const fleetSchema = z.object({
   ships: z.array(shipSchema).default([]),
   location: fleetLocationSchema,
   notes: z.string().default(""),
+  status: z.enum(["alive", "lost", "dead"]).optional(),
 });
 
 const timelineEventSchema = z.object({
@@ -393,6 +434,8 @@ const planetSchema = z.object({
   visualModelId: z.string().optional(),
   controllingFactionId: z.string().optional(),
   linkedGateId: z.string().optional(),
+  /** Fixed warp-gate station maze catalog id (0–11). */
+  stationMazeId: z.number().int().min(0).max(11).optional(),
   notes: z.string(),
   battles: z.array(battleEntrySchema),
   cities: z.array(citySchema).default([]),
@@ -413,6 +456,7 @@ const campaignPlaySchema = z.object({
   activeFactionId: z.string().nullable().default(null),
   fleetMovementUsed: z.record(z.string(), z.number()).optional().default({}),
   fleetBattledIds: z.array(z.string()).optional().default([]),
+  fleetLandingsUsed: z.record(z.string(), z.number()).optional().default({}),
   /** Legacy — migrated into fleetMovementUsed. */
   movedFleetIds: z.array(z.string()).optional().default([]),
   movedArmyIds: z.array(z.string()).default([]),
@@ -544,9 +588,15 @@ export function downloadCampaign(campaign: Campaign, filename?: string) {
   const a = document.createElement("a");
   a.href = url;
   a.download =
-    filename ?? `${campaign.name.replace(/\s+/g, "-").toLowerCase()}.json`;
+    filename ??
+    `${campaign.name.replace(/[^\w\-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").toLowerCase() || "galaxy"}.json`;
+  // Must stay in the user-gesture stack: append + click (not just a.click()).
+  a.style.display = "none";
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  a.remove();
+  // Revoke after the browser has a chance to start the download.
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export async function readCampaignFile(file: File): Promise<Campaign> {

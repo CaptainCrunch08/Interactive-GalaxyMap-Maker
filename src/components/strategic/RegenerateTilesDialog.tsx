@@ -228,6 +228,7 @@ export function RegenerateTilesDialog({
                       undefined,
                       undefined,
                       { reservedTiles, cityHubTiles },
+                      planetType,
                     ),
               )
             }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useCampaignStore } from "../../store/useCampaignStore";
 import {
   BATTLE_THEATER_LABELS,
@@ -7,6 +7,7 @@ import {
   type BattleTheater,
   type Campaign,
   type CampaignBattleLogEntry,
+  type ModelCategoryId,
   type VictoryKind,
 } from "../../types/campaign";
 import {
@@ -18,10 +19,29 @@ import {
   compareBattleLogNewestFirst,
   ensureCampaignBattleLog,
 } from "../../lib/battleLog";
+import {
+  legacyFieldsFromParticipants,
+  mergeParticipantsPreservingCasualties,
+  sideFactionIds,
+  sideParticipants,
+  victorFactionIdsForEntry,
+  victorFieldsForSide,
+  victorSideForEntry,
+} from "../../lib/battleSides";
+import {
+  battleTotalLoreCasualties,
+  buildSideParticipant,
+  draftFromBreakdown,
+  emptyModelCountDraft,
+  formatLoreCount,
+  sideLoreCasualties,
+  type ModelCountDraft,
+} from "../../lib/modelCasualties";
 import { sortedByName } from "../../lib/sortOptions";
 import { factionsSortedByName, getFactionById } from "../../lib/territory";
 import { useDebouncedDraft } from "../../lib/useDebouncedDraft";
 import { AutoGrowTextarea } from "../AutoGrowTextarea";
+import { BattleCasualtiesEditor } from "../BattleCasualtiesEditor";
 
 const FATE_OPTIONS: { value: BattleCharacterFate; label: string }[] = [
   { value: "survived", label: "Survived" },
@@ -52,7 +72,8 @@ type BattleEditDraft = {
   victoryKind: VictoryKind | "";
   attackerFactionId: string;
   defenderFactionId: string;
-  victorFactionId: string;
+  /** Winning side — drives all allied victor factions. */
+  victorSide: "attacker" | "defender" | "";
 };
 
 function battleDraftFromEntry(entry: CampaignBattleLogEntry): BattleEditDraft {
@@ -67,7 +88,10 @@ function battleDraftFromEntry(entry: CampaignBattleLogEntry): BattleEditDraft {
     victoryKind: entry.victoryKind ?? "",
     attackerFactionId: entry.attackerFactionId ?? "",
     defenderFactionId: entry.defenderFactionId ?? "",
-    victorFactionId: entry.victorFactionId ?? "",
+    victorSide:
+      entry.victoryKind === "draw"
+        ? ""
+        : (victorSideForEntry(entry) ?? ""),
   };
 }
 
@@ -100,12 +124,12 @@ function formatOutcomeLine(
   campaign: { factions: { id: string; name: string; color: string }[] },
   args: {
     victoryKind: VictoryKind | "";
-    victorFactionId: string;
+    victorFactionIds: string[];
     attackerVp?: number;
     defenderVp?: number;
   },
 ): string {
-  const { victoryKind, victorFactionId, attackerVp, defenderVp } = args;
+  const { victoryKind, victorFactionIds, attackerVp, defenderVp } = args;
   if (!victoryKind) return "";
   const hasVp = attackerVp != null && defenderVp != null;
   if (victoryKind === "draw") {
@@ -113,7 +137,10 @@ function formatOutcomeLine(
       ? `Draw — ${attackerVp}–${defenderVp} VP. Forces withdraw bloodied.`
       : "Draw — Forces withdraw bloodied.";
   }
-  const victorLabel = factionName(campaign, victorFactionId);
+  const victorLabel =
+    victorFactionIds.length > 0
+      ? victorFactionIds.map((id) => factionName(campaign, id)).join(" / ")
+      : "Victor";
   if (hasVp) {
     return `${VICTORY_KIND_LABELS[victoryKind]} for ${victorLabel} (${Math.max(attackerVp!, defenderVp!)}–${Math.min(attackerVp!, defenderVp!)} VP).`;
   }
@@ -163,28 +190,349 @@ function matchesQuery(entry: CampaignBattleLogEntry, q: string): boolean {
   return hay.includes(q);
 }
 
-function CrossedSwords({ color }: { color: string }) {
+function CrossedSwords({ colors }: { colors: string[] }) {
+  const cols = colors.length > 0 ? colors.slice(0, 4) : ["#6a8296"];
+  const n = cols.length;
+  const cx = 20;
+  const cy = 20;
+  const r = 28; // covers the square; clipped by overflow
+  // Seams from center: 12 o'clock, then equal steps (4 & 8 o'clock when n=3).
+  const seamAngle = (i: number) => -Math.PI / 2 + (i / n) * Math.PI * 2;
+  const wedgePath = (i: number) => {
+    const a0 = seamAngle(i);
+    const a1 = seamAngle(i + 1);
+    const x0 = cx + r * Math.cos(a0);
+    const y0 = cy + r * Math.sin(a0);
+    const x1 = cx + r * Math.cos(a1);
+    const y1 = cy + r * Math.sin(a1);
+    const large = a1 - a0 > Math.PI ? 1 : 0;
+    return `M ${cx} ${cy} L ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1} Z`;
+  };
   return (
     <span
-      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-sm border"
-      style={{ borderColor: `${color}88`, background: `${color}14` }}
+      className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-sm border overflow-hidden"
+      style={{ borderColor: `${cols[0]}99` }}
       aria-hidden
     >
-      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+      <svg
+        width="40"
+        height="40"
+        viewBox="0 0 40 40"
+        className="absolute inset-0 h-full w-full"
+      >
+        {n === 1 ? (
+          <rect x="0" y="0" width="40" height="40" fill={cols[0]} />
+        ) : (
+          <>
+            {cols.map((c, i) => (
+              <path key={i} d={wedgePath(i)} fill={c} />
+            ))}
+            {cols.map((_, i) => {
+              const a = seamAngle(i);
+              return (
+                <line
+                  key={`seam-${i}`}
+                  x1={cx}
+                  y1={cy}
+                  x2={cx + r * Math.cos(a)}
+                  y2={cy + r * Math.sin(a)}
+                  stroke="rgba(10,16,24,0.85)"
+                  strokeWidth="1.25"
+                />
+              );
+            })}
+          </>
+        )}
+      </svg>
+      <svg
+        width="20"
+        height="20"
+        viewBox="0 0 20 20"
+        fill="none"
+        className="relative z-[1] drop-shadow-[0_0_1px_rgba(0,0,0,0.85)]"
+      >
         <path
           d="M4 16 L9 5 M11 5 L16 16 M6.5 10.5 H13.5"
-          stroke={color}
+          stroke="#f2f6fa"
           strokeWidth="1.6"
           strokeLinecap="round"
         />
         <path
           d="M3 4 L7 8 M17 4 L13 8"
-          stroke={color}
+          stroke="#f2f6fa"
           strokeWidth="1.4"
           strokeLinecap="round"
         />
       </svg>
     </span>
+  );
+}
+
+function draftsFromParticipants(
+  participants: ReturnType<typeof sideParticipants>,
+): Record<string, ModelCountDraft> {
+  const out: Record<string, ModelCountDraft> = {};
+  for (const p of participants) {
+    out[p.factionId] = draftFromBreakdown(p.casualtyBreakdown);
+  }
+  return out;
+}
+
+function BattleSideFactionPicker({
+  label,
+  factionIds,
+  factions,
+  onChange,
+}: {
+  label: string;
+  factionIds: string[];
+  factions: { id: string; name: string; color: string }[];
+  onChange: (ids: string[]) => void;
+}) {
+  const selected = new Set(factionIds);
+  const addable = factions.filter((f) => !selected.has(f.id));
+  return (
+    <div className="space-y-2">
+      <p className="text-[10px] uppercase tracking-wider text-muted">{label}</p>
+      {factionIds.length === 0 ? (
+        <p className="text-[11px] text-muted">None yet — add a faction.</p>
+      ) : (
+        <ul className="flex flex-wrap gap-1.5">
+          {factionIds.map((id) => {
+            const f = factions.find((x) => x.id === id);
+            return (
+              <li
+                key={id}
+                className="inline-flex items-center gap-1.5 rounded border px-2 py-1 text-xs"
+                style={{
+                  borderColor: `${f?.color ?? "#888"}88`,
+                  background: `${f?.color ?? "#888"}14`,
+                }}
+              >
+                <span
+                  className="truncate max-w-[9rem]"
+                  style={{ color: f?.color }}
+                >
+                  {f?.name ?? "Unknown"}
+                </span>
+                <button
+                  type="button"
+                  className="text-muted hover:text-crimson text-[10px]"
+                  title="Remove from side"
+                  onClick={() => onChange(factionIds.filter((x) => x !== id))}
+                >
+                  ×
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <select
+        className="hud-input w-full text-sm"
+        value=""
+        disabled={addable.length === 0}
+        onChange={(e) => {
+          const id = e.target.value;
+          if (!id) return;
+          onChange([...factionIds, id]);
+          e.target.value = "";
+        }}
+      >
+        <option value="">
+          {addable.length === 0 ? "— All factions added —" : "+ Add faction"}
+        </option>
+        {addable.map((f) => (
+          <option key={f.id} value={f.id}>
+            {f.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function BattleManualCasualties({
+  campaign,
+  entry,
+  attackerFactionIds,
+  defenderFactionIds,
+  onCommit,
+}: {
+  campaign: Campaign;
+  entry: CampaignBattleLogEntry;
+  attackerFactionIds: string[];
+  defenderFactionIds: string[];
+  onCommit: (patch: Partial<CampaignBattleLogEntry>) => void;
+}) {
+  const attackerParts = sideParticipants(entry, "attacker");
+  const defenderParts = sideParticipants(entry, "defender");
+
+  const [attackerModels, setAttackerModels] = useState<
+    Record<string, ModelCountDraft>
+  >(() => draftsFromParticipants(attackerParts));
+  const [defenderModels, setDefenderModels] = useState<
+    Record<string, ModelCountDraft>
+  >(() => draftsFromParticipants(defenderParts));
+
+  const atkKey = attackerFactionIds.join("|");
+  const defKey = defenderFactionIds.join("|");
+  useEffect(() => {
+    setAttackerModels((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const id of attackerFactionIds) {
+        if (!next[id]) {
+          next[id] = draftFromBreakdown(
+            attackerParts.find((p) => p.factionId === id)?.casualtyBreakdown,
+          );
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [atkKey]);
+  useEffect(() => {
+    setDefenderModels((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const id of defenderFactionIds) {
+        if (!next[id]) {
+          next[id] = draftFromBreakdown(
+            defenderParts.find((p) => p.factionId === id)?.casualtyBreakdown,
+          );
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defKey]);
+
+  const commitFactionModels = (
+    side: "attacker" | "defender",
+    factionId: string,
+    draft: ModelCountDraft,
+  ) => {
+    const faction = getFactionById(campaign, factionId);
+    const updated = buildSideParticipant(factionId, draft, faction);
+    const atkIds =
+      side === "attacker" ? attackerFactionIds : sideFactionIds(entry, "attacker");
+    const defIds =
+      side === "defender" ? defenderFactionIds : sideFactionIds(entry, "defender");
+    const prevAtk = sideParticipants(entry, "attacker");
+    const prevDef = sideParticipants(entry, "defender");
+    const attackers = mergeParticipantsPreservingCasualties(atkIds, prevAtk).map(
+      (p) => (p.factionId === factionId && side === "attacker" ? updated : p),
+    );
+    const defenders = mergeParticipantsPreservingCasualties(defIds, prevDef).map(
+      (p) => (p.factionId === factionId && side === "defender" ? updated : p),
+    );
+    onCommit(legacyFieldsFromParticipants(attackers, defenders));
+  };
+
+  const setModel = (
+    side: "attacker" | "defender",
+    factionId: string,
+    category: ModelCategoryId,
+    value: string,
+  ) => {
+    const setter = side === "attacker" ? setAttackerModels : setDefenderModels;
+    setter((prev) => {
+      const nextDraft = {
+        ...(prev[factionId] ?? emptyModelCountDraft()),
+        [category]: value,
+      };
+      const next = { ...prev, [factionId]: nextDraft };
+      commitFactionModels(side, factionId, nextDraft);
+      return next;
+    });
+  };
+
+  const legacyOnly =
+    !entry.attackerParticipants?.length &&
+    !entry.defenderParticipants?.length &&
+    !entry.attackerCasualtyBreakdown &&
+    !entry.defenderCasualtyBreakdown &&
+    ((entry.attackerCasualties ?? 0) > 0 ||
+      (entry.defenderCasualties ?? 0) > 0);
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[10px] uppercase tracking-wider text-muted">
+        Casualties by model type
+      </p>
+      <p className="text-[10px] text-muted -mt-2">
+        Each faction on a side has its own model counts; lore deaths use that
+        faction&apos;s multipliers (Edit Galaxy → Factions).
+      </p>
+      {legacyOnly ? (
+        <p className="text-[11px] text-muted">
+          Legacy totals — attacker{" "}
+          {formatLoreCount(
+            sideLoreCasualties(undefined, entry.attackerCasualties),
+          )}
+          , defender{" "}
+          {formatLoreCount(
+            sideLoreCasualties(undefined, entry.defenderCasualties),
+          )}
+          . Enter categories below to replace them.
+        </p>
+      ) : null}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="space-y-2">
+          {attackerFactionIds.length === 0 ? (
+            <p className="text-[11px] text-muted">
+              Add attacker factions above to enter casualties.
+            </p>
+          ) : (
+            attackerFactionIds.map((factionId) => {
+              const faction = getFactionById(campaign, factionId);
+              return (
+                <BattleCasualtiesEditor
+                  key={factionId}
+                  title={`${faction?.name ?? "Attacker"} casualties`}
+                  accent={faction?.color}
+                  faction={faction}
+                  models={
+                    attackerModels[factionId] ?? emptyModelCountDraft()
+                  }
+                  onChange={(id, value) =>
+                    setModel("attacker", factionId, id, value)
+                  }
+                />
+              );
+            })
+          )}
+        </div>
+        <div className="space-y-2">
+          {defenderFactionIds.length === 0 ? (
+            <p className="text-[11px] text-muted">
+              Add defender factions above to enter casualties.
+            </p>
+          ) : (
+            defenderFactionIds.map((factionId) => {
+              const faction = getFactionById(campaign, factionId);
+              return (
+                <BattleCasualtiesEditor
+                  key={factionId}
+                  title={`${faction?.name ?? "Defender"} casualties`}
+                  accent={faction?.color}
+                  faction={faction}
+                  models={
+                    defenderModels[factionId] ?? emptyModelCountDraft()
+                  }
+                  onChange={(id, value) =>
+                    setModel("defender", factionId, id, value)
+                  }
+                />
+              );
+            })
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -217,10 +565,20 @@ function BattleDetailEditor({
     [campaign.systems],
   );
 
+  const attackerFactionIds = sideFactionIds(entry, "attacker");
+  const defenderFactionIds = sideFactionIds(entry, "defender");
+
   const { draft, patchDraft, flush, onBlurFlush } = useDebouncedDraft(
     entry.id,
     battleDraftFromEntry(entry),
     (next) => {
+      const side =
+        next.victoryKind === "draw"
+          ? null
+          : next.victorSide === "attacker" || next.victorSide === "defender"
+            ? next.victorSide
+            : null;
+      const victors = victorFieldsForSide(entry, side);
       onCommit({
         name: next.name.trim() || undefined,
         date: next.date,
@@ -234,10 +592,8 @@ function BattleDetailEditor({
         victoryKind: next.victoryKind || undefined,
         attackerFactionId: next.attackerFactionId || undefined,
         defenderFactionId: next.defenderFactionId || undefined,
-        victorFactionId:
-          next.victoryKind === "draw"
-            ? null
-            : next.victorFactionId || null,
+        victorFactionId: victors.victorFactionId,
+        victorFactionIds: victors.victorFactionIds,
       });
     },
   );
@@ -249,76 +605,112 @@ function BattleDetailEditor({
   };
 
   const setVictoryKind = (kind: VictoryKind | "") => {
-    const victorFactionId =
+    const victorSide: BattleEditDraft["victorSide"] =
       kind === "draw"
         ? ""
-        : draft.victorFactionId ||
-          draft.attackerFactionId ||
-          draft.defenderFactionId ||
-          "";
+        : draft.victorSide ||
+          (attackerFactionIds.length > 0
+            ? "attacker"
+            : defenderFactionIds.length > 0
+              ? "defender"
+              : "");
+    const victorIds =
+      kind === "draw" || !victorSide
+        ? []
+        : victorSide === "attacker"
+          ? attackerFactionIds
+          : defenderFactionIds;
     const outcome = formatOutcomeLine(campaign, {
       victoryKind: kind,
-      victorFactionId,
+      victorFactionIds: victorIds,
       attackerVp: entry.attackerVp,
       defenderVp: entry.defenderVp,
     });
     applySelect({
       victoryKind: kind,
-      victorFactionId,
+      victorSide,
       ...(outcome ? { outcome } : {}),
     });
   };
 
-  const setVictor = (victorFactionId: string) => {
+  const setVictorSide = (side: "attacker" | "defender" | "") => {
+    const victorIds =
+      side === "attacker"
+        ? attackerFactionIds
+        : side === "defender"
+          ? defenderFactionIds
+          : [];
     const outcome = formatOutcomeLine(campaign, {
       victoryKind: draft.victoryKind,
-      victorFactionId,
+      victorFactionIds: victorIds,
       attackerVp: entry.attackerVp,
       defenderVp: entry.defenderVp,
     });
     applySelect({
-      victorFactionId,
+      victorSide: side,
       ...(outcome ? { outcome } : {}),
     });
   };
 
-  const setAttacker = (attackerFactionId: string) => {
-    const victorFactionId =
-      draft.victoryKind === "draw"
-        ? ""
-        : draft.victorFactionId === draft.attackerFactionId
-          ? attackerFactionId
-          : draft.victorFactionId;
+  const setSideFactions = (side: "attacker" | "defender", ids: string[]) => {
+    const attackers =
+      side === "attacker"
+        ? mergeParticipantsPreservingCasualties(
+            ids,
+            sideParticipants(entry, "attacker"),
+          )
+        : sideParticipants(entry, "attacker");
+    const defenders =
+      side === "defender"
+        ? mergeParticipantsPreservingCasualties(
+            ids,
+            sideParticipants(entry, "defender"),
+          )
+        : sideParticipants(entry, "defender");
+    const legacy = legacyFieldsFromParticipants(attackers, defenders);
+    const primaryAtk = legacy.attackerFactionId ?? "";
+    const primaryDef = legacy.defenderFactionId ?? "";
+    let victorSide = draft.victorSide;
+    if (draft.victoryKind !== "draw" && victorSide) {
+      const roster = victorSide === "attacker" ? attackers : defenders;
+      if (roster.length === 0) {
+        victorSide =
+          (side === "attacker" ? primaryAtk : primaryDef)
+            ? side
+            : primaryAtk
+              ? "attacker"
+              : primaryDef
+                ? "defender"
+                : "";
+      }
+    }
+    const victorIds =
+      draft.victoryKind === "draw" || !victorSide
+        ? []
+        : victorSide === "attacker"
+          ? attackers.map((p) => p.factionId)
+          : defenders.map((p) => p.factionId);
+    const victors = victorFieldsForSide(
+      { ...entry, ...legacy },
+      victorSide === "attacker" || victorSide === "defender" ? victorSide : null,
+    );
     const outcome = formatOutcomeLine(campaign, {
       victoryKind: draft.victoryKind,
-      victorFactionId,
+      victorFactionIds: victorIds,
       attackerVp: entry.attackerVp,
       defenderVp: entry.defenderVp,
     });
-    applySelect({
-      attackerFactionId,
-      victorFactionId,
+    onCommit({
+      ...legacy,
+      victorFactionId: victors.victorFactionId,
+      victorFactionIds: victors.victorFactionIds,
       ...(outcome ? { outcome } : {}),
     });
-  };
-
-  const setDefender = (defenderFactionId: string) => {
-    const victorFactionId =
-      draft.victoryKind === "draw"
-        ? ""
-        : draft.victorFactionId === draft.defenderFactionId
-          ? defenderFactionId
-          : draft.victorFactionId;
-    const outcome = formatOutcomeLine(campaign, {
-      victoryKind: draft.victoryKind,
-      victorFactionId,
-      attackerVp: entry.attackerVp,
-      defenderVp: entry.defenderVp,
-    });
     applySelect({
-      defenderFactionId,
-      victorFactionId,
-      ...(outcome ? { outcome } : {}),
+      attackerFactionId: primaryAtk,
+      defenderFactionId: primaryDef,
+      victorSide:
+        draft.victoryKind === "draw" ? "" : victorSide,
     });
   };
 
@@ -506,66 +898,72 @@ function BattleDetailEditor({
               </select>
             </label>
             <label className="block text-[10px] uppercase tracking-wider text-muted">
-              Victor
+              Victor (whole side)
               <select
                 className="hud-input mt-1 w-full text-sm"
-                value={
-                  draft.victoryKind === "draw" ? "" : draft.victorFactionId
-                }
+                value={draft.victoryKind === "draw" ? "" : draft.victorSide}
                 disabled={draft.victoryKind === "draw" || !draft.victoryKind}
-                onChange={(e) => setVictor(e.target.value)}
+                onChange={(e) =>
+                  setVictorSide(
+                    e.target.value as "attacker" | "defender" | "",
+                  )
+                }
               >
                 <option value="">
                   {draft.victoryKind === "draw" ? "— Draw —" : "— Unset —"}
                 </option>
-                {factions.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.name}
+                {attackerFactionIds.length > 0 && (
+                  <option value="attacker">
+                    Attackers —{" "}
+                    {attackerFactionIds
+                      .map((id) => factionName(campaign, id))
+                      .join(" / ")}
                   </option>
-                ))}
+                )}
+                {defenderFactionIds.length > 0 && (
+                  <option value="defender">
+                    Defenders —{" "}
+                    {defenderFactionIds
+                      .map((id) => factionName(campaign, id))
+                      .join(" / ")}
+                  </option>
+                )}
               </select>
             </label>
-            <label className="block text-[10px] uppercase tracking-wider text-muted">
-              Attacker
-              <select
-                className="hud-input mt-1 w-full text-sm"
-                value={draft.attackerFactionId}
-                onChange={(e) => setAttacker(e.target.value)}
-              >
-                <option value="">— Unset —</option>
-                {factions.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="block text-[10px] uppercase tracking-wider text-muted">
-              Defender
-              <select
-                className="hud-input mt-1 w-full text-sm"
-                value={draft.defenderFactionId}
-                onChange={(e) => setDefender(e.target.value)}
-              >
-                <option value="">— Unset —</option>
-                {factions.map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <BattleSideFactionPicker
+              label="Attackers (can add banner allies)"
+              factionIds={attackerFactionIds}
+              factions={factions}
+              onChange={(ids) => setSideFactions("attacker", ids)}
+            />
+            <BattleSideFactionPicker
+              label="Defenders (can add banner allies)"
+              factionIds={defenderFactionIds}
+              factions={factions}
+              onChange={(ids) => setSideFactions("defender", ids)}
+            />
           </div>
 
           {entry.attackerVp != null && entry.defenderVp != null && (
             <p className="text-[11px] text-muted">
               Table score {entry.attackerVp}–{entry.defenderVp} VP
-              {entry.attackerCasualties != null ||
-              entry.defenderCasualties != null
-                ? ` · KIA ${(entry.attackerCasualties ?? 0) + (entry.defenderCasualties ?? 0)}`
+              {battleTotalLoreCasualties(entry) > 0
+                ? ` · Lore KIA ${formatLoreCount(battleTotalLoreCasualties(entry))}`
                 : ""}
             </p>
           )}
+
+          <BattleManualCasualties
+            campaign={campaign}
+            entry={entry}
+            attackerFactionIds={attackerFactionIds}
+            defenderFactionIds={defenderFactionIds}
+            onCommit={onCommit}
+          />
+
           <label className="block text-[10px] uppercase tracking-wider text-muted">
             Outcome (edit)
             <input
@@ -786,10 +1184,16 @@ export function BattlesOverviewPanel() {
             </li>
           ) : (
             visible.map((entry) => {
-              const accent = factionColor(
-                campaign,
-                entry.victorFactionId ?? entry.attackerFactionId,
-              );
+              const victorIds = victorFactionIdsForEntry(entry);
+              const accents =
+                victorIds.length > 0
+                  ? victorIds.map((id) => factionColor(campaign, id))
+                  : [
+                      factionColor(
+                        campaign,
+                        entry.attackerFactionId ?? entry.defenderFactionId,
+                      ),
+                    ];
               const active = selected?.id === entry.id;
               return (
                 <li key={entry.id}>
@@ -803,7 +1207,7 @@ export function BattlesOverviewPanel() {
                     onClick={() => setSelectedId(entry.id)}
                   >
                     <div className="flex items-start gap-2.5">
-                      <CrossedSwords color={accent} />
+                      <CrossedSwords colors={accents} />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <span className="text-[10px] uppercase tracking-wider text-brass">
@@ -823,6 +1227,9 @@ export function BattlesOverviewPanel() {
                         ) : null}
                         <p className="text-[11px] text-muted truncate mt-0.5">
                           {entry.outcome || "Outcome not recorded"}
+                          {battleTotalLoreCasualties(entry) > 0
+                            ? ` · Lore KIA ${formatLoreCount(battleTotalLoreCasualties(entry))}`
+                            : ""}
                         </p>
                         {isImportantBattle(entry) && (
                           <p className="text-[10px] text-brass mt-1">
